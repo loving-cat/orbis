@@ -121,7 +121,7 @@ server/
     smoke.mjs / attach.mjs / steer.mjs / extract.mjs   端到端
 app/
   lib/
-    theme.dart       ★ 设计系统（颜色/字阶/圆角，取自 参考实现 实测）
+    theme.dart       ★ 设计系统（颜色/字阶/圆角，对实机截图逐点取色校准）
     app_state.dart   全局状态 + WebSocket
     widgets/
       blob_avatar.dart  会呼吸的彩色 blob 头像
