@@ -1,0 +1,230 @@
+/**
+ * `orbis migrate`（路线图 §3 T1.2 前半）：1.7 数据目录 → 2.0 新目录。
+ *   node tests/migrate-home.mjs
+ *
+ * ## 这个文件守什么
+ *
+ * 1. **只复制，不删除**：迁移完旧目录里每个文件都还在（这是唯一能让人放心的姿态）。
+ * 2. **幂等**：第二次跑返回 `already`，不重复复制、不会把新数据覆盖回去。
+ * 3. **目标已有数据就拒绝**（`TARGET_HAS_DATA`）；`--force` 也只**补齐缺失**，不覆盖。
+ * 4. **会话引用要改写**：`state.json` 里存的是绝对路径，不改写的话服务端会继续写旧目录。
+ * 5. **配置改名**：旧名字的配置文件 → `orbis.config.json`（旧文件原样留在旧目录）。
+ * 6. **工作目录只记指针**：workspace 动辄几百 MB，复制既慢又会弄坏 .venv 里的绝对路径。
+ */
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  MIGRATION_REPORT, migrateHome, hasLegacyData, CONFIG_RENAMES,
+} from '../src/migrate-home.js';
+
+
+let pass = 0;
+let fail = 0;
+function test(name, fn) {
+  try {
+    fn();
+    console.log(`✓ ${name}`);
+    pass++;
+  } catch (err) {
+    console.log(`✗ ${name}\n    ${err?.stack || err}`);
+    fail++;
+  }
+}
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-migrate-'));
+
+/** 造一个"1.7 老用户"的数据目录 */
+function makeLegacy(tag) {
+  const dir = path.join(root, tag, 'pi-bot', 'data');
+  fs.mkdirSync(path.join(dir, 'rooms'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'taskruns'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'workspace', 'proj'), { recursive: true });
+
+  const sessionFile = path.join(dir, 'sessions', 's1.jsonl');
+  fs.writeFileSync(sessionFile, '{"type":"session","version":3}\n');
+  fs.writeFileSync(path.join(root, tag, 'pi-bot', 'data', 'rooms', 'dm.json'), '[]');
+  fs.writeFileSync(path.join(dir, 'taskruns', 't1.json'), '{"version":1}');
+  fs.writeFileSync(path.join(dir, 'model-groups.json'), '{"version":1,"groups":[]}');
+  fs.writeFileSync(path.join(dir, 'pi-bot.config.json'), '{"providers":{}}');
+  // 上传半成品：不该被搬
+  fs.writeFileSync(path.join(root, tag, 'pi-bot', 'data', '_partial.tmp'), 'x');
+  fs.writeFileSync(
+    path.join(dir, 'state.json'),
+    JSON.stringify({ version: 4, bots: {}, rooms: {}, sessions: { 'dm:chief': sessionFile } }, null, 2),
+  );
+  return { dataDir: dir, sessionFile };
+}
+
+const target = (tag) => path.join(root, tag, 'orbis', 'data');
+
+test('只复制、不删除：旧目录每个文件都还在，新目录拿到同样的内容', () => {
+  const { dataDir } = makeLegacy('copy');
+  const before = fs.readdirSync(dataDir).sort();
+  const r = migrateHome({ from: dataDir, to: target('copy') });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual(fs.readdirSync(dataDir).sort(), before, '旧目录的文件一个都不能少');
+  assert.ok(fs.existsSync(path.join(target('copy'), 'state.json')));
+  assert.ok(fs.existsSync(path.join(target('copy'), 'rooms', 'dm.json')));
+  assert.ok(fs.existsSync(path.join(target('copy'), 'taskruns', 't1.json')), 'taskruns 不搬 = 执行中的任务全丢');
+  assert.equal(fs.existsSync(path.join(target('copy'), '_partial.tmp')), false, '`_` 开头的半成品不搬');
+  assert.ok(fs.existsSync(path.join(target('copy'), MIGRATION_REPORT)), '报告要落盘');
+  assert.equal(r.legacyUntouched, true);
+});
+
+test('会话引用被改写：state.json 里指到新目录（否则服务端会继续写旧目录）', () => {
+  const { dataDir } = makeLegacy('refs');
+  const to = target('refs');
+  const r = migrateHome({ from: dataDir, to });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(r.sessionsRewritten >= 1, '至少改写一条');
+  const state = JSON.parse(fs.readFileSync(path.join(to, 'state.json'), 'utf8'));
+  const ref = state.sessions['dm:chief'];
+  assert.ok(ref.startsWith(path.join(to, 'sessions')), `会话应指向新目录，实际 ${ref}`);
+  assert.ok(fs.existsSync(ref), '改写后的文件必须真的在');
+});
+
+test('幂等：第二次跑返回 already，不重复复制也不覆盖', () => {
+  const { dataDir } = makeLegacy('idem');
+  const to = target('idem');
+  const first = migrateHome({ from: dataDir, to });
+  assert.equal(first.ok, true, first.error);
+
+  const marker = path.join(to, MIGRATION_REPORT);
+  const stamp = fs.statSync(marker).mtimeMs;
+  const stateBefore = fs.readFileSync(path.join(to, 'state.json'), 'utf8');
+
+  const second = migrateHome({ from: dataDir, to });
+  assert.equal(second.already, true, '第二次必须是 already');
+  assert.equal(fs.statSync(marker).mtimeMs, stamp, '报告不该被重写');
+  assert.equal(fs.readFileSync(path.join(to, 'state.json'), 'utf8'), stateBefore);
+});
+
+test('目标已有数据 → 拒绝（TARGET_HAS_DATA），一个文件都不覆盖', () => {
+  const { dataDir } = makeLegacy('occupied');
+  const to = target('occupied');
+  fs.mkdirSync(to, { recursive: true });
+  fs.writeFileSync(path.join(to, 'state.json'), '{"version":4,"bots":{"mine":{}}}');
+  const r = migrateHome({ from: dataDir, to });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'TARGET_HAS_DATA');
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(to, 'state.json'), 'utf8')).bots.mine !== undefined,
+    true,
+    '已有的 state.json 不能被覆盖',
+  );
+});
+
+test('--force 只补齐缺失：已有的 state.json 原样保留，缺的条目补上', () => {
+  const { dataDir } = makeLegacy('force');
+  const to = target('force');
+  fs.mkdirSync(to, { recursive: true });
+  fs.writeFileSync(path.join(to, 'state.json'), '{"version":4,"bots":{"mine":{}}}');
+  const r = migrateHome({ from: dataDir, to, force: true });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(r.kept.includes('state.json'), '已存在的文件应记为 kept');
+  assert.ok(r.copied.includes('rooms') || r.copied.includes('taskruns'), '缺失的条目要补上');
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(to, 'state.json'), 'utf8')).bots.mine !== undefined,
+    true,
+    'force 也不能覆盖已有文件',
+  );
+});
+
+test('配置文件改名：旧名字 → orbis.config.json（旧文件留在旧目录）', () => {
+  const { dataDir } = makeLegacy('config');
+  const to = target('config');
+  const r = migrateHome({ from: dataDir, to });
+  assert.equal(r.ok, true, r.error);
+  const rename = CONFIG_RENAMES[0];
+  assert.ok(fs.existsSync(path.join(to, rename.to)), '新名字要有');
+  assert.equal(fs.existsSync(path.join(to, rename.from)), false, '不该把旧名字也复制进去');
+  assert.ok(fs.existsSync(path.join(dataDir, rename.from)), '旧目录那份原样保留');
+  assert.equal(r.configs[0].result, 'copied');
+});
+
+test('工作目录只记指针，不复制；报告与标记里记的是旧路径', () => {
+  const { dataDir } = makeLegacy('workspace');
+  const to = target('workspace');
+  const r = migrateHome({ from: dataDir, to });
+  assert.equal(r.ok, true, r.error);
+  const legacyWs = path.join(dataDir, 'workspace');
+  assert.equal(r.workspace, legacyWs);
+  assert.equal(fs.existsSync(path.join(to, 'workspace')), false, 'workspace 不该被复制');
+  const report = JSON.parse(fs.readFileSync(path.join(to, MIGRATION_REPORT), 'utf8'));
+  assert.equal(report.workspace, legacyWs);
+  const marker = JSON.parse(fs.readFileSync(path.join(to, '.migrated-from.json'), 'utf8'));
+  assert.equal(marker.workspace, legacyWs, '服务端靠这个标记继续用旧 workspace');
+});
+
+test('dry-run：一个字节都不写', () => {
+  const { dataDir } = makeLegacy('dry');
+  const to = target('dry');
+  const r = migrateHome({ from: dataDir, to, dryRun: true });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.dryRun, true);
+  assert.ok(r.copied.length > 0, '要说清会搬什么');
+  assert.equal(fs.existsSync(to), false, 'dry-run 不能建目录');
+});
+
+test('拒绝的几种：没有旧数据 / 同一个目录 / 互为父子', () => {
+  assert.equal(hasLegacyData(path.join(root, 'nope')), false);
+  // 目标不能放在 from 里面，否则先撞的是 NESTED_PATH（那也是对的，只是不是这条要测的）
+  assert.equal(
+    migrateHome({ from: path.join(root, 'nope'), to: path.join(root, 'nope-target') }).code,
+    'NO_LEGACY',
+  );
+
+  const { dataDir } = makeLegacy('same');
+  assert.equal(migrateHome({ from: dataDir, to: dataDir }).code, 'SAME_PATH');
+
+  const inside = path.join(dataDir, 'inner');
+  assert.equal(migrateHome({ from: dataDir, to: inside }).code, 'NESTED_PATH');
+  assert.equal(migrateHome({ from: inside, to: dataDir }).code, 'NESTED_PATH');
+});
+
+test('CLI：node src/index.js migrate --json 能跑通并返回 0', () => {
+  const { dataDir } = makeLegacy('cli');
+  const to = target('cli');
+  const res = spawnSync(
+    process.execPath,
+    ['src/index.js', 'migrate', '--from', dataDir, '--to', to, '--json'],
+    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 60_000 },
+  );
+  assert.equal(res.status, 0, `退出码 ${res.status}\nstderr: ${res.stderr}`);
+  const out = JSON.parse(res.stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.from, dataDir);
+  assert.ok(fs.existsSync(path.join(to, MIGRATION_REPORT)));
+
+  // 第二次：already，仍然 0（幂等不该报错）
+  const again = spawnSync(
+    process.execPath,
+    ['src/index.js', 'migrate', '--from', dataDir, '--to', to, '--json'],
+    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 60_000 },
+  );
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(JSON.parse(again.stdout).already, true);
+});
+
+test('CLI：目标已有数据时返回 1 并在 stderr 说清原因', () => {
+  const { dataDir } = makeLegacy('cli-refuse');
+  const to = target('cli-refuse');
+  fs.mkdirSync(to, { recursive: true });
+  fs.writeFileSync(path.join(to, 'state.json'), '{"version":4}');
+  const res = spawnSync(
+    process.execPath,
+    ['src/index.js', 'migrate', '--from', dataDir, '--to', to],
+    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 60_000 },
+  );
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /已经有数据/);
+  assert.match(res.stderr, /--force/);
+});
+
+console.log(`\nmigrate-home: ${pass} 通过 / ${fail} 失败`);
+process.exit(fail ? 1 : 0);

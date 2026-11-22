@@ -59,6 +59,16 @@ await test('SAN 里必须有每个局域网 IP（少一个，那个网段的手�
   assert.deepEqual(new Set(certificateIps(made.certPem)), new Set(['127.0.0.1', '192.168.1.7', '10.0.0.5']));
 });
 
+await test('★ T1.6：SAN 同时带 orbis.local 与旧名 pi-bot.local（CN 仍是 pi-bot）', () => {
+  const parsed = new crypto.X509Certificate(made.certPem);
+  const san = parsed.subjectAltName ?? '';
+  assert.match(san, /DNS:orbis\.local/, '新名字必须在：浏览器/非 pinning 客户端按它校名');
+  assert.match(san, /DNS:pi-bot\.local/, '旧名字永久保留：1.7 的客户端只认它');
+  assert.match(san, /DNS:localhost/);
+  // CN 故意不改：改 CN 会让“这张证书是谁”变一件没人记得清的事，而校验走 SAN
+  assert.match(parsed.subject, /CN=pi-bot/);
+});
+
 await test('指纹 = 证书 DER 的 sha256；两张不同证书指纹不同', () => {
   const parsed = new crypto.X509Certificate(made.certPem);
   assert.equal(fingerprintOf(made.certPem), crypto.createHash('sha256').update(parsed.raw).digest('hex'));

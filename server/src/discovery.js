@@ -22,11 +22,24 @@ import { lanAddresses } from './pairing.js';
 import { VERSION } from './version.js';
 import { log } from './util.js';
 
-/** 手机发这个，主机才应答（随便一个 UDP 包都回会让端口扫描器一眼认出来）。 */
-export const PROBE_TYPE = 'pibot.discover';
+/**
+ * 手机发这个，主机才应答（随便一个 UDP 包都回会让端口扫描器一眼认出来）。
+ *
+ * ★ T1.6「永久双播」（ROADMAP 决策 C6）：新名字是 `orbis.discover`，但 **1.7 的 App
+ *   只会发 `pibot.discover`** —— 探针类型要用双收（只看一条会直接把老客户端弄失）。
+ */
+export const PROBE_TYPE = 'orbis.discover';
+/** 1.7 及更早客户端用的探针类型（永久兼容，不设删除期限） */
+export const LEGACY_PROBE_TYPE = 'pibot.discover';
+/** 两种探针都认（新名字在前，日志/断言里优先看它） */
+export const PROBE_TYPES = Object.freeze([PROBE_TYPE, LEGACY_PROBE_TYPE]);
 
-/** 主机应答的类型。带版本号，以后协议要变时不至于把老 App 喂坏。 */
-export const ANNOUNCE_TYPE = 'pibot.host';
+/** 主机应答的类型（新名字）。带版本号，以后协议要变时不至于把老 App 喂坏。 */
+export const ANNOUNCE_TYPE = 'orbis.host';
+/** 1.7 及更早客户端只认这个应答类型；同一轮里跟着一起发（双播） */
+export const LEGACY_ANNOUNCE_TYPE = 'pibot.host';
+/** 找应答时两种都认 */
+export const ANNOUNCE_TYPES = Object.freeze([ANNOUNCE_TYPE, LEGACY_ANNOUNCE_TYPE]);
 
 export const PROTOCOL_VERSION = 1;
 
@@ -87,15 +100,30 @@ export function buildAnnouncement(overrides = {}) {
   };
 }
 
-/** 严格认探针：不是我们的包就一个字都不回。 */
+/** 严格认探针：不是我们的包就一个字都不回（两种旧/新类型都算）。 */
 export function isProbe(buf) {
   if (!buf || buf.length === 0 || buf.length > 512) return false;
   try {
     const parsed = JSON.parse(buf.toString('utf8'));
-    return parsed && parsed.t === PROBE_TYPE;
+    return parsed && PROBE_TYPES.includes(parsed.t);
   } catch {
     return false;
   }
+}
+
+/**
+ * 一次要发的**全部**应答（双播：新类型 + 旧类型）。
+ *
+ * 为什么不是「老客户端来了发旧类型、新客户端来了发新类型」：服务端看不到对端
+ * 版本（探针里没有版本字段，也不想为一个纯兼容需求改协议）。两个包一共几十字节，
+ * 无脑双发最简单 —— 老 App 认 `pibot.host`，新 App 认 `orbis.host`，两边都拿到。
+ */
+export function buildAnnouncements(overrides = {}) {
+  const base = buildAnnouncement(overrides);
+  return [
+    { ...base, t: ANNOUNCE_TYPE },
+    { ...base, t: LEGACY_ANNOUNCE_TYPE },
+  ];
 }
 
 /**
@@ -128,13 +156,17 @@ export async function startDiscovery({
     for (const [key, at] of lastReplyAt) {
       if (now - at > 60_000) lastReplyAt.delete(key);
     }
-    let payload;
+    let payloads;
     try {
-      payload = Buffer.from(JSON.stringify(announcement()), 'utf8');
+      const list = typeof announcement === 'function' ? announcement() : announcement;
+      // 允许调用方只给一个对象（老测试/老调用方）；统一成数组双播
+      payloads = (Array.isArray(list) ? list : buildAnnouncements(list ?? {})).map((item) =>
+        Buffer.from(JSON.stringify(item), 'utf8'),
+      );
     } catch {
       return;
     }
-    socket.send(payload, rinfo.port, rinfo.address, () => {});
+    for (const payload of payloads) socket.send(payload, rinfo.port, rinfo.address, () => {});
   });
 
   socket.on('error', (err) => {

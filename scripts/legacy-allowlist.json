@@ -1,5 +1,5 @@
 {
-  "_comment": "旧品牌残留基线（scripts/check-legacy.mjs）。entries = 待清债项，只许变小：新增文件或计数上涨都会让 CI 变红；permanent = 永远不删的身份常量（C6 / 应用 ID / Dart 包名），命中不计入债务 —— **例外**：1.7 的 SDK 兼容别名之所以在 permanent，只是因为它必须被原样拼出来；Phase 3 删掉别名后要连同这几行一起删除（见 ROADMAP T1.4）。清理进度见 docs/ROADMAP-2.0.md §1.1 / §3。",
+  "_comment": "旧品牌残留基线（scripts/check-legacy.mjs）。entries = 待清债项，只许变小：新增文件或计数上涨都会让 CI 变红；permanent = 永远不删的身份常量（C6 / 应用 ID / Dart 包名），命中不计入债务。清理进度见 docs/ROADMAP-2.0.md §1.1 / §3。",
   "permanent": [
     {
       "pattern": "pibot.discover",
@@ -40,6 +40,18 @@
     {
       "pattern": "PiBotClient",
       "reason": "1.7 兼容别名（类本体）；同上，Phase 3 一并删（★ Phase 3 的 T1.4 删别名时**必须同步删掉本行**，否则它会永久绕过 --strict）"
+    },
+    {
+      "pattern": "'pi-bot'",
+      "reason": "旧数据目录名与旧证书 CN 的**常量值本身**（1.x 升级、迁移命令、证书回归都要用它）；只在常量定义/断言里出现，不是新文案"
+    },
+    {
+      "pattern": "pi-bot.config.json",
+      "reason": "旧配置文件名的常量（C5 读旧写新：迁移命令要按这个名字找文件），2.1 之后才可能彻底消失"
+    },
+    {
+      "pattern": "CN=pi-bot",
+      "reason": "旧证书 CN 的回归断言（1.x 客户端按它认证书；SAN 里另有 orbis.local）"
     }
   ],
   "entries": [
@@ -117,7 +129,7 @@
     },
     {
       "path": "app/lib/server/launcher.dart",
-      "count": 10
+      "count": 9
     },
     {
       "path": "app/lib/server/port_picker.dart",
@@ -164,10 +176,6 @@
       "count": 6
     },
     {
-      "path": "app/test/pair_request_test.dart",
-      "count": 2
-    },
-    {
       "path": "app/test/port_launch_test.dart",
       "count": 2
     },
@@ -193,7 +201,7 @@
     },
     {
       "path": "app/test/state_dir_test.dart",
-      "count": 8
+      "count": 3
     },
     {
       "path": "app/test/update_info_test.dart",
@@ -301,7 +309,7 @@
     },
     {
       "path": "server/src/brand.js",
-      "count": 4
+      "count": 3
     },
     {
       "path": "server/src/capabilities.js",
@@ -317,7 +325,7 @@
     },
     {
       "path": "server/src/config.js",
-      "count": 8
+      "count": 6
     },
     {
       "path": "server/src/coordination/intake-tool.js",
@@ -388,10 +396,6 @@
       "count": 2
     },
     {
-      "path": "server/src/providers.js",
-      "count": 2
-    },
-    {
       "path": "server/src/relay/server.js",
       "count": 4
     },
@@ -433,7 +437,7 @@
     },
     {
       "path": "server/src/tls.js",
-      "count": 4
+      "count": 1
     },
     {
       "path": "server/src/update-checker.js",
@@ -501,11 +505,11 @@
     },
     {
       "path": "server/tests/brand-deprecation.mjs",
-      "count": 22
+      "count": 19
     },
     {
       "path": "server/tests/brand.mjs",
-      "count": 16
+      "count": 15
     },
     {
       "path": "server/tests/capabilities.mjs",
@@ -728,10 +732,6 @@
       "count": 3
     },
     {
-      "path": "server/tests/pair-request.mjs",
-      "count": 2
-    },
-    {
       "path": "server/tests/policy-hook.mjs",
       "count": 2
     },
@@ -885,7 +885,7 @@
     },
     {
       "path": "server/tests/tls.mjs",
-      "count": 4
+      "count": 2
     },
     {
       "path": "server/tests/unit.mjs",

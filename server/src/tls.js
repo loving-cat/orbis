@@ -177,7 +177,9 @@ export function createSelfSignedCertificate({
     ({ publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }));
   }
   const spki = publicKey.export({ type: 'spki', format: 'der' });
-  const hostnames = ['localhost', 'pi-bot.local'];
+  // ★ T1.6：新名字进 SAN，**旧名字永久保留** —— 老证书按指纹 pinning，
+  //   新证书多一个 SAN 不影响已有配对；而 1.7 的客户端/浏览器认定的是 pi-bot.local。
+  const hostnames = ['localhost', 'orbis.local', 'pi-bot.local'];
   const ipList = Array.from(new Set(['127.0.0.1', ...ips]));
 
   const now = new Date();

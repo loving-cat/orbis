@@ -165,6 +165,8 @@ const TESTS = [
   'sdk-session-format',
   'audit-query',
   'department-preview',
+  'migrate-home',
+  'user-dirs',
   'storage-retention',
   'storage-housekeeping',
   'sdk-contract',

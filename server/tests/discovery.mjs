@@ -13,7 +13,11 @@
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
 
-import { PROBE_TYPE, ANNOUNCE_TYPE, PROTOCOL_VERSION, isProbe, buildAnnouncement, startDiscovery } from '../src/discovery.js';
+import {
+  PROBE_TYPE, LEGACY_PROBE_TYPE, PROBE_TYPES,
+  ANNOUNCE_TYPE, LEGACY_ANNOUNCE_TYPE, ANNOUNCE_TYPES,
+  PROTOCOL_VERSION, isProbe, buildAnnouncement, buildAnnouncements, startDiscovery,
+} from '../src/discovery.js';
 
 let pass = 0;
 let fail = 0;
@@ -47,7 +51,7 @@ function probe(port, payload, { timeout = 700 } = {}) {
 
 const announce = { name: '我的 Mac', hostname: 'studio-mbp', version: '1.4.1', port: 8787, pairing: true };
 
-await test('探针格式：只认 {"t":"pibot.discover"}', () => {
+await test('探针格式：两种类型都认（orbis.discover / pibot.discover）', () => {
   assert.equal(isProbe(Buffer.from(JSON.stringify({ t: PROBE_TYPE }))), true);
   assert.equal(isProbe(Buffer.from('hello')), false);
   assert.equal(isProbe(Buffer.from(JSON.stringify({ t: 'other' }))), false);
@@ -70,18 +74,41 @@ await test('应答字段：名字/机器名/版本/地址都在，且不含配�
   assert.equal(JSON.stringify(a).includes('code'), false, '应答里不能出现配对码字段');
 });
 
-await test('真 UDP：发探针能收到一台主机的应答', async () => {
+await test('★ 双播：一次探针回两个包（orbis.host + pibot.host），内容一致', async () => {
   const responder = await startDiscovery({ port: 0, enabled: true, announcement: () => buildAnnouncement({ ...announce }), logLine: () => {} });
   assert.ok(responder, '应答器应该起来（端口 0 = 随便挑一个）');
   try {
     const replies = await probe(responder.port, { t: PROBE_TYPE, v: 1 });
-    assert.equal(replies.length, 1, `应回 1 个包，实际 ${replies.length}`);
-    assert.equal(replies[0].t, ANNOUNCE_TYPE);
-    assert.equal(replies[0].name, '我的 Mac');
-    assert.equal(replies[0].port, 8787);
+    assert.equal(replies.length, 2, `应回 2 个包（双播），实际 ${replies.length}`);
+    assert.deepEqual(replies.map((r) => r.t).sort(), [...ANNOUNCE_TYPES].sort());
+    for (const r of replies) {
+      assert.equal(r.name, '我的 Mac');
+      assert.equal(r.port, 8787);
+      assert.equal(r.version, '1.4.1');
+    }
   } finally {
     await responder.close();
   }
+});
+
+await test('★ 双收：1.7 的旧探针（pibot.discover）也能拿到双播应答', async () => {
+  const responder = await startDiscovery({ port: 0, enabled: true, announcement: () => buildAnnouncement({ ...announce }), logLine: () => {} });
+  assert.ok(responder);
+  try {
+    const replies = await probe(responder.port, { t: LEGACY_PROBE_TYPE, v: 1 });
+    assert.equal(replies.length, 2, '老客户端也得有两条（它只认 pibot.host，多一条无害）');
+    assert.ok(replies.some((r) => r.t === LEGACY_ANNOUNCE_TYPE), '老客户端要的那条必须在');
+  } finally {
+    await responder.close();
+  }
+});
+
+await test('buildAnnouncements：新旧两个类型、其余字段逐字一致', () => {
+  const [a, b] = buildAnnouncements({ ...announce });
+  assert.equal(a.t, ANNOUNCE_TYPE);
+  assert.equal(b.t, LEGACY_ANNOUNCE_TYPE);
+  const strip = (x) => ({ ...x, t: '' });
+  assert.deepEqual(strip(a), strip(b));
 });
 
 await test('真 UDP：垃圾包 / 别的类型 → 不回', async () => {
@@ -108,7 +135,8 @@ await test('真 UDP：同一来源 500ms 内只回一次（防连点打爆主机
     socket.send(data, responder.port, '127.0.0.1');
     socket.send(data, responder.port, '127.0.0.1');
     await new Promise((resolve) => setTimeout(resolve, 600));
-    assert.equal(replies.length, 1, `应只回 1 次，实际 ${replies.length}`);
+    // 一次应答 = 双播两个包；连点三次也只能换一轮
+    assert.equal(replies.length, 2, `应只回 1 轮（2 个包），实际 ${replies.length}`);
   } finally {
     socket.close();
     await responder.close();

@@ -29,6 +29,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "orbis": "./src/index.js",
     "orbis-server": "./src/index.js",
     "pi-bot-server": "./src/index.js"
   },

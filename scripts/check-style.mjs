@@ -51,6 +51,8 @@ const PURE_MODULES = [
   'audit-query.js',
   // 部门模板预览：只算“会开成什么样”，不建 bot 也不碰 store
   'department-preview.js',
+  // 用户数据目录规则：只做平台路径计算，不建目录（migrate 命令与 config 共用）
+  'user-dirs.js',
 ];
 
 const TEST_OVERRIDES = new Map([

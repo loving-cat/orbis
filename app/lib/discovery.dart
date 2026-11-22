@@ -20,8 +20,16 @@ import 'dart:typed_data';
 const int kDiscoveryPort = 8788;
 
 /// 探针/应答的类型标记。
-const String kProbeType = 'pibot.discover';
-const String kAnnounceType = 'pibot.host';
+///
+/// ★ T1.6「永久双播」：新名字是 `orbis.*`，但**1.7 的服务端只认旧两种类型（`pibot.discover` / `pibot.host`）** ——
+///   两边都发、两边都收，不设删除期限（见 docs/ROADMAP-2.0.md 决策 C6）。
+const String kProbeType = 'orbis.discover';
+const String kAnnounceType = 'orbis.host';
+/// 1.7 及更早用的名字（兼容期保留）
+const String kLegacyProbeType = 'pibot.discover';
+const String kLegacyAnnounceType = 'pibot.host';
+const List<String> kProbeTypes = [kProbeType, kLegacyProbeType];
+const List<String> kAnnounceTypes = [kAnnounceType, kLegacyAnnounceType];
 
 /// 局域网里应答的一台 pi-bot 主机。
 class DiscoveredHost {
@@ -93,7 +101,7 @@ DiscoveredHost? parseAnnouncement(String text) {
     return null;
   }
   if (decoded is! Map) return null;
-  if (decoded['t'] != kAnnounceType) return null;
+  if (!kAnnounceTypes.contains(decoded['t'])) return null;
 
   final urls = <String>[];
   final rawUrls = decoded['urls'];
@@ -206,7 +214,10 @@ Future<void> _discoverOnce({
     socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     socket.broadcastEnabled = true;
 
-    final probe = utf8.encode(jsonEncode({'t': kProbeType, 'v': 1}));
+    // 两个探针都发：新服务端认 orbis.discover，1.7 的只认 pibot.discover
+    final probes = [
+      for (final type in kProbeTypes) utf8.encode(jsonEncode({'t': type, 'v': 1})),
+    ];
     // 有些路由器会吃掉 255.255.255.255，但对本网段的广播地址放行 —— 两个都发。
     // 一张网卡都没有（CI 上的 macOS/容器）时别发广播：send 会抛
     // "No route to host"，而我们只是想"没找到"。
@@ -217,10 +228,12 @@ Future<void> _discoverOnce({
     ];
 
     for (final target in targets) {
-      try {
-        socket.send(probe, target, port);
-      } catch (_) {
-        // 某个网卡发不出去（没权限/没网）不影响别的
+      for (final probe in probes) {
+        try {
+          socket.send(probe, target, port);
+        } catch (_) {
+          // 某个网卡发不出去（没权限/没网）不影响别的
+        }
       }
     }
 

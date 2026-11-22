@@ -36,14 +36,8 @@ export function isConfigObject(value) {
  * ~/Library/Application Support/pi-bot/data，Linux 为
  * $XDG_DATA_HOME/pi-bot/data。
  */
-/**
- * 本组件在用户目录下的文件夹名。
- *
- * 2026-11-19 品牌统一：新装用 `orbis`，但**老用户的数据还在 `pi-bot` 下**。
- */
-const HOME_DIR_NAME = 'orbis';
-// @remove-2.0 2.0 起把旧目录回退整段删掉（届时给用户一次“手动重命名目录”的说明）
-const LEGACY_HOME_DIR_NAME = 'pi-bot';
+// 目录名与平台根的纯规则在 user-dirs.js（那边没有副作用，migrate 命令也用同一份）
+import { HOME_DIR_NAME, LEGACY_HOME_DIR_NAME, userDataBaseDir } from './user-dirs.js';
 
 /**
  * 选一个目录名：`orbis` 优先，旧 `pi-bot` 只在“新目录还不存在”时继续沿用。

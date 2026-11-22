@@ -40,8 +40,25 @@ void main() {
       expect(host!.pairing, isFalse);
     });
 
+    test('★ T1.6 双播：旧服务端发的 pibot.host 也要认', () {
+      final legacy = jsonEncode({
+        't': kLegacyAnnounceType,
+        'v': 1,
+        'name': '老主机',
+        'hostname': 'old-pc',
+        'version': '1.7.1',
+        'port': 8787,
+        'urls': ['http://192.168.1.9:8787'],
+        'pairing': true,
+      });
+      final host = parseAnnouncement(legacy);
+      expect(host, isNotNull, reason: '兼容期必须能连 1.7 的服务端');
+      expect(host!.label, 'old-pc');
+    });
+
     test('不是我们的包 / 不是 JSON 一律丢掉', () {
       expect(parseAnnouncement('hello'), isNull);
+      expect(parseAnnouncement('{"t":"orbis.discover"}'), isNull);
       expect(parseAnnouncement('{"t":"pibot.discover"}'), isNull);
       expect(parseAnnouncement('{"t":"pibot.host"'), isNull);
     });

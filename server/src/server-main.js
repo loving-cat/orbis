@@ -31,7 +31,7 @@ import { createGrantGate } from './grant-gate.js';
 import { ensureLegacyGrant } from './migration-grants.js';
 import { bus } from './bus.js';
 import { createServices } from './services/index.js';
-import { buildAnnouncement, startDiscovery } from './discovery.js';
+import { buildAnnouncements, startDiscovery } from './discovery.js';
 import { ensureTlsMaterial, setActiveTls, tlsOptions } from './tls.js';
 
 /**
@@ -415,7 +415,8 @@ async function main() {
     // 局域网发现：手机在同一 Wi-Fi 下能直接看到这台机器，不用手抄 IP。
     // 起不来（端口被占/防火墙）只是少了一个便利，不影响服务端本身。
     discovery = await startDiscovery({
-      announcement: () => buildAnnouncement({ pairing: !config.staticToken, tls: tlsInfo }),
+      // 双播：一次给两个包（orbis.host + pibot.host），1.7 的 App 靠后者
+      announcement: () => buildAnnouncements({ pairing: !config.staticToken, tls: tlsInfo }),
     });
     // API/WS 就绪后做一次持久恢复；失败如实记录，不阻断旧聊天。
     try {
