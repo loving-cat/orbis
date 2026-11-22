@@ -71,6 +71,25 @@ await runtime.dispose(); // 清空会话、停掉定时器与总线监听，事�
 - `runtime.bots` / `runtime.rooms` / `runtime.models` / `runtime.automations` / `runtime.capabilities` / `runtime.policy`：对应 `server/src/services/*` 的领域服务实例。
 - `runtime.abort(roomId)` / `runtime.reset(roomId)` / `runtime.dispose()`。
 
+### 六类注入点（T2.3）
+
+全部**可选**，默认值 = 不注入时的老行为（零破坏）。
+
+| 字段 | 传什么 | 默认 |
+|---|---|---|
+| `config` | `createConfig({...})` 的**整份配置**，或普通对象（按字段覆盖） | 由 `createConfig` 按 `dataDir` / `workspace` / 环境变量算 |
+| `store` | `createStore({ memory: true })` 或任何 Store 实现 | 建一个真实的 `Store`（会写 `state.json`） |
+| `bus` | `createBus()` 或共享总线 | 新建一条总线 |
+| `modelRuntime` | 已建好的模型运行时**实例**（可与别人共用） | 调 `modelRuntimeFactory` / `ModelRuntime.create()` |
+| `resourceLoader` | 工厂函数 `(defaults) => loader`，每次建会话调一次 | `new sessionApi.DefaultResourceLoader(defaults)` |
+| `tools` / `customTools` | `tools`：追加启用的**内置工具名**；`customTools`：`defineTool()` 的**工具对象** | 只有角色本来该有的那些 |
+
+补充约定：
+
+- **谁建谁拆**：注入的 `store` / `bus` / `modelGroupStore` 归调用方所有，`dispose()` 不会去拆（共享总线上的别的 runtime 不能被顺手清掉）。
+- `memory: true`（或传一个 `memory: true` 的 store）＝ **真的不吃盘**：连数据目录都不建，`state.json` / `rooms/` / `taskruns/` / `run-stats.json` 全不写。
+- `customTools` / `tools` 追加进来的东西**要走同一道角色与 policy 过滤** —— 往只读角色的会话里塞写工具会被挡掉，注入不是绕过策略的后门。
+
 ---
 
 ## 三、远程调用已运行的 Orbis 服务端（`orbis-agent/client`）

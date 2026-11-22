@@ -14,6 +14,22 @@ import { migrateLegacyData, migratedWorkspace, repairSessionRefs, SERVER_BOOT } 
 const pkgRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 /**
+ * `createConfig()` 产出的对象上的不可枚举标记（T2.3 注入点）。
+ *
+ * ★ 为什么需要它：`createOrbisRuntime({ config })` 要能区分两种传法 ——
+ *   · `{ dataDir, userName }` 这种**字段覆盖**（1.0 起的老行为，不能变）；
+ *   · `createConfig({...})` 出来的**整份配置**（宿主自己算好再交进来）。
+ *   两者都是普通对象，靠形状猜必然猜错（覆盖对象也可能正好带 dataDir）。
+ *   用 `Symbol.for` 是为了跨包副本也认（宿主和 server 各自 `npm i` 时 Symbol 仍相等）。
+ */
+export const CONFIG_BRAND = Symbol.for('orbis.config');
+
+/** 这个值是不是 `createConfig()` 产出的一整份配置 */
+export function isConfigObject(value) {
+  return Boolean(value && typeof value === 'object' && value[CONFIG_BRAND] === true);
+}
+
+/**
  * 用户数据目录：与安装位置无关，重装/换目录不影响数据。
  *
  * Windows 为 %LOCALAPPDATA%\pi-bot\data，macOS 为
@@ -199,6 +215,8 @@ export function createConfig(overrides = {}) {
   for (const [k, v] of Object.entries(scalarOverrides)) {
     if (v !== undefined) built[k] = v;
   }
+  // 不可枚举：写 state.json / 打日志 / JSON.stringify(cfg) 都不该看见这个符号
+  Object.defineProperty(built, CONFIG_BRAND, { value: true, enumerable: false });
   return built;
 }
 

@@ -44,6 +44,7 @@ import {
   recordSuccess as breakerOk, settleAfterCooldown, BREAKER_STATE,
 } from './circuit-breaker.js';
 import { createSessionBuilder } from './session-factory.js';
+import { normalizeInjection } from './runner/session-injection.js';
 import { createBuildInput } from './prompt-input.js';
 import { departmentOf } from './group-prompt.js';
 import { intakeEnabled } from './coordination/intake-tool.js';
@@ -93,8 +94,7 @@ export class PiRunner {
     this.pendingSideContext = new Map();
     /** @type {Map<string, {session:any, bot:any, busy:boolean, unsubscribe?:Function, pending?:Promise<any>}>} */
     this.sessions = new Map();
-    this.modelRuntime = null;
-    this.model = null;
+    Object.assign(this, normalizeInjection(opts)); // T2.3 注入点：modelRuntime / resourceLoaderFactory / extraCustomTools / extraToolNames    this.model = null;
     this.routerModel = null;
     this.availableModels = [];
     this.initNote = null;
@@ -125,7 +125,7 @@ export class PiRunner {
 
     this.runSlots = new RunSlots({ capacity: this.config.maxConcurrentRuns, reserve: this.config.runSlotReserve });
     this.backgroundSlots = new RunSlots({ capacity: this.config.backgroundConcurrency, reserve: 0 });
-    this.stats = new RunStats({ file: path.join(this.config.dataDir, 'run-stats.json') });
+    this.stats = new RunStats({ file: opts.runStatsFile ?? path.join(this.config.dataDir, 'run-stats.json') });
     this.mergeQueue = new MergeQueue({
       flush: (roomId, merged) => deliverMerged(this, roomId, merged),
       log: (msg) => log(msg),

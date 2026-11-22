@@ -80,6 +80,10 @@ export function makeMockSessionApi(state, agentDir) {
     }),
     getAgentDir: () => agentDir,
     async createAgentSession(options = {}) {
+      // 注入点测试要能看到“到底传给底层什么”（T2.3）：只记录，不改变行为
+      if (state) {
+        (state.sessionOptions ??= []).push(options);
+      }
       const listeners = new Set();
       const messages = [];
       const emit = (ev) => {

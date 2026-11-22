@@ -145,9 +145,14 @@ export class StaleWriteError extends Error {
  * TaskRun 存储。
  */
 export class TaskRunStore {
-  constructor({ dir }) {
+  constructor({ dir, memory = false }) {
     if (!dir) throw new Error('TaskRunStore 需要 dir');
     this.dir = dir;
+    /**
+     * 内存模式（T2.3）：记录只活在 `cache` 里，不建目录也不落盘。
+     * 磁盘模式下的 `cache` 只是“少读一次盘”的优化；内存模式下它就是**唯一事实源**。
+     */
+    this.memory = memory === true;
     /** 事务队列：**整个读-改-写** 排在这里，不是只排文件写 */
     this.txChain = Promise.resolve();
     this.txDepth = 0;
@@ -208,6 +213,13 @@ export class TaskRunStore {
   read(taskRunId) {
     if (!isTaskId(taskRunId)) {
       return { status: LOAD_RESULT.missing, detail: 'ID 不合法' };
+    }
+    if (this.memory) {
+      const cached = this.cache.get(taskRunId);
+      // 深拷贝：调用方改返回值不能穿透到缓存（磁盘模式下每次都是新对象，行为要一致）
+      return cached
+        ? { status: LOAD_RESULT.found, taskRun: structuredClone(cached) }
+        : { status: LOAD_RESULT.missing };
     }
     const file = this.#fileOf(taskRunId);
 
@@ -459,6 +471,10 @@ export class TaskRunStore {
     const nextVersion =
       Number.isInteger(previousVersion) ? previousVersion + 1 : (taskRun.storeVersion ?? 0) + 1;
     const record = { ...taskRun, storeVersion: nextVersion };
+    if (this.memory) {
+      this.cache.set(record.id, record);
+      return { ok: true, taskRun: record };
+    }
     try {
       writeJsonAtomic(this.#fileOf(record.id), {
         version: TASKRUN_STORE_VERSION,
@@ -749,6 +765,14 @@ export class TaskRunStore {
    *   此时**不能**据此宣称「没有重复任务」—— 去重必须保守失败。
    */
   listAll() {
+    if (this.memory) {
+      return {
+        taskRuns: [...this.cache.values()].map((r) => structuredClone(r)),
+        skipped: 0,
+        problems: [],
+        complete: true,
+      };
+    }
     let names = [];
     let listError = null;
     try {

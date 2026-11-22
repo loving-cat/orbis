@@ -386,16 +386,27 @@ export class Store {
   constructor(opts = {}) {
     this.config = opts.config ?? defaultConfig;
     this.bus = opts.bus ?? defaultBus;
+    /**
+     * 内存模式（T2.3）：state / rooms / taskruns 全在内存里，一个字节都不写盘。
+     *
+     * ★ 为什么需要它：宿主（IDE、脚本、测试）把 Orbis 嵌进去时，往往只想跑一轮、
+     *   不想在你的家目录里留下 `state.json` 与一堆 `rooms/*.json`。
+     *   同一个开关把 `memory` 传进 TaskRunStore，避免“主状态不写、任务却在写”。
+     *   默认 `false`，行为与之前完全一致。
+     */
+    this.memory = opts.memory === true;
     this.dataDir = opts.dataDir ? path.resolve(opts.dataDir) : this.config.dataDir;
     this.stateFile = path.join(this.dataDir, 'state.json');
     this.roomsDir = path.join(this.dataDir, 'rooms');
     // ★ 持续任务独立存放：与任务板隔离，不受 500 条裁剪影响（批次 02）
     this.taskRunsDir = path.join(this.dataDir, 'taskruns');
-    for (const dir of [this.dataDir, this.roomsDir, path.join(this.dataDir, 'sessions')]) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (!this.memory) {
+      for (const dir of [this.dataDir, this.roomsDir, path.join(this.dataDir, 'sessions')]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
     }
 
-    const saved = readJson(this.stateFile, null);
+    const saved = this.memory ? null : readJson(this.stateFile, null);
     this.state = saved?.version === STATE_VERSION ? saved : this.#seed();
     if (!this.state.sessions) this.state.sessions = {};
     if (!Array.isArray(this.state.tasks)) this.state.tasks = [];
@@ -408,11 +419,11 @@ export class Store {
     /** @type {Map<string, any[]>} roomId -> messages */
     this.messages = new Map();
     for (const room of Object.values(this.state.rooms)) {
-      this.messages.set(room.id, this.#loadRoomMessages(room.id));
+      this.messages.set(room.id, this.memory ? [] : this.#loadRoomMessages(room.id));
     }
     // ★ 持续任务存储：独立目录、独立写入器，不参与 state.json 的合并保存
     //   它自己管原子替换与单写入者，Store 只持有引用
-    this.taskRuns = new TaskRunStore({ dir: this.taskRunsDir });
+    this.taskRuns = new TaskRunStore({ dir: this.taskRunsDir, memory: this.memory });
     this.saveTimer = null;
     /** 有变更的房间 id —— 落盘时只写这些，不要全量重写 */
     this.dirtyRooms = new Set();
@@ -461,6 +472,7 @@ export class Store {
   // ---------- 持久化 ----------
 
   scheduleSave() {
+    if (this.memory) return;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -478,6 +490,8 @@ export class Store {
    * @returns {{ok:boolean, text?:string}}
    */
   flushNow() {
+    // 内存模式：没有可 flush 的目标，但也不该谎称失败
+    if (this.memory) return { ok: true };
     try {
       assertMcpCredentialsSealed(this.state.mcpServers ?? []);
       writeJsonAtomic(this.stateFile, this.state);
@@ -501,6 +515,7 @@ export class Store {
   }
 
   saveNow() {
+    if (this.memory) return;
     try {
       assertMcpCredentialsSealed(this.state.mcpServers ?? []);
       writeJsonAtomic(this.stateFile, this.state);
@@ -526,6 +541,7 @@ export class Store {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
+    if (this.memory) return;
     this.saveNow();
   }
 

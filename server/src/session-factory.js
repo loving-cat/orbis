@@ -24,7 +24,7 @@ import { config as defaultConfig, resourceOptions } from './config.js';
 import { readBrandEnv } from './brand.js';
 import { store as defaultStore } from './store.js';
 import { preferencesPromptLines } from './preferences.js';
-import { isDelegatingLead, isRoomLead, isReadonlyPolicy, toolsForRole, customToolsForRole, roleConfigurationKey } from './role-tools.js';
+import { isDelegatingLead, isRoomLead, isReadonlyPolicy, readonlyToolAllowed, toolsForRole, customToolsForRole, roleConfigurationKey } from './role-tools.js';
 import { executionModeOf } from './exec-mode.js';
 import { applyCompactionBudget, withCapacity } from './context-budget.js';
 import { buildAppendSystemPrompt } from './system-prompt.js';
@@ -81,6 +81,12 @@ export function createSessionBuilder({
   config: scopedConfig = null,
   store: scopedStore = null,
   bus: scopedBus = null,
+  /** 宿主提供的资源加载器工厂（T2.3）：`(defaults) => loader`；不传就取 runner 上的 */
+  resourceLoaderFactory: loaderFactoryArg = null,
+  /** 宿主追加的工具对象（defineTool 产出）；挂在角色工具之后 */
+  extraCustomTools: extraToolsArg = null,
+  /** 宿主追加启用名的内置工具；去重后并进启用清单 */
+  extraToolNames: extraToolNamesArg = null,
   sessionApi = {
     DefaultResourceLoader,
     SessionManager,
@@ -101,6 +107,12 @@ export function createSessionBuilder({
     createPowerShellTool,
     getAgentDir,
   } = sessionApi;
+
+  // ★ T2.3：注入点从**参数**或 **runner** 上取（两个建会话的地方都只传 runner，
+  //   免得两处各抄一遍展开、慢慢长歪）。参数优先，方便单测直接指定。
+  const resourceLoaderFactory = loaderFactoryArg ?? runner?.resourceLoaderFactory ?? null;
+  const extraCustomTools = extraToolsArg ?? runner?.extraCustomTools ?? [];
+  const extraToolNames = extraToolNamesArg ?? runner?.extraToolNames ?? [];
 
   // 注入依赖（不用模块顶层 import，避免 store ↔ session-factory 循环依赖）
   setSandboxProbe(probeSandbox);
@@ -215,7 +227,7 @@ export function createSessionBuilder({
       : [];
 
     const modelGroups = runner?.modelGroups ?? null;
-    const customTools = isTalkLane
+    const roleCustomTools = isTalkLane
       ? []
       : customToolsForRole([
           ...commonTools,
@@ -226,7 +238,11 @@ export function createSessionBuilder({
           ...intakeTools,
           ...insightTools,
           ...(isChief ? buildChiefTools({ runner, health, roomId, botId, store, config, bus, modelGroups }) : []),
+          // 宿主追加的工具要**过同一道** role 过滤：否则往一个只读角色的会话里
+          // 塞一个写工具，就是绕开了策略层
+          ...extraCustomTools,
         ], { room, bot, policy });
+    const customTools = roleCustomTools;
 
 
     // 角色能力与行为策略共同决定内置工具；旁路 Talk 仅保留只读查阅能力。
@@ -238,9 +254,14 @@ export function createSessionBuilder({
       memberTools: config.tools,
       policy: effectivePolicy,
     });
+    // ★ 宿主追加的启用名也要过 policy：只读会话里凭空多出 bash 就是绕过策略。
+    //   角色白名单不管（那是“默认给什么”，宿主显式点名就是“我确实要这个”）。
+    const hostToolNames = isReadonlyPolicy(effectivePolicy)
+      ? extraToolNames.filter((name) => readonlyToolAllowed(name))
+      : extraToolNames;
     const baseTools = isTalkLane
       ? rawBaseTools.filter((t) => ['read', 'ls', 'find', 'grep'].includes(t))
-      : rawBaseTools;
+      : [...rawBaseTools, ...hostToolNames.filter((name) => !rawBaseTools.includes(name))];
 
     // 旁路 Talk 不起沙箱 shell 工具，避免任何命令执行开销
     const shellTools = isTalkLane
@@ -283,7 +304,15 @@ export function createSessionBuilder({
         '禁止在当前旁路里声称执行了写文件、跑命令或改任务状态，也不要生硬复述快照格式。'
       : baseAppendPrompt;
 
-    const resourceLoader = new DefaultResourceLoader({
+    /**
+     * 资源加载器的全套默认参数（老代码就是直接内联传的）。
+     *
+     * ★ T2.3 注入点：拆成变量是为了让 `resourceLoaderFactory` 拿到**一模一样的参数**
+     *   再决定怎么造。宿主常见的两种用法：
+     *   · `(d) => new MyLoader({ ...d, additionalSkillPaths: [...] })` —— 只是加料；
+     *   · `(d) => fakeLoader` —— 测试里彻底不读盘（reload 仍然会被调用）。
+     */
+    const loaderDefaults = {
       cwd: config.workspace,
       agentDir: getAgentDir(),
       // 旁路 Talk 不挂载 MCP，保留策略钩子兜底只读
@@ -321,7 +350,11 @@ export function createSessionBuilder({
       ...(isTalkLane || isDeptLead || isReadonlyPolicy(effectivePolicy)
         ? { noExtensions: true, noMcp: true }
         : {}),
-    });
+    };
+
+    const resourceLoader = typeof resourceLoaderFactory === 'function'
+      ? await resourceLoaderFactory(loaderDefaults)
+      : new DefaultResourceLoader(loaderDefaults);
     await resourceLoader.reload();
 
     const botModel = bot.model ? resolveModel(bot.model) : null;

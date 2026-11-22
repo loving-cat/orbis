@@ -386,6 +386,11 @@ export class ModelGroupStore {
    */
   constructor(opts = {}) {
     this.dataDir = opts.dataDir || config.dataDir;
+    /**
+     * 内存模式（T2.3）：模型组只活在内存，不读文件也不落盘，**也不申请密钥**
+     * （加密只为落盘服务；不落盘就不需要密钥文件）。默认 `false` = 老行为。
+     */
+    this.memory = opts.memory === true;
   }
 
   get file() {
@@ -396,6 +401,7 @@ export class ModelGroupStore {
   #seal(apiKey) {
     const text = String(apiKey ?? '');
     if (!text) return '';
+    if (this.memory) return text;
     return encrypt(text, loadOrCreateKey(this.dataDir));
   }
 
@@ -425,6 +431,10 @@ export class ModelGroupStore {
 
   load() {
     if (this.#loaded) return;
+    if (this.memory) {
+      this.#loaded = true;
+      return;
+    }
     const raw = readJson(this.file, null);
     const list = Array.isArray(raw?.groups) ? raw.groups : [];
     const needsKey = list.some(
@@ -485,6 +495,7 @@ export class ModelGroupStore {
 
   save() {
     if (!this.#loaded) throw new Error('模型组未成功载入，拒绝写入');
+    if (this.memory) return;
     writeJsonAtomic(this.file, {
       version: 1,
       groups: this.#groups.map((g) => {

@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 
 import { BRAND_NAME, BRAND_SLUG } from '../brand.js';
-import { createConfig } from '../config.js';
+import { createConfig, isConfigObject } from '../config.js';
 import { createBus } from '../bus.js';
 import { createStore } from '../store.js';
 import { createModelGroupStore } from '../model-groups.js';
@@ -71,23 +71,77 @@ export async function createOrbisRuntime(options = {}) {
   }
 }
 
-async function buildRuntime(options, cleanup) {
-  const cfg = createConfig({
-    ...(options.config ?? {}),
+/**
+ * 注入点①：`config`。
+ *
+ * `createConfig()` 产出的**整份配置**（带 `CONFIG_BRAND`）就拿它当底；否则按 1.0 起的
+ * 老规矩把 `options.config` 当“字段覆盖”交给 `createConfig`。两种都还是过一遍
+ * `createConfig`（只为了重新打标 + 统一补 `serverBoot: false`），返回的永远是新拷贝。
+ */
+function resolveConfig(options, memory) {
+  const raw = options.config;
+  const base = isConfigObject(raw) ? raw : (raw ?? {});
+  return createConfig({
+    ...base,
     ...(options.dataDir !== undefined ? { dataDir: options.dataDir } : {}),
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
-    autoProbe: options.autoProbe ?? options.config?.autoProbe ?? false,
-    lessonReflect: options.lessonReflect ?? options.config?.lessonReflect ?? false,
+    autoProbe: options.autoProbe ?? base.autoProbe ?? false,
+    lessonReflect: options.lessonReflect ?? base.lessonReflect ?? false,
+    // 内存模式连目录都不建 —— 否则“一个字节都不写盘”就只是口号
+    ensureDirs: !memory,
     serverBoot: false,
   });
+}
 
-  const bus = createBus();
-  cleanup.push(() => bus.removeAllListeners());
-  const secretsKey = options.secretsKey ?? loadOrCreateKey(cfg.dataDir);
-  const store = createStore({ config: cfg, bus, dataDir: cfg.dataDir, secretsKey });
-  cleanup.push(() => store.dispose());
-  const modelGroups = createModelGroupStore({ dataDir: cfg.dataDir });
-  cleanup.push(() => modelGroups.dispose?.());
+/**
+ * 注入点⑤：资源加载器工厂。
+ *
+ * 只收**函数**（`(defaults) => loader`）。为什么不像 pi 那样直接收实例：
+ * Orbis 每次建会话都重新 `new` 一个 loader（里面挂了策略扩展与 MCP 扩展，
+ * 扩展是按房间/角色定制的），共享一个实例等于把上一轮的扩展捎给下一轮。
+ * 传别的类型一律报错，而不是默默忽略 ——“我传了却没用”是最难查的一种问题。
+ */
+function resolveResourceLoader(options) {
+  const raw = options.resourceLoader ?? options.resourceLoaderFactory ?? null;
+  if (raw == null) return null;
+  if (typeof raw !== 'function') {
+    throw orbisError(
+      ORBIS_CODE.E_INVALID_ARGUMENT,
+      'resourceLoader 必须是函数 `(defaults) => loader`（每次会话都会调一次）',
+      { received: typeof raw },
+    );
+  }
+  return raw;
+}
+
+/**
+ * 宿主交进来的东西**由宿主负责关**（T2.3）。
+ *
+ * 为什么不能“顺手都拆了”：注入的 bus 很可能被别的 runtime 一起订着，
+ * `removeAllListeners()` 一下就把别人的监听全干掉了；注入的 store 也可能是
+ * 宿主自己的持久层。自己建的才自己拆。
+ */
+async function buildRuntime(options, cleanup) {
+  /** 内存模式：不建目录、不写 state/rooms/taskruns/run-stats、不申请密钥 */
+  const memory = options.memory === true || options.store?.memory === true;
+  const cfg = resolveConfig(options, memory);
+
+  // ② bus
+  const injectedBus = options.bus ?? null;
+  const bus = injectedBus ?? createBus();
+  if (!injectedBus) cleanup.push(() => bus.removeAllListeners());
+
+  // ③ store（可传内存实现：`createStore({ memory: true })`）
+  const injectedStore = options.store ?? null;
+  const secretsKey = injectedStore
+    ? null
+    : (options.secretsKey ?? (memory ? null : loadOrCreateKey(cfg.dataDir)));
+  const store = injectedStore ?? createStore({ config: cfg, bus, dataDir: cfg.dataDir, secretsKey, memory });
+  if (!injectedStore) cleanup.push(() => store.dispose());
+
+  const injectedGroups = options.modelGroupStore ?? null;
+  const modelGroups = injectedGroups ?? createModelGroupStore({ dataDir: cfg.dataDir, memory });
+  if (!injectedGroups) cleanup.push(() => modelGroups.dispose?.());
 
   if (options.userName) {
     store.updateUserName(options.userName);
@@ -115,6 +169,13 @@ async function buildRuntime(options, cleanup) {
     modelGroups,
     sessionApi: options.sessionApi ?? null,
     modelRuntimeFactory: options.modelRuntimeFactory ?? null,
+    // ④ modelRuntime（实例）/ ⑤ resourceLoader（工厂）/ ⑥ tools（追加对象与启用名）
+    modelRuntime: options.modelRuntime ?? null,
+    resourceLoaderFactory: resolveResourceLoader(options),
+    extraCustomTools: Array.isArray(options.customTools) ? options.customTools : [],
+    extraToolNames: Array.isArray(options.tools) ? options.tools : [],
+    // 传 `''` 就是 RunStats 的“不落盘”语义
+    runStatsFile: options.runStatsFile ?? (memory ? '' : undefined),
     inheritHostProviders: options.inheritHostProviders ?? false,
     taskIntake,
   });
@@ -411,9 +472,11 @@ async function buildRuntime(options, cleanup) {
     // run.settled 的待发定时器由 SDK 层清（run-settled.js 用 WeakMap 按 runner 归组）
     step('runSettled', () => clearSettleTimers(runner));
     step('runner', () => runner.disposeAll());
-    step('store', () => store.dispose());
-    step('modelGroups', () => modelGroups.dispose?.());
-    step('bus', () => bus.removeAllListeners());
+    // ★ 只拆自己建的（T2.3）：注入的 store / 模型组 / bus 由宿主拥有。
+    //   例如共享 bus 上还有别的 runtime 的监听，removeAllListeners 会把人家一起干掉。
+    if (!injectedStore) step('store', () => store.dispose());
+    if (!injectedGroups) step('modelGroups', () => modelGroups.dispose?.());
+    if (!injectedBus) step('bus', () => bus.removeAllListeners());
     return failed.length ? { ok: false, already: false, failed } : { ok: true, already: false };
   }
 
