@@ -187,9 +187,13 @@ SDK 是**另一个发布物**：桌面/安卓的安装包和 npm 包可以各自
 （都是 `server/package.json`）。发之前跑这三条：
 
 ```bash
+# 随包分发的依赖里有 GPL/AGPL 就是事故。它读的是 server/node_modules 与
+# app/.dart_tool/package_config.json，所以**必须先**两边的依赖都装好：
+cd server && npm install && cd ../app && flutter pub get && cd ..
+node scripts/check-licenses.mjs --check
+
 cd server
-npm install            # 要 devDependencies（typescript）
-npm run check:pack     # files 白名单 / 体积上限 / exports.types 指向
+npm run check:pack           # files 白名单 / 体积上限 / exports.types 指向
 npm run check:pack-install   # 空目录 npm i <tgz>，再跑一遍 examples/sdk/01
 npm publish --tag alpha      # 预发布一律用 dist-tag，不要抢 latest（稳定版仍是 1.7.1）
 ```
@@ -198,6 +202,8 @@ npm publish --tag alpha      # 预发布一律用 dist-tag，不要抢 latest（
 
 - `prepack` 会自动重建 `types/`、复制 `LICENSE` 与 `docs/SDK.md` —— 这三个都不入库；
 - `files` 白名单是**白名单**，新加的运行时目录（比如新的子包）要显式加，否则装出来少文件；
+- 许可证检查**不进 CI**：它依赖 `app/.dart_tool/package_config.json`（要 `flutter pub get`），
+  放进任一 CI job 都会因为"装不全"误报上百个未知组件 —— 它是发布前的人工步骤；
 - `exports` 每一项都必须带 `types`，否则 IDE 里拿不到类型；`./package.json` 必须可达；
 - 体积上限写在 `scripts/check-pack.mjs`（解包 12MB / 压缩 4MB）。要调大先说清
   “这次多出来的是什么”，别直接改数字。
