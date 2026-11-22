@@ -47,6 +47,10 @@ const PURE_MODULES = [
   'lesson-reflect-prompt.js',
   // 运行数据保留策略：只回答“哪些能删”，不读盘也不删东西
   'storage-retention.js',
+  // 审计检索：过滤/排序/分页/汇总是纯算法，记录由 grant-gate 写
+  'audit-query.js',
+  // 部门模板预览：只算“会开成什么样”，不建 bot 也不碰 store
+  'department-preview.js',
 ];
 
 const TEST_OVERRIDES = new Map([

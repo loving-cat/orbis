@@ -163,6 +163,8 @@ const TESTS = [
   'sdk-injection',
   'sdk-examples',
   'sdk-session-format',
+  'audit-query',
+  'department-preview',
   'storage-retention',
   'storage-housekeeping',
   'sdk-contract',

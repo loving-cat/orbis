@@ -10,7 +10,7 @@ import { resolveBotModelSelection } from '../model-dispatch.js';
 import { checkAssignableModel } from '../coordination/department-spec.js';
 import { CODING_BASELINE_HOWTO, CODING_BASELINE_TITLE, isCodingRole } from '../coding-baseline.js';
 import { shells as defaultShells } from '../shells.js';
-
+import { previewDepartment } from '../department-preview.js';
 export function normalizeAvatarShape(raw) {
   if (raw === -1 || raw === null) return null;
   if (Number.isInteger(raw)) return Math.max(0, Math.min(15, raw));
@@ -22,6 +22,7 @@ export function createBotService({
   runner = null,
   modelGroups = defaultModelGroups,
   shells = defaultShells,
+  config = null,
 }) {
   /**
    * 这个成员是不是"正在干活"（规格 §3.5 在跑成员保护）。
@@ -315,6 +316,32 @@ export function createBotService({
     updateGroupLimits(patch = {}) {
       const limits = store.updateGroupLimits(patch);
       return { ok: true, limits };
+    },
+
+    /**
+     * 部门预览（T2.10）：开之前先看清会开出来什么样、每个人会拿到哪些工具。
+     *
+     * `input` 与 `createDepartment` 同形；也可以直接给 `templateId`
+     * （模板里就是 `{name, topic, members, lead}`）。
+     */
+    previewDepartment(input = {}) {
+      const tpl = input?.templateId
+        ? store.templates().find((t) => t.id === input.templateId || t.name === input.templateId)
+        : null;
+      if (input?.templateId && !tpl) {
+        return { ok: false, status: 404, code: 'TEMPLATE_NOT_FOUND', error: '没有这个模板' };
+      }
+      const plan = tpl
+        ? { name: input.name || tpl.name, topic: tpl.topic, members: tpl.members, lead: tpl.lead }
+        : input;
+      const result = previewDepartment(plan, {
+        existingBots: store.listBots().map((b) => ({ id: b.id, name: b.name })),
+        leadTools: config?.leadTools ?? [],
+        memberTools: config?.tools ?? [],
+        policy: store.policy(),
+      });
+      if (!result.ok) return { ok: false, status: 400, code: 'DEPARTMENT_INVALID', error: result.error };
+      return { ok: true, ...result, templateId: tpl?.id ?? null };
     },
 
     saveTemplateFromRoom(roomId, opts = {}) {

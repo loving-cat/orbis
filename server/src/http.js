@@ -746,6 +746,55 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
         });
       }
 
+      // 审计检索（T2.10）：按房间 / Bot / 动作 / 结果 / 时间窗过滤，分页。
+      //
+      //   /api/audit?roomId=…&from=2026-11-22T00:00:00Z&to=…&result=deny&limit=50&offset=0
+      //   /api/audit/summary?roomId=…（同一套过滤，给的是汇总）
+      // 只读：不分页地拉全量会把界面拖死，所以 limit 上限写在 audit-query.js 里。
+      if (pathname === '/api/audit' && req.method === 'GET') {
+        try {
+          const q = {
+            roomId: url.searchParams.get('roomId') || undefined,
+            botId: url.searchParams.get('botId') || undefined,
+            action: url.searchParams.get('action') || undefined,
+            result: url.searchParams.get('result') || undefined,
+            code: url.searchParams.get('code') || undefined,
+            grantId: url.searchParams.get('grantId') || undefined,
+            from: url.searchParams.get('from') || undefined,
+            to: url.searchParams.get('to') || undefined,
+            order: url.searchParams.get('order') || undefined,
+            limit: url.searchParams.get('limit') || undefined,
+            offset: url.searchParams.get('offset') || undefined,
+          };
+          return send(res, 200, services.capabilities.queryAudit(q));
+        } catch (err) {
+          return send(res, 400, { error: err?.message || String(err), code: err?.code || 'AUDIT_QUERY_INVALID' });
+        }
+      }
+      if (pathname === '/api/audit/summary' && req.method === 'GET') {
+        try {
+          const q = {
+            roomId: url.searchParams.get('roomId') || undefined,
+            botId: url.searchParams.get('botId') || undefined,
+            action: url.searchParams.get('action') || undefined,
+            result: url.searchParams.get('result') || undefined,
+            from: url.searchParams.get('from') || undefined,
+            to: url.searchParams.get('to') || undefined,
+          };
+          return send(res, 200, services.capabilities.auditSummary(q));
+        } catch (err) {
+          return send(res, 400, { error: err?.message || String(err), code: err?.code || 'AUDIT_QUERY_INVALID' });
+        }
+      }
+
+      // 部门模板预览（T2.10）：开之前先看清会开出来什么样、每个人拿哪些工具。
+      // POST 是因为入参是结构化的，但它**不写任何状态** —— 与真正的创建无关。
+      if (pathname === '/api/departments/preview' && req.method === 'POST') {
+        const body = await readBody(req);
+        const r = services.rooms.previewDepartment(body ?? {});
+        return send(res, r.ok ? 200 : (r.status ?? 400), r);
+      }
+
       // ---------- 桌面设置（规格 §5.2 / §5.6） ----------
       //
       // GET 只读（看设置 + 看这台桌面的输入环境诊断），不要 nonce。

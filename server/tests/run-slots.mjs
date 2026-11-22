@@ -213,6 +213,58 @@ test('等待者能观察到队列长度（用于日志/观测）', async () => {
   r2.release();
 });
 
+test('★★ 公平排队：一个房间塞满队列，另一个房间的人先拿到槽', async () => {
+  const slots = new RunSlots({ capacity: 1, reserve: 0 });
+  const holder = await slots.acquire({ name: 'holder', group: 'roomA' });
+  const granted = [];
+  // A 房间一次 @all：10 路在排（先来的）
+  for (let i = 0; i < 10; i++) {
+    slots.acquire({ name: `A${i}`, group: 'roomA' }).then((r) => { granted.push(`A${i}`); return r; });
+  }
+  await tick();
+  // B 房间随后只有 1 路：先来后到会让它排在第 11 位，公平轮转应该让它在最久没被服务的组里先出
+  slots.acquire({ name: 'B0', group: 'roomB' }).then((r) => { granted.push('B0'); return r; });
+  await tick();
+  assert.equal(slots.waiting, 11);
+
+  holder.release();      // 放出唯一一个槽
+  await tick();
+  await tick();
+  assert.deepEqual(granted.slice(0, 1), ['B0'], `第一个应该轮到没被服务过的 roomB，实际：${granted.join(',')}`);
+});
+
+test('★ 只有一个组时，公平排队退化成先来后到（老行为不变）', async () => {
+  const slots = new RunSlots({ capacity: 1, reserve: 0 });
+  const held = await slots.acquire({ group: 'roomA' });
+  const granted = [];
+  const waits = [];
+  for (const n of ['x', 'y', 'z']) {
+    waits.push(slots.acquire({ name: n, group: 'roomA' }).then((r) => { granted.push(n); return r; }));
+  }
+  await tick();
+  held.release();
+  await tick();
+  await tick();
+  assert.deepEqual(granted, ['x'], `单组必须按先来后到，实际：${granted.join(',')}`);
+  // 收尾：把排队的都放掉，别留下挂着的 promise
+  for (const w of waits) { const g = await w; g.release(); }
+});
+
+test('★ 人优先压过组轮转', async () => {
+  const slots = new RunSlots({ capacity: 1, reserve: 1 });
+  const held = await slots.acquire({ group: 'roomA' });
+  const granted = [];
+  slots.acquire({ name: 'machine', group: 'roomA' }).then((r) => { granted.push('machine'); return r; });
+  await tick();
+  slots.acquire({ name: 'human', group: 'roomC', priority: PRIORITY.human })
+    .then((r) => { granted.push('human'); return r; });
+  await tick();
+  held.release();
+  await tick();
+  await tick();
+  assert.equal(granted[0], 'human', `人应该先于机器拿到保底位，实际：${granted.join(',')}`);
+});
+
 (async () => {
   for (const [name, fn] of checks) {
     await fn();

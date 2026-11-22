@@ -36,91 +36,328 @@
   },
   "entries": {
     "orbis-agent": {
-      "ACTION": "object",
-      "ACTIONS": "object",
-      "BRAND_NAME": "string",
-      "BRAND_SLUG": "string",
-      "ORBIS_ERROR_CODES": "object",
-      "OrbisClient": "function",
-      "OrbisError": "function",
-      "PiBotClient": "function",
-      "TOOL_SPECS": "object",
-      "Type": "object",
-      "asOrbisError": "function",
-      "auditCapabilities": "function",
-      "createBus": "function",
-      "createConfig": "function",
-      "createModelGroupStore": "function",
-      "createOrbisClient": "function",
-      "createOrbisRuntime": "function",
-      "createPiBotClient": "function",
-      "createPiBotRuntime": "function",
-      "createServices": "function",
-      "createStore": "function",
-      "defineTool": "function",
-      "isOrbisError": "function",
-      "orbisError": "function"
+      "ACTION": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "ACTIONS": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "BRAND_NAME": {
+        "kind": "string",
+        "stability": "stable"
+      },
+      "BRAND_SLUG": {
+        "kind": "string",
+        "stability": "stable"
+      },
+      "ORBIS_ERROR_CODES": {
+        "kind": "object",
+        "stability": "stable"
+      },
+      "OrbisClient": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "OrbisError": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "PiBotClient": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "TOOL_SPECS": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "Type": {
+        "kind": "object",
+        "stability": "stable"
+      },
+      "asOrbisError": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "auditCapabilities": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createBus": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createConfig": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createModelGroupStore": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createOrbisClient": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "createOrbisRuntime": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "createPiBotClient": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createPiBotRuntime": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createServices": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createStore": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "defineTool": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "isOrbisError": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "orbisError": {
+        "kind": "function",
+        "stability": "stable"
+      }
     },
     "orbis-agent/sdk": {
-      "ACTION": "object",
-      "ACTIONS": "object",
-      "BRAND_NAME": "string",
-      "BRAND_SLUG": "string",
-      "ORBIS_ERROR_CODES": "object",
-      "OrbisClient": "function",
-      "OrbisError": "function",
-      "PiBotClient": "function",
-      "TOOL_SPECS": "object",
-      "Type": "object",
-      "asOrbisError": "function",
-      "auditCapabilities": "function",
-      "createBus": "function",
-      "createConfig": "function",
-      "createModelGroupStore": "function",
-      "createOrbisClient": "function",
-      "createOrbisRuntime": "function",
-      "createPiBotClient": "function",
-      "createPiBotRuntime": "function",
-      "createServices": "function",
-      "createStore": "function",
-      "defineTool": "function",
-      "isOrbisError": "function",
-      "orbisError": "function"
+      "ACTION": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "ACTIONS": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "BRAND_NAME": {
+        "kind": "string",
+        "stability": "stable"
+      },
+      "BRAND_SLUG": {
+        "kind": "string",
+        "stability": "stable"
+      },
+      "ORBIS_ERROR_CODES": {
+        "kind": "object",
+        "stability": "stable"
+      },
+      "OrbisClient": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "OrbisError": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "PiBotClient": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "TOOL_SPECS": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "Type": {
+        "kind": "object",
+        "stability": "stable"
+      },
+      "asOrbisError": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "auditCapabilities": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createBus": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createConfig": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createModelGroupStore": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "createOrbisClient": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "createOrbisRuntime": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "createPiBotClient": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createPiBotRuntime": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createServices": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createStore": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "defineTool": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "isOrbisError": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "orbisError": {
+        "kind": "function",
+        "stability": "stable"
+      }
     },
     "orbis-agent/client": {
-      "OrbisClient": "function",
-      "PiBotClient": "function",
-      "createOrbisClient": "function",
-      "createPiBotClient": "function"
+      "OrbisClient": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "PiBotClient": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "createOrbisClient": {
+        "kind": "function",
+        "stability": "stable"
+      },
+      "createPiBotClient": {
+        "kind": "function",
+        "stability": "internal"
+      }
     },
     "orbis-agent/capabilities": {
-      "ACTIONS": "object",
-      "CHIEF_ONLY_ACTIONS": "array",
-      "CHIEF_ONLY_TOOLS": "array",
-      "COORDINATION_TOOLS": "array",
-      "GATED_ACTIONS": "array",
-      "LEAD_EXTRA_BUILTINS": "array",
-      "MIGRATION_WITHHELD": "array",
-      "MUTATING_TOOLS": "array",
-      "OPAQUE_SCRIPT_TOOLS": "array",
-      "READONLY_ALLOW": "array",
-      "SECOND_FACTOR_TOOLS": "array",
-      "SECURITY_CONFIG_TOOLS": "array",
-      "TOOLS": "object",
-      "TOOL_SPECS": "object",
-      "actionForTool": "function",
-      "actionInfo": "function",
-      "actionsForTools": "function",
-      "auditCapabilities": "function",
-      "deriveMigrationActions": "function",
-      "isIrreversible": "function",
-      "isJarvisApprovalCall": "function",
-      "migrationScopeOf": "function",
-      "needsSecondFactor": "function",
-      "needsTarget": "function",
-      "riskOf": "function",
-      "snapshotEvidence": "function",
-      "targetsForTool": "function"
+      "ACTIONS": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "CHIEF_ONLY_ACTIONS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "CHIEF_ONLY_TOOLS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "COORDINATION_TOOLS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "GATED_ACTIONS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "LEAD_EXTRA_BUILTINS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "MIGRATION_WITHHELD": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "MUTATING_TOOLS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "OPAQUE_SCRIPT_TOOLS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "READONLY_ALLOW": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "SECOND_FACTOR_TOOLS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "SECURITY_CONFIG_TOOLS": {
+        "kind": "array",
+        "stability": "internal"
+      },
+      "TOOLS": {
+        "kind": "object",
+        "stability": "internal"
+      },
+      "TOOL_SPECS": {
+        "kind": "object",
+        "stability": "beta"
+      },
+      "actionForTool": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "actionInfo": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "actionsForTools": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "auditCapabilities": {
+        "kind": "function",
+        "stability": "beta"
+      },
+      "deriveMigrationActions": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "isIrreversible": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "isJarvisApprovalCall": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "migrationScopeOf": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "needsSecondFactor": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "needsTarget": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "riskOf": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "snapshotEvidence": {
+        "kind": "function",
+        "stability": "internal"
+      },
+      "targetsForTool": {
+        "kind": "function",
+        "stability": "internal"
+      }
     }
   },
   "runtime": {
@@ -162,6 +399,7 @@
       "get",
       "groupLimits",
       "list",
+      "previewDepartment",
       "remove",
       "saveTemplateFromRoom",
       "update",
@@ -190,6 +428,7 @@
       "addLessonEdge",
       "addMcp",
       "addSkill",
+      "auditSummary",
       "findMcp",
       "importLocal",
       "importSkillMarkdown",
@@ -197,6 +436,7 @@
       "listLessons",
       "listMcp",
       "listSkills",
+      "queryAudit",
       "rejectLesson",
       "removeLesson",
       "removeLessonEdge",

@@ -25,7 +25,7 @@ export function createServices({
   modelGroups = defaultModelGroups,
   shells = defaultShells,
 } = {}) {
-  const { bots, rooms } = createBotService({ store, runner, modelGroups, shells });
+  const { bots, rooms } = createBotService({ store, runner, modelGroups, shells, config });
   const models = createModelService({ store, runner, modelGroups });
   const automations = createAutomationService({ store, runner });
   const capabilities = createCapabilityService({ store, runner });

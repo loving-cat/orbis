@@ -29,6 +29,10 @@ export class RunSlots {
   #holders = new Set();
   #queue = [];
   #seq = 0;
+  /** 每个 group 最后一次拿到槽的序号（轮转公平用） */
+  #groupTurn = new Map();
+  /** 服务计数：代替 Date.now()，同一毫秒内也能分出先后 */
+  #serveTick = 0;
 
   /**
    * @param {number} capacity 同时可跑的上限（不含保底位）
@@ -84,25 +88,28 @@ export class RunSlots {
   /**
    * 申请一个槽位。
    *
-   * @param {{priority?: number, name?: string, timeoutMs?: number, signal?: AbortSignal}} opts
+   * @param {{priority?: number, name?: string, group?: string, timeoutMs?: number, signal?: AbortSignal}} opts
+   *   `group`：公平排队的单位（本项目传 roomId）。**不传 = 单组 = 退化成先来后到**，
+   *   与引入公平排队之前完全一致。
    * @returns {Promise<
    *   { ok: true, release: Function }
    *   | { ok: false, reason: 'timeout'|'aborted', waitedMs: number }
    * >} release 可以重复调（幂等，不会多还）。
    */
-  acquire({ priority = PRIORITY.normal, name = '', timeoutMs = 0, signal = null } = {}) {
+  acquire({ priority = PRIORITY.normal, name = '', group = '', timeoutMs = 0, signal = null } = {}) {
     if (this.unlimited) {
       const token = Symbol('slot');
       this.#holders.add(token);
       return Promise.resolve(this.#grant(token));
     }
-    // 有空位且队列是空的 → 直接进（队列非空时要守先来后到，不能插队）
+    // 有空位且队列是空的 → 直接进（队列非空时要守顺序，不能插队）
     if (!this.#queue.length && this.#admissible(priority)) {
       const token = Symbol('slot');
       this.#holders.add(token);
+      this.#groupTurn.set(String(group ?? ''), ++this.#serveTick);
       return Promise.resolve(this.#grant(token));
     }
-    return this.#enqueue({ priority, name, timeoutMs: normalizeCount(timeoutMs, 0), signal });
+    return this.#enqueue({ priority, name, group, timeoutMs: normalizeCount(timeoutMs, 0), signal });
   }
 
   #grant(token) {
@@ -120,10 +127,10 @@ export class RunSlots {
     };
   }
 
-  #enqueue({ priority, name, timeoutMs, signal }) {
+  #enqueue({ priority, name, group, timeoutMs, signal }) {
     return new Promise((resolve) => {
       const waiter = {
-        priority, name, seq: ++this.#seq, resolve,
+        priority, name, group: String(group ?? ''), seq: ++this.#seq, resolve,
         startedAt: Date.now(), timer: null, onAbort: null, signal: null,
       };
       if (timeoutMs > 0) {
@@ -163,17 +170,53 @@ export class RunSlots {
     waiter.resolve({ ok: false, reason, waitedMs: Date.now() - waiter.startedAt });
   }
 
-  /** 按优先级 + 先来后到，把能拿到的槽放出去 */
+  /**
+   * 下一个该放谁：先按优先级，再在**同优先级内按组轮转**。
+   *
+   * 单组时就是“优先级 + 入队序号”，和以前完全一样（现有测试全部依赖这个）。
+   */
+  #pickNext() {
+    let best = null;
+    for (const waiter of this.#queue) {
+      if (!best) {
+        best = waiter;
+        continue;
+      }
+      if (waiter.priority !== best.priority) {
+        if (waiter.priority < best.priority) best = waiter;
+        continue;
+      }
+      const turnW = this.#groupTurn.get(waiter.group) ?? 0;
+      const turnB = this.#groupTurn.get(best.group) ?? 0;
+      if (turnW !== turnB) {
+        if (turnW < turnB) best = waiter;
+        continue;
+      }
+      // 都没被服务过（或同一轮）：守先来后到
+      if (waiter.seq < best.seq) best = waiter;
+    }
+    return best;
+  }
+
+  /**
+   * 按优先级 + **组间轮转**，把能拿到的槽放出去。
+   *
+   * 为什么不是纯先来后到：一个房间 @all 一次能排进 20 路，另一个房间的人在后面干等 ——
+   * 那是“先来后到”，但**不公平**。公平只在同优先级内调：先按 priority 分档
+   * （人永远在机器前面），档内选“最久没被服务过的那一组”的最早等待者。
+   * 只有一个组在等时，结果与先来后到完全一致。
+   */
   #drain() {
     if (this.unlimited || !this.#queue.length) return;
-    // 稳定排序：优先级相同按入队序号
-    this.#queue.sort((a, b) => (a.priority - b.priority) || (a.seq - b.seq));
     while (this.#queue.length) {
-      const head = this.#queue[0];
-      if (!this.#admissible(head.priority)) break;
-      this.#queue.shift();
+      const head = this.#pickNext();
+      if (!head || !this.#admissible(head.priority)) break;
+      const at = this.#queue.indexOf(head);
+      if (at < 0) break;
+      this.#queue.splice(at, 1);
       clearTimeout(head.timer);
       if (head.signal && head.onAbort) head.signal.removeEventListener('abort', head.onAbort);
+      this.#groupTurn.set(head.group, ++this.#serveTick);
       const token = Symbol('slot');
       this.#holders.add(token);
       head.resolve(this.#grant(token));

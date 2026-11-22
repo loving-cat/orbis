@@ -39,10 +39,17 @@ function shapeOf(value) {
   return typeof value;
 }
 
-function exportShape(mod) {
+/**
+ * 每个导出记成 `{ kind, stability }`。
+ *
+ * 为什么档位要在**契约快照**里：这个文件存在的意义就是让"静默改契约"变红。
+ * 加一个没定档的导出、或者把 stable 悄悄降成 internal，同样是契约变更，
+ * 也该在 diff 里留一条记录（档位表见 `src/sdk/stability.js`）。
+ */
+function exportShape(mod, stability) {
   const out = {};
   for (const key of Object.keys(mod).sort()) {
-    out[key] = shapeOf(mod[key]);
+    out[key] = { kind: shapeOf(mod[key]), stability: stability.stabilityOf(key) };
   }
   return out;
 }
@@ -83,9 +90,10 @@ async function collectContract() {
     runtime: {},
   };
 
+  const stability = await import('../src/sdk/stability.js');
   for (const spec of ['orbis-agent', 'orbis-agent/sdk', 'orbis-agent/client', 'orbis-agent/capabilities']) {
     const mod = await import(spec);
-    contract.entries[spec] = exportShape(mod);
+    contract.entries[spec] = exportShape(mod, stability);
   }
 
   // 运行时形状：临时目录 + 关掉复盘/探测，避免任何真实副作用
@@ -186,6 +194,36 @@ await test('SDK-C4 包层面快照与真实 package.json 一致', async () => {
     [],
     `package.json 契约与快照不一致（改契约请 UPDATE_SDK_CONTRACT=1 重写快照）：\n  ${differences.join('\n  ')}`,
   );
+});
+
+await test('SDK-C5 每个导出都有明确稳定档位（新增导出必须显式定档）', async () => {
+  const stability = await import('../src/sdk/stability.js');
+  const allNames = new Set();
+  for (const surface of Object.values(collected.entries)) {
+    for (const name of Object.keys(surface)) allNames.add(name);
+  }
+  const missing = stability.missingStability(allNames);
+  assert.deepEqual(
+    missing,
+    [],
+    `这些导出还没在 src/sdk/stability.js 里定档（默认 internal 只是兜底，不是免检查）：\n  ${missing.join(', ')}`,
+  );
+  for (const name of allNames) {
+    const tier = stability.stabilityOf(name);
+    assert.ok(
+      stability.STABILITY_LEVELS.includes(tier),
+      `${name} 的档位「${tier}」不在 ${stability.STABILITY_LEVELS.join(' / ')} 里`,
+    );
+    // 「按名字定档」的前提：同一个名字在不同入口必须是同一档
+    for (const [spec, surface] of Object.entries(collected.entries)) {
+      if (!(name in surface)) continue;
+      assert.equal(
+        surface[name].stability,
+        tier,
+        `${name} 在 ${spec} 的档位和档位表不一致（同一名字不能两个档）`,
+      );
+    }
+  }
 });
 
 if (UPDATE) {

@@ -139,8 +139,8 @@ Phase 3 ──► 依赖 Phase 1/2 全部合并（否则删完兼容层还要再
 | **T2.6** | ✅ **已落地**：`private: false` + `license`/`repository`/`types`；`files` 白名单（`src/**/*.js`、`types/**/*.d.ts`、`examples/sdk/**`、`docs/SDK.md`、README/LICENSE）；`exports` 补 `./package.json`；`prepack` = 重建 types + 复制 `LICENSE`/`docs/SDK.md`（三者都不入库）；`server/scripts/check-pack.mjs` 体检（必需文件 / 禁用前缀 / 体积上限 12MB 解包 · 4MB 压缩 / exports.types 指向 / private）；`server/scripts/check-pack-install.mjs` 干净容器验收；`scripts/check-licenses.mjs --check` 进发布清单（依赖 app 的 package_config，放 CI 会误报）；发布步骤写进 `docs/RELEASE.md`（`--tag alpha`，不抢 `latest`） | `npm pack` → 干净目录 `npm i <tgz>` → `require('orbis-agent/package.json')` 可达 → `examples/sdk/01` 跑通（脚本实测：474 文件 / 1218KB / 解包 3.54MB） |
 | **T2.7** | ✅ **已落地**：`docs/SDK-SESSION-FORMAT.md` —— 文件位置（`<dataDir>/sessions/`，文件名由 pi 生成、**别自己编**）、`state.json` 的 `sessions["<roomId>:<botId>"]` 映射、JSONL 契约（首行 `session` 头 `version: 3` + 11 种 entry 与「进不进上下文」）、消息/内容块形状、`parentId` 链与「叶子决定当前语境」这个坑、弹缩/压缩语义、容错边界（版本/坏行/未知 type 不抛，但叶子会变）、接上外部会话的两行代码 | `server/tests/sdk-session-format.mjs` 6 条：**把文档里的示例块抠出来**喂真 `SessionManager.open()`（文档写错就红）、坏行/未知 type/旧版本不炸、`setSessionFile` 后走 `open` 而非 `create`、没登记时走 `create` |
 | **T2.8** | ✅ **已落地**：`server/examples/sdk/` 共 7 个 —— `01-minimal`（最小嵌入）/ `02-custom-model`（自定义 provider，`ORBIS_EXAMPLE_LIVE=1` 真跑）/ `03-tools`（工具注入 + 只读边界）/ `04-department`（多 Bot 部门 + 等 settled）/ `05-events`（事件与 `run.settled`）/ `06-lessons`（经验库 propose→activate→reject）/ `07-injection`（内存 / 共享总线 / 换模型运行时）；另有 `_offline.mjs` 离线桩（不联网、不要 key）与 README | 每个例子进 CI 实跑：`server/tests/sdk-examples.mjs`（每个都用全新临时 cwd、超时 120s、断言退出码 0 且**有输出**），已并入 `tests/all.mjs`（170/170） |
-| **T2.9** | 稳定性：`docs/SDK-STABILITY.md`（待新增）三档（`stable` / `beta` / `internal`）+ 破坏性变更流程（一版弃用、一版删除） | 契约快照里每个导出带档位标记 |
-| **T2.10** | 收 #37 剩余欠账：审计检索、公平排队、模板预览 | 各项单测 + 审计检索能按 roomId/时间窗过滤 |
+| **T2.9** | ✅ **已落地**：`docs/SDK-STABILITY.md`（三档含义 + 当前清单 + 「一版弃用、一版删除」硬流程 + alpha 期间的例外）；档位唯一事实源 `server/src/sdk/stability.js`（`stabilityOf` fail-closed 到 `internal`，`missingStability` 给测试用）；契约快照的每条导出改成 `{ kind, stability }` | `server/tests/sdk-contract.mjs` 的 `SDK-C5`：**新增导出没定档**或**同一名字在不同入口不同档**都会红；快照里每个导出都带 `stability` |
+| **T2.10** | ✅ **已落地**：① **审计检索** —— `grant-gate` 每条审计多记 `roomId`，新纯模块 `server/src/audit-query.js`（`queryAudit` / `filterAudit` / `summarizeAudit`，按房间/Bot/动作/结果/码/时间窗过滤 + 分页 + 排序，非法过滤报 `AUDIT_QUERY_INVALID` 而不是「查到 0 条」），`services.capabilities.queryAudit/auditSummary`、`GET /api/audit`、`GET /api/audit/summary`；② **公平排队** —— `RunSlots.acquire({ group })` 在同优先级内按组轮转（本项目 group=roomId），单组时退化成先来后到（老行为不变），人优先仍压过轮转；③ **模板预览** —— 新纯模块 `server/src/department-preview.js`（角色→工具复用 `role-tools.js`，含「重名复用 / 负责人退回 / 只读策略 / 权限差异 added·removed」），`services.rooms.previewDepartment`（支持 `templateId`）、`POST /api/departments/preview`；契约快照补三个服务方法 | `server/tests/audit-query.mjs` 9 条（含「网关真记 roomId」「老记录不串门」「非法过滤报错」）、`department-preview.mjs` 7 条（含「预览与真实创建同源」）、`run-slots.mjs` 新增 3 条公平排队用例（17 条全绿） |
 
 ---
 
@@ -387,5 +387,5 @@ v1 草案把它改成「蒸馏即自动注入 + 事后点『记错了』」，�
 | #30 W2d macOS 桌面输入 | 不在 2.0 关键路径 | 独立推进，可随时插入 |
 | #31 锁屏 / #32 多屏 | **Phase 3 前置** | C6 双播的真机验证挂在这里一起做 |
 | #34 本机输入合成环境 | 阻塞 #31/#32 | 先解决，否则真机项一直悬空 |
-| #37 P1 欠账 | **T2.10（Phase 2 尾声）** | 许可证清单并入 T2.6 发布流程 |
+| #37 P1 欠账 | ✅ 收口（T2.6 许可证清单 + T2.10 审计检索 / 公平排队 / 模板预览） | 剩余 P0 实机项仍挂在 issue 里，与 SDK 无关 |
 | #38 wip 分支结账 | **Phase 0** | 清完再开分支，避免三线并行时 rebase 打架 |

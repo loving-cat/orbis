@@ -92,6 +92,34 @@ await runtime.dispose(); // 清空会话、停掉定时器与总线监听，事�
 - `tools` / `customTools` 必须是数组（`customTools` 每项要带 `name`），否则 `E_INVALID_ARGUMENT` —— 与 `resourceLoader` 一致，不静默当空数组。
 - `customTools` / `tools` 追加进来的东西**要走同一道角色与 policy 过滤** —— 往只读角色的会话里塞写工具会被挡掉，注入不是绕过策略的后门。
 
+### 审计与部门预览（T2.10）
+
+```js
+// 授权审计检索：按房间 / Bot / 动作 / 结果 / 时间窗（闭区间，毫秒或 ISO 都认）过滤
+const page = runtime.capabilities.queryAudit({
+  roomId: room.id,
+  from: '2026-11-22T00:00:00Z',
+  result: 'deny',
+  limit: 50,          // 上限 200
+  offset: 0,          // 返回 { total, items, nextOffset }
+});
+const stat = runtime.capabilities.auditSummary({ roomId: room.id }); // 结果/动作/拒绝码分布
+
+// 部门模板预览：开之前先看清会开出来什么样、每个人会拿到哪些工具
+const plan = runtime.rooms.previewDepartment({ templateId: 'tpl_xxx' });
+// → { room: {leadName, leadFallback, memberCount}, members: [{role, tools, added, removed, reused}], warnings }
+```
+
+- 审计记录由授权网关（`grant-gate`）在**每次判定**时写一条（含 `roomId`），本接口只读。
+- 预览与真实创建**同源**：角色到工具的映射复用 `role-tools.js`，所以预览说"这个负责人多两个工具"就是真的多两个。
+- HTTP 侧同款：`GET /api/audit`、`GET /api/audit/summary`、`POST /api/departments/preview`。
+
+### 稳定档位
+
+每个导出都有 `stable` / `beta` / `internal` 三档之一，档位与弃用流程见
+[`docs/SDK-STABILITY.md`](SDK-STABILITY.md)。一句话版：`stable` 保证「一版弃用、一版删除」，
+`internal` 别用（兼容别名与派生层都在这一档）。
+
 ### 会话文件（可移植）
 
 会话是**一条 `(房间, Bot)` 一份的 JSONL 文件**，格式与接线见

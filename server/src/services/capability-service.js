@@ -4,6 +4,7 @@
 import { parseSkillMarkdown } from '../skills.js';
 import { scanLocalCapabilities, localSkillToLibrary, localMcpToLibrary } from '../local-capabilities.js';
 import { publicMcpCredentials } from '../mcp-credentials.js';
+import { filterAudit, queryAudit, summarizeAudit } from '../audit-query.js';
 
 export function createCapabilityService({ store, runner = null }) {
   function findMcp(selector) {
@@ -15,7 +16,32 @@ export function createCapabilityService({ store, runner = null }) {
       ?? null;
   }
 
+  /** 审计数组：`grant-gate` 记在 `state.grantAudit` 里，这里只读 */
+  const auditList = () => (Array.isArray(store.state.grantAudit) ? store.state.grantAudit : []);
+
   return {
+    // ---- 审计（T2.10） ----
+    /**
+     * 授权审计检索：按房间 / Bot / 动作 / 结果 / 时间窗过滤 + 分页。
+     * 与 `runtime.policy` 的授权动作是同一批记录（网关判一次记一条）。
+     */
+    queryAudit(filter = {}) {
+      return queryAudit(auditList(), filter);
+    },
+
+    /** 汇总口径固定在这里，界面与工具不会各算一套 */
+    auditSummary(filter = {}) {
+      const { hits, fromMs, toMs, order } = filterAudit(auditList(), filter);
+      return {
+        ...summarizeAudit(hits),
+        filter: {
+          roomId: filter.roomId ?? null, botId: filter.botId ?? null,
+          action: filter.action ?? null, result: filter.result ?? null,
+          from: fromMs, to: toMs, order,
+        },
+      };
+    },
+
     // ---- Skills ----
     listSkills() {
       return store.skillLibrary();

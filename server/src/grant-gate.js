@@ -120,11 +120,14 @@ export function createGrantGate({
    * 规格 §5.5：记录授权引用、发起者、实际执行角色、目标摘要、结果。
    * 这里**只记摘要**，不记原始参数 —— 参数可能是密码或私钥。
    */
-  function audit({ grantId = null, subject = null, action, targets = [], result, code = '', detail = '', risk = null }) {
+  function audit({ grantId = null, subject = null, action, targets = [], result, code = '', detail = '', risk = null, roomId = null }) {
     const list = audits();
     list.push({
       id: randomUUID(),
       at: Date.now(),
+      // ★ 记房间（T2.10 审计检索）：没有它就只能按 bot 查，而"哪个群里的谁做了什么"
+      //   恰恰是用户最常问的那一句。老记录没这个字段，检索时按"不匹配"处理。
+      roomId: roomId ?? null,
       grantId,
       botId: subject?.botId ?? null,
       role: subject?.role ?? '',
@@ -226,7 +229,7 @@ export function createGrantGate({
    * @param {string|null} [p.grantId] 指定用哪条授权（不传则自动挑）
    * @returns {{ok:true, grant:object, audit:object}|{ok:false, code:string, text:string, audit?:object}}
    */
-  function check({ subject, action, targets = [], params = {}, mode = null, taskId = null, grantId = null } = {}) {
+  function check({ subject, action, targets = [], params = {}, mode = null, taskId = null, grantId = null, roomId = null } = {}) {
     const now = Date.now();
     // ★ 风险档按**动作**查。
     //
@@ -237,7 +240,7 @@ export function createGrantGate({
     const cleanTargets = (Array.isArray(targets) ? targets : []).map(normalizeResource).filter(Boolean);
 
     if (!subject?.botId) {
-      const a = audit({ subject, action, targets: cleanTargets, result: false, code: DENY.invalid, detail: '缺少主体' });
+      const a = audit({ subject, action, targets: cleanTargets, result: false, code: DENY.invalid, detail: '缺少主体', roomId });
       return { ok: false, code: DENY.invalid, text: '动作必须绑定到具体 Bot', audit: a };
     }
 
@@ -248,12 +251,12 @@ export function createGrantGate({
     if (!picked.ok) {
       const a = audit({
         grantId, subject, action, targets: cleanTargets,
-        result: false, code: picked.code, detail: picked.text, risk,
+        result: false, code: picked.code, detail: picked.text, risk, roomId,
       });
       return { ok: false, code: picked.code, text: picked.text, audit: a };
     }
     if (!picked.list.length) {
-      const a = audit({ subject, action, targets: cleanTargets, result: false, code: DENY.noGrant, risk });
+      const a = audit({ subject, action, targets: cleanTargets, result: false, code: DENY.noGrant, risk, roomId });
       return { ok: false, code: DENY.noGrant, text: `没有覆盖「${action}」的有效授权`, audit: a };
     }
 
@@ -263,7 +266,7 @@ export function createGrantGate({
     for (const grant of picked.list) {
       const verdict = verdictFor(grant, { action, targets: cleanTargets, params, now, policyRevision, generation });
       if (!verdict.ok) { failures.push({ grant, verdict }); continue; }
-      const a = audit({ grantId: grant.id, subject, action, targets: cleanTargets, result: true, risk });
+      const a = audit({ grantId: grant.id, subject, action, targets: cleanTargets, result: true, risk, roomId });
       return { ok: true, grant, audit: a };
     }
 
@@ -283,7 +286,7 @@ export function createGrantGate({
     const preferredVerdict = preferred?.verdict ?? { ok: false, code: DENY.noGrant, text: '没有可用授权' };
     const a = audit({
       subject, action, targets: cleanTargets, result: false,
-      code: preferredVerdict.code, detail: preferredVerdict.text, risk,
+      code: preferredVerdict.code, detail: preferredVerdict.text, risk, roomId,
     });
     return { ok: false, code: preferredVerdict.code, text: preferredVerdict.text, audit: a };
   }

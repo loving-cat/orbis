@@ -286,6 +286,8 @@ export function createPolicyExtension({
             const taskCtx = typeof managedContextOf === 'function' ? managedContextOf() : null;
             const verdict = grantGate.check({
               subject,
+              // 审计要记是哪个房间（T2.10 审计检索按 roomId 过滤）
+              roomId,
               action: mapped.action,
               targets: grantGate.targetsForTool(tool, event?.input ?? {}),
               params: event?.input ?? {},

@@ -421,12 +421,8 @@ export class PiRunner {
     const slots = this.runSlots;
     if (!slots || slots.unlimited) return null;
     const name = `${this.store.getRoom(roomId)?.name ?? roomId} / ${this.store.getBot(botId)?.name ?? botId}`;
-    return slots.acquire({
-      priority: human ? PRIORITY.human : PRIORITY.normal,
-      name,
-      timeoutMs,
-      signal,
-    });
+    // group = 房间：公平排队按房间轮转（语义见 run-slots.js），一个部门 @all 不至于塞死别人
+    return slots.acquire({ priority: human ? PRIORITY.human : PRIORITY.normal, name, group: roomId, timeoutMs, signal });
   }
 
   recordRun({ roomId, botId, startedAt, ok, usage, taskRunId = '', attemptIndex = 1, sdkRetries = 0, kind = '' }) {

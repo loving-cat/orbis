@@ -28,6 +28,18 @@
     {
       "pattern": "name: pi_bot",
       "reason": "Dart 包名声明（pubspec.yaml）"
+    },
+    {
+      "pattern": "createPiBotRuntime",
+      "reason": "1.7 兼容别名（SDK 档位表里要原样拼出这个导出名）；Phase 3 删别名时把这条一起删"
+    },
+    {
+      "pattern": "createPiBotClient",
+      "reason": "1.7 兼容别名；同上，Phase 3 一并删"
+    },
+    {
+      "pattern": "PiBotClient",
+      "reason": "1.7 兼容别名（类本体）；同上，Phase 3 一并删"
     }
   ],
   "entries": [
@@ -405,11 +417,11 @@
     },
     {
       "path": "server/src/sdk/client.js",
-      "count": 5
+      "count": 3
     },
     {
       "path": "server/src/sdk/index.js",
-      "count": 6
+      "count": 1
     },
     {
       "path": "server/src/secrets.js",
@@ -773,11 +785,7 @@
     },
     {
       "path": "server/tests/sdk-contract.snapshot.json",
-      "count": 9
-    },
-    {
-      "path": "server/tests/sdk-runtime.mjs",
-      "count": 3
+      "count": 1
     },
     {
       "path": "server/tests/secrets-regress.mjs",
