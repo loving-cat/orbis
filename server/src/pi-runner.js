@@ -94,7 +94,8 @@ export class PiRunner {
     this.pendingSideContext = new Map();
     /** @type {Map<string, {session:any, bot:any, busy:boolean, unsubscribe?:Function, pending?:Promise<any>}>} */
     this.sessions = new Map();
-    Object.assign(this, normalizeInjection(opts)); // T2.3 注入点：modelRuntime / resourceLoaderFactory / extraCustomTools / extraToolNames    this.model = null;
+    Object.assign(this, normalizeInjection(opts));
+    this.model = null;
     this.routerModel = null;
     this.availableModels = [];
     this.initNote = null;
@@ -122,7 +123,6 @@ export class PiRunner {
     this.reportScopes = new Map();
     this.shouldReplyAsked = new Map();
     this.memoryJobs = new Map();
-
     this.runSlots = new RunSlots({ capacity: this.config.maxConcurrentRuns, reserve: this.config.runSlotReserve });
     this.backgroundSlots = new RunSlots({ capacity: this.config.backgroundConcurrency, reserve: 0 });
     this.stats = new RunStats({ file: opts.runStatsFile ?? path.join(this.config.dataDir, 'run-stats.json') });

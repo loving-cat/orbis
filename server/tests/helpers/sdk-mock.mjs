@@ -53,6 +53,23 @@ export function makeMockModelRuntimeFactory() {
  */
 export function makeMockSessionApi(state, agentDir) {
   fs.mkdirSync(agentDir, { recursive: true });
+  /**
+   * 会话管理器调用记录（T2.3 内存模式用）：
+   *   · `state.sessionManagerCalls.create / open / inMemory` 计数；
+   *   · `state.forbidDiskSessions === true` 时 create/open **直接抛** ——
+   *     “内存模式不许碰盘”这句话必须能在真实调用路径上被验到，
+   *     而不是靠返回值长得像。
+   */
+  const record = (kind) => {
+    if (state) {
+      const calls = (state.sessionManagerCalls ??= { inMemory: 0, open: 0, create: 0 });
+      calls[kind] = (calls[kind] ?? 0) + 1;
+      if (state.forbidDiskSessions && (kind === 'create' || kind === 'open')) {
+        throw new Error(`内存模式不允许调 SessionManager.${kind}`);
+      }
+    }
+    return null;
+  };
   class MockResourceLoader {
     constructor(opts) {
       this.opts = opts;
@@ -61,7 +78,20 @@ export function makeMockSessionApi(state, agentDir) {
   }
   return {
     DefaultResourceLoader: MockResourceLoader,
-    SessionManager: { inMemory: () => ({}), open: () => ({}), create: () => ({}) },
+    SessionManager: {
+      inMemory: () => {
+        record('inMemory');
+        return {};
+      },
+      open: () => {
+        record('open');
+        return {};
+      },
+      create: () => {
+        record('create');
+        return {};
+      },
+    },
     createBashTool: () => ({
       name: 'bash',
       description: 'mock bash',

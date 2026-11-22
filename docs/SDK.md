@@ -86,8 +86,10 @@ await runtime.dispose(); // 清空会话、停掉定时器与总线监听，事�
 
 补充约定：
 
-- **谁建谁拆**：注入的 `store` / `bus` / `modelGroupStore` 归调用方所有，`dispose()` 不会去拆（共享总线上的别的 runtime 不能被顺手清掉）。
-- `memory: true`（或传一个 `memory: true` 的 store）＝ **真的不吃盘**：连数据目录都不建，`state.json` / `rooms/` / `taskruns/` / `run-stats.json` 全不写。
+- **谁建谁拆**：注入的 `store` / `bus` / `modelGroupStore` 归调用方所有，`dispose()` 不会去拆；但本 runtime 经 `onEvent()` 自己挂上的监听会被**逐条摘掉**（共享总线上别人的监听不受影响）。
+- **`store` 与 `bus` 是同一根神经**：只给 `store` 时直接沿用它的 `store.bus`（否则 store 发出的 `policy.updated` / `bot.updated` 会落在另一条线上，谁也收不到）；同时给两个且不是同一条会报 `E_INVALID_ARGUMENT`，不替调用方猜。
+- `memory: true`（或传一个 `memory: true` 的 store）＝ **真的不吃盘**：连数据目录都不建，`state.json` / `rooms/` / `taskruns/` / `sessions/` / `run-stats.json` 全不写（会话走 `SessionManager.inMemory`），也不会去删宿主的 `instances/`。
+- `tools` / `customTools` 必须是数组（`customTools` 每项要带 `name`），否则 `E_INVALID_ARGUMENT` —— 与 `resourceLoader` 一致，不静默当空数组。
 - `customTools` / `tools` 追加进来的东西**要走同一道角色与 policy 过滤** —— 往只读角色的会话里塞写工具会被挡掉，注入不是绕过策略的后门。
 
 ---

@@ -548,6 +548,9 @@ export class Store {
   /** 删文件（房间/会话）：失败不算错，最多是磁盘上多留一份 */
   #removeFile(file) {
     if (!file) return;
+    // 内存模式（T2.3）：实例目录都没建，更不存在“该删的那个文件”；
+    // 路径默认会指向宿主真实的 dataDir —— 误删比不删严重得多。
+    if (this.memory) return;
     try {
       fs.unlinkSync(file);
     } catch (err) {
@@ -842,6 +845,9 @@ export class Store {
     //   泄漏的 ACE 不会变成"看起来能用其实没隔离" —— 下次启动仍然要过
     //   selfcheck。不过 **工作目录是全局的**（config.workspace），所以
     //   这里不能 revoke 它（别的 bot 还在用），只删 profile。
+    // 内存模式（T2.3）：没有实例目录可收，更不能去动宿主的 %LOCALAPPDATA%
+    // / instances/ —— 内存实例默认 dataDir 指向的是**真实**目录，误删就是事故。
+    if (this.memory) return { id };
     try {
       const instanceDir = defaultWindowsInstanceDir(this.dataDir, id);
       const r = teardownWindowsInstance({ instanceDir });

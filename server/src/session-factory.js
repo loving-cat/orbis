@@ -162,9 +162,13 @@ export function createSessionBuilder({
     const bot = applyBotOverride(stored, store.botOverride(botId));
 
     const sessionDir = path.join(config.dataDir, 'sessions');
-    const savedFile = isTalkLane ? null : store.sessionFileFor(roomId, botId);
-    // 旁路 Talk 会话强制纯内存隔离，绝不与后台 Work 并发读写同一磁盘会话文件
-    const sessionManager = isTalkLane
+    // ★ 内存模式（T2.3）：store 说了不落盘，会话文件也不能偷偷开一个。
+    //   否则“传内存 store 时零磁盘写入”只在 mock 的 SessionManager 下成立 ——
+    //   真实运行时会先 create 出 `sessions/<room>-<bot>.json`，再写 transcript。
+    const inMemorySession = isTalkLane || store.memory === true;
+    const savedFile = inMemorySession ? null : store.sessionFileFor(roomId, botId);
+    // 旁路 Talk / 内存模式会话强制纯内存隔离，绝不与后台 Work 并发读写同一磁盘会话文件
+    const sessionManager = inMemorySession
       ? (typeof SessionManager.inMemory === 'function'
           ? SessionManager.inMemory(config.workspace)
           : {})

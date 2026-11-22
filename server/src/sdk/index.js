@@ -115,6 +115,37 @@ function resolveResourceLoader(options) {
 }
 
 /**
+ * 注入点⑥：工具清单。
+ *
+ * 只收**数组**（`customTools` 收对象、`tools` 收名字），传别的类型直接报错。
+ * 为什么不默默当空数组：调用方写了 `customTools: hostTool`（忘了方括号）时，
+ * “安静地什么都没挂上”比报错难查一百倍 —— 与 `resourceLoader` 一个尺度。
+ */
+function resolveToolList(value, label, kind) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw orbisError(ORBIS_CODE.E_INVALID_ARGUMENT, `${label} 必须是数组`, {
+      received: typeof value,
+    });
+  }
+  for (const item of value) {
+    const ok = kind === 'tool'
+      ? item && typeof item === 'object' && typeof item.name === 'string' && item.name.trim() !== ''
+      : typeof item === 'string' && item.trim() !== '';
+    if (!ok) {
+      throw orbisError(
+        ORBIS_CODE.E_INVALID_ARGUMENT,
+        kind === 'tool'
+          ? `${label} 里每一项都必须是带 name 的工具对象（defineTool 产出）`
+          : `${label} 里每一项都必须是非空工具名`,
+        { index: value.indexOf(item) },
+      );
+    }
+  }
+  return value;
+}
+
+/**
  * 宿主交进来的东西**由宿主负责关**（T2.3）。
  *
  * 为什么不能“顺手都拆了”：注入的 bus 很可能被别的 runtime 一起订着，
@@ -126,13 +157,29 @@ async function buildRuntime(options, cleanup) {
   const memory = options.memory === true || options.store?.memory === true;
   const cfg = resolveConfig(options, memory);
 
-  // ② bus
   const injectedBus = options.bus ?? null;
-  const bus = injectedBus ?? createBus();
-  if (!injectedBus) cleanup.push(() => bus.removeAllListeners());
-
-  // ③ store（可传内存实现：`createStore({ memory: true })`）
   const injectedStore = options.store ?? null;
+
+  // ②③ bus + store：两者的关系不是“两个独立注入点”，而是**同一根神经**。
+  //
+  //   store 发 `policy.updated` / `bot.updated` / `msg.created` 都在它自己的 bus 上；
+  //   runner 与 `rt.onEvent()` 听的是 runtime 的 bus。只注入 store 却另建一条 bus，
+  //   就会“一切看起来都正常，但事件永远不触发”——所以：
+  //   · 只给 store：直接沿用 `store.bus`（否则 store 发的事件在另一条线上，没人听得到）；
+  //   · store + bus 两条不同的：明确报错，不替调用方猜该合并还是该丢弃；
+  //   · 两条都没有的（或 store 没挂 bus）：自己建一条。
+  if (injectedStore?.bus && injectedBus && injectedStore.bus !== injectedBus) {
+    throw orbisError(
+      ORBIS_CODE.E_INVALID_ARGUMENT,
+      'store.bus 与传入的 bus 不是同一条：store 发出的事件会落到另一条线上，只能给其中一个',
+      { storeBusIsSame: false },
+    );
+  }
+  const inheritedBus = injectedBus ?? injectedStore?.bus ?? null;
+  const bus = inheritedBus ?? createBus();
+  // 自己建的那条才清全部监听；沿用宿主的总线时只摘本 runtime 自己挂的（见 dispose）
+  if (!inheritedBus) cleanup.push(() => bus.removeAllListeners());
+
   const secretsKey = injectedStore
     ? null
     : (options.secretsKey ?? (memory ? null : loadOrCreateKey(cfg.dataDir)));
@@ -172,8 +219,8 @@ async function buildRuntime(options, cleanup) {
     // ④ modelRuntime（实例）/ ⑤ resourceLoader（工厂）/ ⑥ tools（追加对象与启用名）
     modelRuntime: options.modelRuntime ?? null,
     resourceLoaderFactory: resolveResourceLoader(options),
-    extraCustomTools: Array.isArray(options.customTools) ? options.customTools : [],
-    extraToolNames: Array.isArray(options.tools) ? options.tools : [],
+    extraCustomTools: resolveToolList(options.customTools, 'customTools', 'tool'),
+    extraToolNames: resolveToolList(options.tools, 'tools', 'name'),
     // 传 `''` 就是 RunStats 的“不落盘”语义
     runStatsFile: options.runStatsFile ?? (memory ? '' : undefined),
     inheritHostProviders: options.inheritHostProviders ?? false,
@@ -239,6 +286,9 @@ async function buildRuntime(options, cleanup) {
   }
 
   let disposed = false;
+
+  /** 本 runtime 经 `onEvent()` 挂上的监听：dispose 时逐个摘（不碰宿主自己 `bus.on` 的） */
+  const sdkEventHandlers = new Set();
 
   /** 任何对外入口都先过这一道：已 dispose 的 runtime 不再接受新活 */
   function assertAlive() {
@@ -308,7 +358,14 @@ async function buildRuntime(options, cleanup) {
   function onEvent(handler) {
     if (typeof handler !== 'function') return () => {};
     bus.on('event', handler);
-    return () => bus.off('event', handler);
+    // ★ 记下来（T2.3）：注入的 bus 是**共享**的，`dispose()` 不能清全部监听；
+    //   但不摘自己挂的那些就是真泄漏 —— 宿主的进程里每建一次 runtime
+    //   就多一组永远不回调的 handler。
+    sdkEventHandlers.add(handler);
+    return () => {
+      sdkEventHandlers.delete(handler);
+      bus.off('event', handler);
+    };
   }
 
   async function askMain(text, opts = {}) {
@@ -472,6 +529,11 @@ async function buildRuntime(options, cleanup) {
     // run.settled 的待发定时器由 SDK 层清（run-settled.js 用 WeakMap 按 runner 归组）
     step('runSettled', () => clearSettleTimers(runner));
     step('runner', () => runner.disposeAll());
+    // ★ 只摘自己挂的（T2.3）：注入的 bus 上还有宿主的监听，不能 removeAllListeners
+    step('sdkEventHandlers', () => {
+      for (const handler of sdkEventHandlers) bus.off('event', handler);
+      sdkEventHandlers.clear();
+    });
     // ★ 只拆自己建的（T2.3）：注入的 store / 模型组 / bus 由宿主拥有。
     //   例如共享 bus 上还有别的 runtime 的监听，removeAllListeners 会把人家一起干掉。
     if (!injectedStore) step('store', () => store.dispose());

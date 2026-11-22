@@ -136,14 +136,17 @@ await test('config：老写法（字段覆盖）行为不变，dataDir / workspa
 
 // ---------------------------------------------------------------- ② store
 
-await test('store：内存实现一个字节都不写盘（state / rooms / taskruns / run-stats）', async () => {
+await test('store：内存实现一个字节都不写盘（state / rooms / taskruns / sessions / run-stats）', async () => {
   const base = path.join(root, 'store-memory');
   const dataDir = path.join(base, 'data'); // 故意不创建
   const workspace = path.join(base, 'workspace');
   const memory = createStore({ memory: true, dataDir });
   assert.equal(fs.existsSync(dataDir), false, '内存 store 不该建数据目录');
 
-  const state = { behavior: 'reply' };
+  // ★ 不只数文件：会话管理器也得真的走内存 ——
+  //   mock 遮住的正是最容易出问题的那一步（`SessionManager.create(...)` 会先建
+  //   `sessions/<room>-<bot>.json` 再写 transcript）。
+  const state = { behavior: 'reply', forbidDiskSessions: true };
   const rt = await sdk.createOrbisRuntime({
     store: memory,
     dataDir,
@@ -154,10 +157,17 @@ await test('store：内存实现一个字节都不写盘（state / rooms / taskr
   });
   assert.equal(rt.store, memory, '注入的 store 必须就是运行用的那一个');
   await rt.askMain('在内存里跑一轮');
+  assert.ok((state.sessionManagerCalls?.inMemory ?? 0) > 0, '内存模式必须走 SessionManager.inMemory');
+  assert.equal(state.sessionManagerCalls?.create ?? 0, 0, '内存模式不许调 SessionManager.create');
+  assert.equal(state.sessionManagerCalls?.open ?? 0, 0, '内存模式不许调 SessionManager.open');
   assert.equal(countFiles(dataDir), 0, `内存模式写盘了：${JSON.stringify(fs.existsSync(dataDir) ? fs.readdirSync(dataDir) : [])}`);
   assert.equal(rt.runner.stats.file, '', '内存模式下 run-stats 不该落盘');
   memory.saveNow(); // 内存下是空操作，不该炸也不该建目录
   assert.equal(memory.flushNow().ok, true);
+  // 删 bot 也不该去动宿主真实的 instances/ 目录
+  const created = rt.bots.create({ name: '临时同事' });
+  assert.equal(created.ok, true, `建 bot 失败：${created.error ?? ''}`);
+  rt.bots.remove(created.bot.id);
   await rt.dispose();
   assert.equal(fs.existsSync(dataDir), false, 'dispose 也不该建目录');
 });
@@ -172,7 +182,7 @@ await test('store：不传时仍然是真实 store（state.json 落盘，老行�
 
 // ---------------------------------------------------------------- ③ bus
 
-await test('bus：注入的总线能收到事件，且 dispose 不会清掉宿主的监听', async () => {
+await test('bus：注入的总线能收到事件；dispose 只摘自己的监听，不碰宿主的', async () => {
   const dirs = makeDirs('bus-shared');
   const bus = createBus();
   let hostEvents = 0;
@@ -187,10 +197,15 @@ await test('bus：注入的总线能收到事件，且 dispose 不会清掉宿�
     modelRuntimeFactory: makeMockModelRuntimeFactory(),
     sessionApi: makeMockSessionApi({ behavior: 'reply' }, path.join(dirs.base, 'agent')),
   });
+  let sdkEvents = 0;
+  const sdkListener = () => { sdkEvents++; };
+  rt.onEvent(sdkListener);
   try {
     assert.equal(rt.bus, bus, '注入的 bus 必须就是运行用的那一个');
+    assert.ok(bus.listeners('event').includes(sdkListener), 'rt.onEvent 要真的挂在注入的 bus 上');
     await rt.askMain('跑一轮');
     assert.ok(hostEvents > 0, '宿主在注入的 bus 上应该能收到事件');
+    assert.ok(sdkEvents > 0, 'rt.onEvent 在注入的 bus 上也要收到事件');
   } finally {
     await rt.dispose();
   }
@@ -198,7 +213,53 @@ await test('bus：注入的总线能收到事件，且 dispose 不会清掉宿�
     bus.listeners('event').includes(hostListener),
     'dispose 之后宿主的监听必须还在（共享总线上的别的 runtime 不能被顺手拆掉）',
   );
+  assert.equal(
+    bus.listeners('event').includes(sdkListener),
+    false,
+    'dispose 必须把本 runtime 经 onEvent 挂的监听摘掉（否则每建一次 runtime 就泄漏一组）',
+  );
   bus.off('event', hostListener);
+});
+
+await test('bus + store：只给 store 时沿用它的 bus；两条不同的总线直接报错', async () => {
+  const dirs = makeDirs('bus-store');
+  // ① 只注入 store：事件必须还能从 rt.onEvent 看到（沿用 store.bus）
+  const memory = createStore({ memory: true, bus: createBus(), dataDir: dirs.dataDir });
+  const rt = await sdk.createOrbisRuntime({
+    store: memory,
+    dataDir: dirs.dataDir,
+    workspace: dirs.workspace,
+    defaultModel: 'mock/fast-1',
+    modelRuntimeFactory: makeMockModelRuntimeFactory(),
+    sessionApi: makeMockSessionApi({ behavior: 'reply' }, path.join(dirs.base, 'agent')),
+  });
+  const seen = [];
+  rt.onEvent((ev) => seen.push(ev.t));
+  try {
+    assert.equal(rt.bus, memory.bus, '只给 store 时必须沿用 store.bus，不能另建一条');
+    assert.equal(rt.bots.create({ name: '新同事' }).ok, true);
+    rt.policy.updatePolicy({ dangerous: 'deny' });
+    assert.ok(seen.includes('bot.updated'), `store 发出的事件必须能收到：${seen.join(',')}`);
+    assert.ok(seen.includes('policy.updated'), `store 发出的 policy.updated 必须能收到：${seen.join(',')}`);
+  } finally {
+    await rt.dispose();
+  }
+
+  // ② store 与 bus 不是同一根：明确拒绝，不替调用方猜
+  const other = createBus();
+  const memory2 = createStore({ memory: true, bus: createBus(), dataDir: dirs.dataDir });
+  await assert.rejects(
+    () => sdk.createOrbisRuntime({
+      store: memory2,
+      bus: other,
+      dataDir: dirs.dataDir,
+      workspace: dirs.workspace,
+      modelRuntimeFactory: makeMockModelRuntimeFactory(),
+      sessionApi: makeMockSessionApi({ behavior: 'reply' }, path.join(dirs.base, 'agent')),
+    }),
+    (err) => err?.code === 'E_INVALID_ARGUMENT',
+    'store.bus 与传入的 bus 不同时必须报 E_INVALID_ARGUMENT',
+  );
 });
 
 // ---------------------------------------------------------------- ④ modelRuntime
@@ -336,6 +397,67 @@ await test('tools：不传时工具集与之前完全一致（基线快照）', 
 });
 
 // ---------------------------------------------------------------- 回归：六类全关
+
+await test('tools：只读策略下注入的 bash 与宿主工具都被拦掉（注入不是绕过策略的后门）', async () => {
+  const dirs = makeDirs('tools-readonly');
+  const state = { behavior: 'reply' };
+  const hostTool = {
+    name: 'host_write_probe',
+    description: '宿主注入的写工具',
+    parameters: { type: 'object', properties: {} },
+    async execute() {
+      return { content: [] };
+    },
+  };
+  const rt = await sdk.createOrbisRuntime({
+    dataDir: dirs.dataDir,
+    workspace: dirs.workspace,
+    policy: { dangerous: 'deny' },
+    defaultModel: 'mock/fast-1',
+    modelRuntimeFactory: makeMockModelRuntimeFactory(),
+    sessionApi: makeMockSessionApi(state, path.join(dirs.base, 'agent')),
+    customTools: [hostTool],
+    tools: ['bash'],
+  });
+  try {
+    await rt.askMain('跑一轮');
+    const opts = state.sessionOptions?.at(-1);
+    assert.ok(opts, '应该建过会话');
+    assert.equal(opts.tools.includes('bash'), false, '只读策略下注入的 bash 必须被拦');
+    assert.equal(
+      opts.customTools.some((t) => t.name === 'host_write_probe'),
+      false,
+      '只读策略下注入的写工具必须被拦',
+    );
+  } finally {
+    await rt.dispose();
+  }
+});
+
+await test('tools：传非数组 → E_INVALID_ARGUMENT（不静默当空数组）', async () => {
+  const dirs = makeDirs('tools-bad');
+  const base = {
+    dataDir: dirs.dataDir,
+    workspace: dirs.workspace,
+    modelRuntimeFactory: makeMockModelRuntimeFactory(),
+    sessionApi: makeMockSessionApi({ behavior: 'reply' }, path.join(dirs.base, 'agent')),
+  };
+  await assert.rejects(
+    () => sdk.createOrbisRuntime({ ...base, customTools: { name: 'x' } }),
+    (err) => err?.code === 'E_INVALID_ARGUMENT',
+    'customTools 不是数组必须报错',
+  );
+  await assert.rejects(
+    () => sdk.createOrbisRuntime({ ...base, tools: 'bash' }),
+    (err) => err?.code === 'E_INVALID_ARGUMENT',
+    'tools 不是数组必须报错',
+  );
+  await assert.rejects(
+    () => sdk.createOrbisRuntime({ ...base, customTools: [{ notATool: true }] }),
+    (err) => err?.code === 'E_INVALID_ARGUMENT',
+    'customTools 里没有 name 的项必须报错',
+  );
+});
 
 await test('六类全不传：默认路径照旧（自建 store/bus/modelRuntime，modelRuntimeFactory 被调）', async () => {
   const dirs = makeDirs('all-default');
