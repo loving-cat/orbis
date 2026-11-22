@@ -88,6 +88,33 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/pack-windows-test.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/pack-windows-setup-test.ps1
 
+  sdk-types:
+    name: SDK types + examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package.json
+      - name: Install server deps (with dev)
+        working-directory: server
+        # typescript 在 devDependencies 里（运行时不需要），所以这个 job 不能 --omit=dev
+        run: npm install --no-audit --no-fund
+      - name: Generate declarations from JSDoc
+        working-directory: server
+        # T2.2：types/ 是生成物、不入库，发布时由 prepack 重新生成
+        run: npm run types
+      - name: Type-check examples against the generated types
+        working-directory: server
+        # T2.2 的验收就是这条：examples/ 里写错字段名 → 这里红
+        run: npm run check:types
+      - name: Examples smoke (offline, no API key)
+        working-directory: server
+        # T2.8：每个示例都真跑一遍（tests/all.mjs 里也有一份，这里单独跑是为了锁住 dev 依赖环境）
+        run: node tests/sdk-examples.mjs
+
   native:
     name: native launcher (windows)
     runs-on: windows-latest

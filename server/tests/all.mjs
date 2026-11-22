@@ -161,6 +161,7 @@ const TESTS = [
   'sdk-errors',
   'sdk-lifecycle',
   'sdk-injection',
+  'sdk-examples',
   'storage-retention',
   'storage-housekeeping',
   'sdk-contract',

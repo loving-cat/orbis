@@ -47,12 +47,78 @@ import {
 import { clearSettleTimers } from '../runner/run-settled.js';
 
 /**
+ * 构造一个 runtime 的选项（T2.2 类型约定）。
+ *
+ * ★ 这里是**同一份契约的第二份写法**（第一份是 docs/SDK.md 的表格）。
+ *   两份都必须改：文档给不会读 d.ts 的人，typedef 给 IDE 与 `tsc --noEmit`。
+ *   `tests/sdk-injection.mjs` 把每一类都搂了一遍 —— 改契约而没改类型
+ *   会在 examples 的 `tsc --noEmit` 上暴露。
+ *
+ * @typedef {object} OrbisRuntimeOptions
+ * @property {string} [dataDir] 数据目录（默认跟随 `ORBIS_HOME` / 平台用户目录）
+ * @property {string} [workspace] 工作目录（bot 读写文件、执行命令的根）
+ * @property {string} [userName] 界面上“那个人”的名字
+ * @property {Record<string, any>} [config] `createConfig()` 的整份配置，或按字段覆盖
+ * @property {import('../store.js').Store} [store] Store 实现；`memory: true` 的不落盘
+ * @property {object} [bus] 共享事件总线（传了 store 时应当就是 `store.bus`）
+ * @property {object} [modelGroupStore] 注入模型组存储
+ * @property {object} [modelRuntime] 已建好的模型运行时实例（跳过自建）
+ * @property {() => Promise<object>} [modelRuntimeFactory] 自己造模型运行时的工厂
+ * @property {object} [sessionApi] 底层 pi 会话 API 的注入点（测试与高级宿主用）
+ * @property {(defaults: Record<string, any>) => object} [resourceLoader] 资源加载器工厂，每次建会话调一次
+ * @property {object[]} [customTools] 追加的工具对象（`defineTool` 产出）
+ * @property {string[]} [tools] 追加启用的内置工具名
+ * @property {string} [secretsKey] 连接凭据加密密钥（不传则从 dataDir 读取/新建）
+ * @property {Record<string, any>} [policy] 全局策略覆盖（`{ dangerous: 'deny' }` = 只读）
+ * @property {object[]} [modelGroups] 要 upsert 的模型组
+ * @property {string} [defaultModel] 默认模型 slug（`provider/id`）
+ * @property {boolean} [memory] 全内存模式：不建目录、不落盘
+ * @property {boolean|string} [runStatsFile] 运行统计文件；`false` / `''` = 不落盘
+ * @property {boolean} [taskIntake] 接单功能开关
+ * @property {boolean} [enableAutomations] 是否启动定时任务调度器
+ * @property {boolean} [installGrantGate] 是否装授权门（默认装）
+ * @property {boolean} [inheritHostProviders] 是否继承宿主 pi 的 provider
+ * @property {boolean} [autoProbe] 是否自动探活模型端点
+ * @property {boolean} [lessonReflect] 是否开启经验复盘
+ */
+
+/**
+ * 一个运行中的 runtime（`services` / `bots` / `rooms` 等门面是动态生成的，统一记作 any）。
+ *
+ * @typedef {object} OrbisRuntime
+ * @property {ReturnType<typeof createConfig>} config
+ * @property {import('../store.js').Store} store
+ * @property {import('../model-groups.js').ModelGroupStore} modelGroups
+ * @property {any} bus
+ * @property {any} runner
+ * @property {string} generation 本次运行的标记（事件里带，便于区分多个 runtime）
+ * @property {any} services
+ * @property {any} bots
+ * @property {any} rooms
+ * @property {any} models
+ * @property {any} automations
+ * @property {any} capabilities
+ * @property {any} policy
+ * @property {any} lessons 经验库读写（propose 永远只产 candidate）
+ * @property {(fn: (ev: any) => void) => (() => void)} onEvent 订阅事件，返回退订函数
+ * @property {(roomId: string, text: string, opts?: Record<string, any>) => Promise<any>} send
+ * @property {(text: string, opts?: Record<string, any>) => Promise<any>} askMain
+ * @property {(args: Record<string, any>) => Promise<any>} runBotOnce
+ * @property {(roomId: string, opts?: Record<string, any>) => Promise<any>} abort
+ * @property {(roomId: string) => Promise<any>} reset
+ * @property {() => Promise<{ok: boolean, already?: boolean, failed?: object[]}>} dispose
+ */
+
+/**
  * 构造一个运行中的 runtime。
  *
  * ★ 初始化中途失败必须把已经起来的东西收回去（T2.4）：`grantGate.start()` 起的
  *   定时器、`store` 的落盘节流、`bus` 的监听……不回收的话，调用方 catch 掉异常后
  *   进程里还留着定时器（宿主的服务看起来"跑完了但退不出去"）。
  *   所以这里只负责"建"，失败清理统一在手这个包装里做（逆序）。
+ *
+ * @param {OrbisRuntimeOptions} [options]
+ * @returns {Promise<OrbisRuntime>}
  */
 export async function createOrbisRuntime(options = {}) {
   /** @type {Array<() => void>} */
@@ -87,6 +153,11 @@ function resolveConfig(options, memory) {
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
     autoProbe: options.autoProbe ?? base.autoProbe ?? false,
     lessonReflect: options.lessonReflect ?? base.lessonReflect ?? false,
+    // ★ `defaultModel` 必须在 `runner.init()` 之前就进 config：
+    //   init 里“有没有默认模型”是拿 config.model / store 里的值判的。
+    //   否则宿主传了 defaultModel 的第一次启动会先打一行
+    //   “没有可用模型”再转头把首选项设上 —— 用的人会以为配错了。
+    ...(options.defaultModel !== undefined ? { model: options.defaultModel } : {}),
     // 内存模式连目录都不建 —— 否则“一个字节都不写盘”就只是口号
     ensureDirs: !memory,
     serverBoot: false,
@@ -620,3 +691,12 @@ export {
   PiBotClient,
   createPiBotClient,
 };
+
+/**
+ * 定义工具参数的 schema 构造器（`Type.Object({ ... })`）。
+ *
+ * 为什么不要求宿主自己去装 typebox：`defineTool()` 的参数就是 typebox 的
+ * `TSchema`，而版本必须和 pi 内部那个**同一个**（两份 typebox 的 schema
+ * 互不认）。从这里拿，宿主装的版本就一定对得上。
+ */
+export { Type } from 'typebox';

@@ -92,6 +92,19 @@ await runtime.dispose(); // 清空会话、停掉定时器与总线监听，事�
 - `tools` / `customTools` 必须是数组（`customTools` 每项要带 `name`），否则 `E_INVALID_ARGUMENT` —— 与 `resourceLoader` 一致，不静默当空数组。
 - `customTools` / `tools` 追加进来的东西**要走同一道角色与 policy 过滤** —— 往只读角色的会话里塞写工具会被挡掉，注入不是绕过策略的后门。
 
+### 类型（TypeScript）
+
+声明文件由 **JSDoc 生成**（`server/tsconfig.types.json` → `server/types/`，不入库，`npm run types` 随时重生），`exports` 每一项都带了 `types`，所以 `import { createOrbisRuntime } from 'orbis-agent/sdk'` 开箱就有类型：
+
+```ts
+import { createOrbisRuntime, defineTool, Type } from 'orbis-agent/sdk';
+import type { OrbisRuntime, OrbisRuntimeOptions } from 'orbis-agent/sdk';
+```
+
+- `OrbisRuntimeOptions` / `OrbisRuntime` 是手写的 JSDoc typedef（`src/sdk/index.js`），**与本文表格是同一份契约的两种写法**，改一边必须改另一边。
+- `defineTool()` 的 `parameters` 要 typebox 的 `TSchema`，所以 `Type` 由 SDK 重导出 —— 宿主不用自己装 typebox（版本必须与 pi 内部那个一致）。
+- 门禁：`npm run check:types` 用 `tsc --noEmit` 检查 `examples/sdk/`，改错字段名会在 CI 上红（`.github/workflows/ci.yml` 的 `sdk-types` job）。
+
 ---
 
 ## 三、远程调用已运行的 Orbis 服务端（`orbis-agent/client`）

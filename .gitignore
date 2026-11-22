@@ -14,6 +14,11 @@ id_rsa
 id_ed25519
 # 运行时数据（会话、消息、上传、模型探活缓存）
 server/data/
+# SDK 示例运行时数据（examples/sdk/* 默认把状态写在这里）
+.orbis-demo/
+server/.orbis-demo/
+# 由 JSDoc 生成的类型（`npm run types`，T2.2）
+server/types/
 # 构建产物
 app/build/
 app/.dart_tool/

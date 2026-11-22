@@ -6,11 +6,26 @@
   "description": "Orbis: Multi-Agent Foundation & Jarvis Runtime",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/sdk/index.js",
-    "./sdk": "./src/sdk/index.js",
-    "./client": "./src/sdk/client.js",
-    "./capabilities": "./src/capabilities.js",
-    "./server": "./src/index.js"
+    ".": {
+      "types": "./types/sdk/index.d.ts",
+      "default": "./src/sdk/index.js"
+    },
+    "./sdk": {
+      "types": "./types/sdk/index.d.ts",
+      "default": "./src/sdk/index.js"
+    },
+    "./client": {
+      "types": "./types/sdk/client.d.ts",
+      "default": "./src/sdk/client.js"
+    },
+    "./capabilities": {
+      "types": "./types/capabilities.d.ts",
+      "default": "./src/capabilities.js"
+    },
+    "./server": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    }
   },
   "bin": {
     "orbis-server": "./src/index.js",
@@ -24,7 +39,10 @@
     "relay": "node src/relay-server.js",
     "relay-agent": "node src/relay-agent.js",
     "test:relay": "node tests/relay.mjs && node tests/relay-limits.mjs",
-    "build:desktop-mac": "bash ../scripts/build-desktop-mac.sh"
+    "build:desktop-mac": "bash ../scripts/build-desktop-mac.sh",
+    "types": "tsc -p tsconfig.types.json",
+    "check:types": "tsc -p tsconfig.examples.json",
+    "examples": "node examples/sdk/01-minimal.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -35,8 +53,13 @@
     "mammoth": "^1.13.0",
     "pdf-parse": "^2.4.5",
     "qrcode": "^1.5.4",
+    "typebox": "^1.3.27",
     "undici": "^7.16.0",
     "ws": "^8.18.0",
     "xlsx": "^0.18.5"
-  }
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "types": "./types/sdk/index.d.ts"
 }

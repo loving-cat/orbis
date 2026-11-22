@@ -7,11 +7,26 @@
       "node": ">=22"
     },
     "exports": {
-      ".": "./src/sdk/index.js",
-      "./sdk": "./src/sdk/index.js",
-      "./client": "./src/sdk/client.js",
-      "./capabilities": "./src/capabilities.js",
-      "./server": "./src/index.js"
+      ".": {
+        "types": "./types/sdk/index.d.ts",
+        "default": "./src/sdk/index.js"
+      },
+      "./sdk": {
+        "types": "./types/sdk/index.d.ts",
+        "default": "./src/sdk/index.js"
+      },
+      "./client": {
+        "types": "./types/sdk/client.d.ts",
+        "default": "./src/sdk/client.js"
+      },
+      "./capabilities": {
+        "types": "./types/capabilities.d.ts",
+        "default": "./src/capabilities.js"
+      },
+      "./server": {
+        "types": "./types/index.d.ts",
+        "default": "./src/index.js"
+      }
     },
     "bin": {
       "orbis-server": "./src/index.js",
@@ -29,6 +44,7 @@
       "OrbisError": "function",
       "PiBotClient": "function",
       "TOOL_SPECS": "object",
+      "Type": "object",
       "asOrbisError": "function",
       "auditCapabilities": "function",
       "createBus": "function",
@@ -54,6 +70,7 @@
       "OrbisError": "function",
       "PiBotClient": "function",
       "TOOL_SPECS": "object",
+      "Type": "object",
       "asOrbisError": "function",
       "auditCapabilities": "function",
       "createBus": "function",

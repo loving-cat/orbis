@@ -1,0 +1,17 @@
+{
+  "//": "示例的类型门（T2.2）：查的是**SDK 契约有没有漂**（改字段名 → 示例红），不是示例内部的类型洁癖，所以关掉 noImplicitAny。",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "lib": ["es2023"],
+    "strict": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["examples/**/*.mjs"]
+}
