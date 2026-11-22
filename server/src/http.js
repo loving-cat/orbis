@@ -773,11 +773,14 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
       }
       if (pathname === '/api/audit/summary' && req.method === 'GET') {
         try {
+          // 过滤参数与 /api/audit 一面对齐（少给一个就会让“汇总”和“明窦”对不上）
           const q = {
             roomId: url.searchParams.get('roomId') || undefined,
             botId: url.searchParams.get('botId') || undefined,
             action: url.searchParams.get('action') || undefined,
             result: url.searchParams.get('result') || undefined,
+            code: url.searchParams.get('code') || undefined,
+            grantId: url.searchParams.get('grantId') || undefined,
             from: url.searchParams.get('from') || undefined,
             to: url.searchParams.get('to') || undefined,
           };

@@ -14,7 +14,7 @@
  *      预览必须说清"这个人是复用的现成的"，否则用户以为会新建一个。
  */
 
-import { toolsForPolicy } from './role-tools.js';
+import { isLeadOfRoom, toolsForPolicy } from './role-tools.js';
 
 /**
  * 预览一个将要创建的部门。
@@ -44,7 +44,10 @@ export function previewDepartment(input = {}, opts = {}) {
 
   const name = String(input?.name ?? '').trim();
   if (!name) return fail('部门要有名字');
-  const members = (Array.isArray(input?.members) ? input.members : []).filter((m) => m && String(m.name ?? '').trim());
+  // 名字统一 trim：后面按名字匹配负责人、判重名，全靠它
+  const members = (Array.isArray(input?.members) ? input.members : [])
+    .filter((m) => m && String(m.name ?? '').trim())
+    .map((m) => ({ ...m, name: String(m.name).trim() }));
   if (!members.length) return fail('至少要有一个人');
   if (maxMembers && members.length > maxMembers) return fail(`人太多了（上限 ${maxMembers}）`);
 
@@ -56,20 +59,36 @@ export function previewDepartment(input = {}, opts = {}) {
   /**
    * 老大按名字匹配；匹配不上退回第一个人（与 `createDepartment` 一致）。
    * 这里必须显式告诉用户"没匹配上、退回了谁" —— 否则他以为自己指定的人在场。
+   *
+   * ★ 比较前两边都 `.trim()`：模板里 `" 审查组长 "` 这种人眼看不出来的空格，
+   *   会让“名字对不上”变成一个全员不匹配的诡异预览。
    */
-  const wantedLead = input?.lead ? String(input.lead) : null;
+  const wantedLead = input?.lead ? String(input.lead).trim() : null;
   const matchedLead = wantedLead ? members.find((m) => m.name === wantedLead) : null;
   const leadFallback = Boolean(wantedLead) && !matchedLead;
   if (leadFallback) {
     warnings.push(`指定的负责人「${wantedLead}」不在成员里，会退回第一个人（${members[0].name}）`);
   }
-  const effectiveLeadName = matchedLead?.name ?? (wantedLead ? members[0].name : members[0].name);
+  const effectiveLeadName = matchedLead?.name ?? members[0].name;
   if (!wantedLead) warnings.push(`没指定负责人，会默认由第一个人（${members[0].name}）带`);
+
+  /**
+   * 负责人到底算不算：**直接问 `role-tools.js`**，不在这里重写规则。
+   *
+   * ★ 它里面有一条很容易漏：`isLeadOfRoom()` 要求群成员 ≥ 2 ——
+   *   单人部门谁都不是负责人，工具按普通成员算。预览必须跟真实行为一致，
+   *   否则用户看到“这个人有 lead 的工具”，建出来却没有（或者反过来）。
+   */
+  const syntheticRoom = {
+    kind: 'group',
+    botIds: members.map((m) => m.name),
+    leadBotId: effectiveLeadName,
+  };
 
   const seen = new Set();
   const out = members.map((m) => {
-    const memberName = String(m.name).trim();
-    const isLead = memberName === effectiveLeadName;
+    const memberName = m.name;
+    const isLead = isLeadOfRoom(syntheticRoom, memberName);
     const tools = isLead ? leadToolsResolved : baseline;
     const existing = byName.get(memberName) ?? null;
     if (existing) warnings.push(`「${memberName}」已经存在，会直接复用（不会新建一个人）`);
@@ -90,7 +109,9 @@ export function previewDepartment(input = {}, opts = {}) {
     };
   });
 
-  if (out.length === 1) warnings.push('只有一个人：部门群里没人可协作，普通私聊更合适');
+  if (out.length === 1) {
+    warnings.push('只有一个人：部门群里没人可协作，普通私聊更合适（也不会按负责人那套算工具）');
+  }
   if (out.some((m) => m.tools.includes('bash') || m.tools.includes('write'))) {
     warnings.push('这个部门里有人能跑命令 / 写文件：开之前确认你真的要给他们这个能力');
   }

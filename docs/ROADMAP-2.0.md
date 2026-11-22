@@ -116,7 +116,7 @@ Phase 3 ──► 依赖 Phase 1/2 全部合并（否则删完兼容层还要再
 | **T1.2** | 🟡 C2 告警已落地（`resolveHomeDir` 命中旧目录时提醒一次，含“跑 orbis migrate”指引）；2.0 删回退 + `orbis migrate` 命令待 Phase 3（`migration-report.json` 待新增） | `brand-deprecation.mjs` BD-8/BD-9/BD-10：旧目录沿用且提醒一次；新旧都在时用新目录不提醒；迁移后旧目录仍在 |
 | **T1.3a** | ✅ **已发版**（`v1.7.1` 2026-11-20）：`app/lib/api.dart` 全切 `x-orbis-client` / `-nonce` / `-channel`（常量收口 `Api.nonceHeader` / `Api.channelHeader`）；1.7.0 服务端本就双读 | `app/test/api_client_header_test.dart` 锁死新头名与全部写路径；`local_nonce_test.dart` 改看新头 |
 | **T1.3b** | 🟡 **告警已落地**：`server/src/http.js` 新增 `DEPRECATED_HEADER` —— 只用旧头时回 `x-orbis-deprecated: <旧头名>`（两个都带则不打标）；2.0 删旧头待 Phase 3 | `local-csrf.mjs` 21/21：新头直用、旧头可用但贴弃用头、两个都带不打标；缺头 403 报错指向正式名 |
-| **T1.4** | C4：删 `createPiBotRuntime` / `PiBotClient` / `createPiBotClient` / `bin.pi-bot-server` | 契约快照测试必须显式删这几行才变绿；`npm exec orbis-server` 仍可用 |
+| **T1.4** | C4：删 `createPiBotRuntime` / `PiBotClient` / `createPiBotClient` / `bin.pi-bot-server`，**并同步删掉 `scripts/legacy-allowlist.json` 里那 3 条 permanent**（它们只为「别名必须原样拼出」而存在，留一天就永久绕过 `--strict`） | 契约快照测试必须显式删这几行才变绿；`npm exec orbis-server` 仍可用；`permanent` 里不再有这三个名字 |
 | **T1.5** | C5：`pi-bot.config.json` 读旧写新；`PI_BOT_SECRET_KEY` 改 `ORBIS_SECRET_KEY`（同值迁移） | 老配置文件存在时能读出同一份模型配置；新写入只产生新名 |
 | **T1.6** | C6：**永久双播**。mDNS 同时 announce `orbis.host` 与 `pibot.host`，probe 两个类型都听；TLS 证书加 `orbis.local` SAN，旧 CN 保留 | 1.7.1 App 能发现并连上 2.0 服务端（真机，挂 #31/#32 一起验） |
 | **T1.7** | C7：`pibot-sandbox.exe` → `orbis-sandbox.exe`；`PIBOT_SANDBOX_EXE` 兼容读一个周期 | 打包脚本单测跟改；`check-launcher-version` 仍绿 |
@@ -323,7 +323,7 @@ v1 草案把它改成「蒸馏即自动注入 + 事后点『记错了』」，�
 | ✅ **1.7.1**（已发布 2026-11-20） | ① C1/C2 弃用告警 + 旧头回 `x-orbis-deprecated` ② **`app/lib/api.dart` 切 `x-orbis-*`**（解开 C3 ↔ C6 矛盾） | 现有 5 守卫全绿；1.7.1 App ↔ 1.7.0 服务端配对通过 |
 | **2.0.0-alpha.1** | Phase 0 完成 + lessons v2 字段与边骨架（**蒸馏仍产 candidate**） | 现有 lessons 测试全绿 + 契约快照上线 |
 | **2.0.0-alpha.2** | SIM-Lite 全链路（族归因 + 边 + 推荐排序 + `runtime.lessons`），**评审门禁仍是 candidate→active，默认关闭自动晋升** | 五条红线（I0–I5）+ 新增 e2e |
-| **2.0.0-beta.1** | Phase 2 基座化收口（types / 注入点 / 发布 / examples / 稳定性文档） | `npm pack` 干净安装可跑 |
+| **2.0.0-beta.1**（本次发版） | Phase 2 基座化收口（types / 注入点 / 发布 / examples / 稳定性文档）；**分发只走 tarball**：`orbis-agent-2.0.0-beta.1.tgz` 与各平台产物一起挂 Pre-release，**不发 npmjs.org**（D5：2.1 再公开） | `npm pack` 干净安装可跑（`check:pack-install`）；tgz sha256 写进 release notes |
 | **2.0.0-rc.1** | Phase 3 清债全删 + 迁移命令 | `check-legacy` 白名单清零 |
 | **2.0.0** | GA + 破坏性变更公告 + 配对问答表 | **1.7.1+** 客户端 ↔ 2.0 服务端真机配对通过（C6） |
 

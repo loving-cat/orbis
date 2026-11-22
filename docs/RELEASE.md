@@ -208,6 +208,59 @@ npm publish --tag alpha      # 预发布一律用 dist-tag，不要抢 latest（
 - 体积上限写在 `scripts/check-pack.mjs`（解包 12MB / 压缩 4MB）。要调大先说清
   “这次多出来的是什么”，别直接改数字。
 
+### `v2.0.0-beta.1` 发版清单（2026-11-22 起）
+
+> 与 alpha.1 的差别只有一条：**多一个 npm 包的 tgz 产物**。
+> ⚠️ **暂不推 npmjs.org**（ROADMAP §7 D5：2.0 先走 tarball / 私有验证，2.1 再公开）。
+> 所以这一步没有 `npm publish`，只有 `npm pack` + 把 tgz 挂到 Pre-release 上。
+
+```bash
+# 0. 版本号已 bump（两处必须一致，且都过 version.mjs 的正则）
+#    server/package.json → 2.0.0-beta.1
+#    app/pubspec.yaml    → 2.0.0-beta.1+25
+
+# 1. 五守卫 + 全量测试
+cd server && node tests/all.mjs            # 期望 173/173
+cd .. && node scripts/check-style.mjs && node scripts/check-legacy.mjs   && node scripts/check-spec-progress.mjs && node scripts/check-secrets.mjs
+cd server && node scripts/check-consistency.mjs && node scripts/check-capability-drift.mjs
+
+# 2. SDK 侧门禁（需要 devDependencies）
+npm install && npm run types && npm run check:types && node tests/sdk-examples.mjs
+
+# 3. 许可证（要 app 的 package_config，先 flutter pub get）
+cd ../app && flutter pub get && cd ..
+node scripts/check-licenses.mjs --check
+
+# 4. 发布包体检 + 干净容器验收
+cd server && npm run check:pack && npm run check:pack-install
+
+# 5. 打出要交付的 tgz（★ 不是 npm publish）
+npm pack                      # → orbis-agent-2.0.0-beta.1.tgz
+shasum -a 256 orbis-agent-2.0.0-beta.1.tgz   # Windows: certutil -hashfile ... SHA256
+
+# 6. 提交 + 打 tag + 推（tag 必须是纯 semver）
+git commit -am "chore(release): 2.0.0-beta.1"
+git tag v2.0.0-beta.1
+git push origin main v2.0.0-beta.1
+
+# 7. 平台产物（从 tag 对应的提交构建）
+powershell -File scripts/pack-windows.ps1 -WithNode -Zip   # setup.exe + zip
+node scripts/pack-android.mjs                              # apk
+# macOS DMG 在 Mac 上、同一个 tag commit 上补：
+#   ./scripts/pack-macos.sh
+
+# 8. Pre-release（alpha/beta/rc → ★必须勾 --prerelease）
+gh release create v2.0.0-beta.1 --prerelease --title "Orbis v2.0.0-beta.1"   --notes-file <说明>   orbis-windows-v2.0.0-beta.1-setup.exe orbis-windows-v2.0.0-beta.1.zip   orbis-android-v2.0.0-beta.1.apk orbis-agent-2.0.0-beta.1.tgz
+#   DMG 等 Mac 端补齐后增量挂到同一个 release（见下面 §5 多平台增量）
+```
+
+alpha.1 的教训（这次照做）：
+
+- **tgz 必须在干净 clone 上打**：`prepack` 负责重建 `types/` 并复制 `LICENSE` / `docs/SDK.md`，
+  少一步打出来就缺文件（`check:pack-install` 会先删盘上副本再测，就是为了抓这个）；
+- **tgz 不进 git**：`server/*.tgz` 已在 `.gitignore` 里，交付走 release 附件；
+- **tag 与 commit 的对应关系要写进 release notes**，否则 mac 端补 DMG 时不知道从哪构建。
+
 ### 预发布版的三个“不能用完整版本号”的地方
 
 完整版本（`2.0.0-alpha.1`）只用在：tag / 资产名 / 服务端 API 返回 / 界面展示。

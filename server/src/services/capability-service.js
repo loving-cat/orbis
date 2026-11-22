@@ -37,6 +37,7 @@ export function createCapabilityService({ store, runner = null }) {
         filter: {
           roomId: filter.roomId ?? null, botId: filter.botId ?? null,
           action: filter.action ?? null, result: filter.result ?? null,
+          code: filter.code ?? null, grantId: filter.grantId ?? null,
           from: fromMs, to: toMs, order,
         },
       };

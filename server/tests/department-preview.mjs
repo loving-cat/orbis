@@ -153,5 +153,39 @@ await test('服务层：按 templateId 预览模板', async () => {
   assert.equal(missing.code, 'TEMPLATE_NOT_FOUND');
 });
 
+await test('名字带空格：先 trim 再匹配负责人（不能让全员都不匹配）', () => {
+  const input = {
+    name: '  测试组  ',
+    lead: ' 组长 ',
+    members: [{ name: ' 组长 ' }, { name: ' 组员 ' }],
+  };
+  const p = previewDepartment(input, { leadTools: LEAD_TOOLS, memberTools: MEMBER_TOOLS });
+  assert.equal(p.ok, true);
+  assert.equal(p.room.name, '测试组');
+  assert.equal(p.room.leadName, '组长');
+  assert.equal(p.room.leadFallback, false, `不该退回：${p.warnings.join(' | ')}`);
+  assert.equal(p.members.find((m) => m.name === '组长').role, 'lead');
+  assert.equal(p.members.find((m) => m.name === '组员').role, 'member');
+});
+
+await test('单人部门：按 isLeadOfRoom 的规则，不按负责人那套算工具', () => {
+  const p = previewDepartment(
+    { name: '一个人', members: [{ name: '独苗' }] },
+    { leadTools: LEAD_TOOLS, memberTools: MEMBER_TOOLS },
+  );
+  const only = p.members[0];
+  assert.equal(only.role, 'member', '成员 <2 时谁都不是负责人（role-tools.js 的规则）');
+  assert.deepEqual(only.tools, [...MEMBER_TOOLS], '工具要按普通成员算');
+  assert.deepEqual(only.added, []);
+  assert.ok(p.warnings.some((w) => w.includes('只有一个人')), p.warnings.join(' | '));
+});
+
+await test('多人部门：负责人仍然拿 lead 工具（单人的特殊化不能波及多人）', () => {
+  const p = previewDepartment(template, { leadTools: LEAD_TOOLS, memberTools: MEMBER_TOOLS });
+  const lead = p.members.find((m) => m.name === '审查组长');
+  assert.equal(lead.role, 'lead');
+  assert.deepEqual(lead.added, ['list_bots', 'dispatch_bot']);
+});
+
 console.log(`\ndepartment-preview: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
