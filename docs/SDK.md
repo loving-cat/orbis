@@ -92,6 +92,13 @@ await runtime.dispose(); // 清空会话、停掉定时器与总线监听，事�
 - `tools` / `customTools` 必须是数组（`customTools` 每项要带 `name`），否则 `E_INVALID_ARGUMENT` —— 与 `resourceLoader` 一致，不静默当空数组。
 - `customTools` / `tools` 追加进来的东西**要走同一道角色与 policy 过滤** —— 往只读角色的会话里塞写工具会被挡掉，注入不是绕过策略的后门。
 
+### 会话文件（可移植）
+
+会话是**一条 `(房间, Bot)` 一份的 JSONL 文件**，格式与接线见
+[`docs/SDK-SESSION-FORMAT.md`](SDK-SESSION-FORMAT.md)：文件在 `<dataDir>/sessions/`，
+`state.json` 的 `sessions["<roomId>:<botId>"]` 存它的绝对路径；
+`runtime.store.setSessionFile(roomId, botId, file)` 这一行就能接上**外部造好的**会话。
+
 ### 类型（TypeScript）
 
 声明文件由 **JSDoc 生成**（`server/tsconfig.types.json` → `server/types/`，不入库，`npm run types` 随时重生），`exports` 每一项都带了 `types`，所以 `import { createOrbisRuntime } from 'orbis-agent/sdk'` 开箱就有类型：

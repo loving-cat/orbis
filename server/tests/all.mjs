@@ -162,6 +162,7 @@ const TESTS = [
   'sdk-lifecycle',
   'sdk-injection',
   'sdk-examples',
+  'sdk-session-format',
   'storage-retention',
   'storage-housekeeping',
   'sdk-contract',
