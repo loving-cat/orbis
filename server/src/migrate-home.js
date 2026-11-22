@@ -59,24 +59,47 @@ export function hasLegacyData(dir) {
 }
 
 /**
- * 复制一个条目（目录或文件），**不覆盖已存在的**。
- * @returns {'copied'|'kept'|'missing'}
+ * 复制一个条目（目录或文件），**永不覆盖已存在的文件**。
+ *
+ * ★ 目录必须**递归合并**，不能"目标目录已存在就整棵跳过"：
+ *   用户可能先不小心起过一次 2.0（于是目标里已经有空的 `rooms/` / `sessions/` /
+ *   `uploads/`），这时整棵跳过等于**聊天记录一条都不搬**，而 `--force` 也救不回来。
+ *
+ * @returns {'copied'|'merged'|'kept'|'missing'}
+ *   copied = 目标原本没有，整棵复制；merged = 目标已有目录，补了缺的文件；
+ *   kept = 目标已有同名文件（不覆盖）；missing = 来源没有。
  */
 function copyEntry(from, to, { dryRun = false } = {}) {
   if (!fs.existsSync(from)) return 'missing';
-  if (fs.existsSync(to)) return 'kept';
-  if (dryRun) return 'copied';
-  fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.cpSync(from, to, {
-    recursive: true,
+
+  const srcStat = fs.statSync(from);
+  const dstExists = fs.existsSync(to);
+
+  if (!srcStat.isDirectory()) {
+    // 文件：目标已有就保留（永不覆盖）
+    if (dstExists) return 'kept';
+    if (dryRun) return 'copied';
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+    const st = fs.statSync(from);
+    fs.utimesSync(to, st.atime, st.mtime);
+    return 'copied';
+  }
+
+  // 目录
+  const dstIsDir = dstExists && fs.statSync(to).isDirectory();
+  if (dstExists && !dstIsDir) return 'kept'; // 同名文件挡着，别硬写
+  if (dryRun) return dstIsDir ? 'merged' : 'copied';
+  if (!dstIsDir) fs.mkdirSync(to, { recursive: true });
+
+  let wrote = false;
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
     // 上传分片的半成品（`_` 开头）不复制：它们只对当时那个进程有意义
-    filter: (src) => !path.basename(src).startsWith('_'),
-    // ★ 永不覆盖：--force 也只补齐缺的（见文件头第 3 条）
-    force: false,
-    errorOnExist: false,
-    preserveTimestamps: true,
-  });
-  return 'copied';
+    if (entry.name.startsWith('_')) continue;
+    const r = copyEntry(path.join(from, entry.name), path.join(to, entry.name), { dryRun });
+    if (r === 'copied' || r === 'merged') wrote = true;
+  }
+  return dstIsDir && wrote ? 'merged' : (dstIsDir ? 'kept' : 'copied');
 }
 
 /**
@@ -129,11 +152,13 @@ export function migrateHome({ from, to, force = false, dryRun = false, log = () 
   }
 
   const copied = [];
+  const merged = [];
   const kept = [];
   const skipped = [];
   for (const name of ENTRIES) {
     const result = copyEntry(path.join(base.from, name), path.join(base.to, name), { dryRun });
     if (result === 'copied') copied.push(name);
+    else if (result === 'merged') merged.push(name);
     else if (result === 'kept') kept.push(name);
     else skipped.push(name);
   }
@@ -169,6 +194,7 @@ export function migrateHome({ from, to, force = false, dryRun = false, log = () 
     to: base.to,
     at: new Date(now()).toISOString(),
     copied,
+    merged,
     kept,
     skipped,
     configs,

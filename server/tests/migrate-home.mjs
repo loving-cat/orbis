@@ -20,6 +20,7 @@ import path from 'node:path';
 import {
   MIGRATION_REPORT, migrateHome, hasLegacyData, CONFIG_RENAMES,
 } from '../src/migrate-home.js';
+import { LEGACY_HOME_DIR_NAME } from '../src/user-dirs.js';
 
 
 let pass = 0;
@@ -39,7 +40,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-migrate-'));
 
 /** 造一个"1.7 老用户"的数据目录 */
 function makeLegacy(tag) {
-  const dir = path.join(root, tag, 'pi-bot', 'data');
+  const dir = path.join(root, tag, LEGACY_HOME_DIR_NAME, 'data');
   fs.mkdirSync(path.join(dir, 'rooms'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'taskruns'), { recursive: true });
@@ -47,12 +48,12 @@ function makeLegacy(tag) {
 
   const sessionFile = path.join(dir, 'sessions', 's1.jsonl');
   fs.writeFileSync(sessionFile, '{"type":"session","version":3}\n');
-  fs.writeFileSync(path.join(root, tag, 'pi-bot', 'data', 'rooms', 'dm.json'), '[]');
+  fs.writeFileSync(path.join(root, tag, LEGACY_HOME_DIR_NAME, 'data', 'rooms', 'dm.json'), '[]');
   fs.writeFileSync(path.join(dir, 'taskruns', 't1.json'), '{"version":1}');
   fs.writeFileSync(path.join(dir, 'model-groups.json'), '{"version":1,"groups":[]}');
-  fs.writeFileSync(path.join(dir, 'pi-bot.config.json'), '{"providers":{}}');
+  fs.writeFileSync(path.join(dir, CONFIG_RENAMES[0].from), '{"providers":{}}');
   // 上传半成品：不该被搬
-  fs.writeFileSync(path.join(root, tag, 'pi-bot', 'data', '_partial.tmp'), 'x');
+  fs.writeFileSync(path.join(root, tag, LEGACY_HOME_DIR_NAME, 'data', '_partial.tmp'), 'x');
   fs.writeFileSync(
     path.join(dir, 'state.json'),
     JSON.stringify({ version: 4, bots: {}, rooms: {}, sessions: { 'dm:chief': sessionFile } }, null, 2),
@@ -224,6 +225,75 @@ test('CLI：目标已有数据时返回 1 并在 stderr 说清原因', () => {
   assert.equal(res.status, 1);
   assert.match(res.stderr, /已经有数据/);
   assert.match(res.stderr, /--force/);
+});
+
+test('★ 目标已有空目录时仍然递归合并（不能整棵跳过，否则聊天记录一条都不搬）', () => {
+  const { dataDir } = makeLegacy('merge');
+  const to = target('merge');
+  // 模拟“用户先起过一次 2.0”：目标里已有空 rooms/ 与一个不该被覆盖的文件
+  fs.mkdirSync(path.join(to, 'rooms'), { recursive: true });
+  fs.writeFileSync(path.join(to, 'rooms', 'keep.json'), '["新目录里自己的消息"]');
+
+  const r = migrateHome({ from: dataDir, to, force: true });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(r.merged.includes('rooms') || r.copied.includes('rooms'), 'rooms 应记为合并/复制');
+  assert.ok(fs.existsSync(path.join(to, 'rooms', 'dm.json')), '旧房间文件必须补上');
+  assert.equal(
+    fs.readFileSync(path.join(to, 'rooms', 'keep.json'), 'utf8'),
+    '["新目录里自己的消息"]',
+    '已有文件永远不覆盖',
+  );
+});
+
+test('★ 目录合并对 dry-run 也成立（要能提前看清会补哪些）', () => {
+  const { dataDir } = makeLegacy('merge-dry');
+  const to = target('merge-dry');
+  fs.mkdirSync(path.join(to, 'rooms'), { recursive: true });
+  const r = migrateHome({ from: dataDir, to, dryRun: true });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(r.merged.includes('rooms'), `dry-run 应报"合并 rooms"，实际 ${JSON.stringify(r.merged)}`);
+});
+
+test('★ 配置迁移后落在 dataDir 里，providers 优先读新名字那份', async () => {
+  const { dataDir } = makeLegacy('provider-config');
+  const to = target('provider-config');
+  const r = migrateHome({ from: dataDir, to, force: true });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(fs.existsSync(path.join(to, 'orbis.config.json')), '迁移后应存在 <dataDir>/orbis.config.json');
+
+  const { pickLocalConfigFile } = await import('../src/providers.js');
+  const picked = pickLocalConfigFile({ dataDir: to, pkgRoot: path.join(root, 'provider-config', 'pkg') });
+  assert.equal(picked, path.join(to, 'orbis.config.json'), 'dataDir 里的新名字要优先于安装目录');
+});
+
+test('配置查找顺序：dataDir 新名 > dataDir 旧名 > pkgRoot 新名 > pkgRoot 旧名', async () => {
+  const { pickLocalConfigFile } = await import('../src/providers.js');
+  const base = path.join(root, 'pick-order');
+  const dataDir = path.join(base, 'data');
+  const pkgRoot = path.join(base, 'pkg');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(pkgRoot, { recursive: true });
+  const write = (dir, name) => fs.writeFileSync(path.join(dir, name), '{}');
+
+  write(pkgRoot, CONFIG_RENAMES[0].from);
+  assert.equal(pickLocalConfigFile({ dataDir, pkgRoot }), path.join(pkgRoot, CONFIG_RENAMES[0].from), '只有安装目录的旧名');
+
+  write(pkgRoot, 'orbis.config.json');
+  assert.equal(pickLocalConfigFile({ dataDir, pkgRoot }), path.join(pkgRoot, 'orbis.config.json'), '安装目录新名 > 旧名');
+
+  write(dataDir, CONFIG_RENAMES[0].from);
+  assert.equal(pickLocalConfigFile({ dataDir, pkgRoot }), path.join(dataDir, CONFIG_RENAMES[0].from), 'dataDir 旧名 > pkgRoot 新名');
+
+  write(dataDir, 'orbis.config.json');
+  assert.equal(pickLocalConfigFile({ dataDir, pkgRoot }), path.join(dataDir, 'orbis.config.json'), 'dataDir 新名最高');
+});
+
+test('CLI：--from / --to 缺值或被吃成别的选项 → 报错，不当成目录', async () => {
+  const { parseArgs } = await import('../src/migrate-cli.js');
+  assert.match(parseArgs(['--from', '--dry-run']).error ?? '', /--from 后面要跟/);
+  assert.match(parseArgs(['--to']).error ?? '', /--to 后面要跟/);
+  assert.match(parseArgs(['--from=']).error ?? '', /--from 后面要跟/);
+  assert.equal(parseArgs(['--from', 'a', '--to', 'b']).error, undefined);
 });
 
 console.log(`\nmigrate-home: ${pass} 通过 / ${fail} 失败`);

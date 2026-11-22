@@ -26,7 +26,7 @@ import 'package:pi_bot/pair_request.dart';
   return (statusOf: fn, calls: () => calls);
 }
 
-final _ticket = PairRequestTicket(id: 'a' * 32, baseUrl: 'http://192.168.1.7:8787', serverName: 'pi-bot');
+final _ticket = PairRequestTicket(id: 'a' * 32, baseUrl: 'http://192.168.1.7:8787', serverName: 'Orbis');
 
 Future<void> _noSleep(Duration _) async {}
 
@@ -34,7 +34,7 @@ void main() {
   test('电脑上点允许 → approved 且带回 token', () async {
     final seq = _sequence([
       {'status': 'pending'},
-      {'status': 'approved', 'token': 't_abc', 'serverName': 'pi-bot', 'workspace': '/w'},
+      {'status': 'approved', 'token': 't_abc', 'serverName': 'Orbis', 'workspace': '/w'},
     ]);
     final result = await awaitApproval(ticket: _ticket, statusOf: seq.statusOf, sleep: _noSleep);
     expect(result.status, PairApprovalStatus.approved);

@@ -17,16 +17,29 @@ import { userDataPaths } from './user-dirs.js';
 /** 解析 `--key value` / `--flag`（不引第三方依赖，参数就这几个） */
 export function parseArgs(argv = []) {
   const opts = { from: null, to: null, force: false, dryRun: false, json: false, help: false };
+  /**
+   * 取一个选项的值。下一个参数是空 / 以 `-` 开头（那是另一个选项）或缺席时，
+   * 直接报错 —— 否则 `--from --dry-run` 会把 `--dry-run` 吃成目录名，
+   * 然后在"旧目录不存在"上白跑一次，用户还以为自己写对了。
+   */
+  const takeValue = (name, raw) => {
+    const value = raw === undefined || raw === null ? '' : String(raw).trim();
+    if (!value || value.startsWith('-')) {
+      opts.error = `${name} 后面要跟一个目录路径（拿到的是 ${value ? `「${value}」` : '空'}）`;
+      return null;
+    }
+    return value;
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = String(argv[i]);
-    if (arg === '--from') opts.from = argv[++i] ?? null;
-    else if (arg === '--to') opts.to = argv[++i] ?? null;
+    if (arg === '--from') opts.from = takeValue('--from', argv[++i]);
+    else if (arg === '--to') opts.to = takeValue('--to', argv[++i]);
     else if (arg === '--force') opts.force = true;
     else if (arg === '--dry-run' || arg === '-n') opts.dryRun = true;
     else if (arg === '--json') opts.json = true;
     else if (arg === '--help' || arg === '-h') opts.help = true;
-    else if (arg.startsWith('--from=')) opts.from = arg.slice('--from='.length);
-    else if (arg.startsWith('--to=')) opts.to = arg.slice('--to='.length);
+    else if (arg.startsWith('--from=')) opts.from = takeValue('--from', arg.slice('--from='.length));
+    else if (arg.startsWith('--to=')) opts.to = takeValue('--to', arg.slice('--to='.length));
     else if (arg.trim()) opts.error = `看不懂的参数：${arg}`;
   }
   return opts;

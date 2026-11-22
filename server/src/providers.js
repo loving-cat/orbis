@@ -72,6 +72,37 @@ function clineProviderConfig(cfg) {
   };
 }
 
+/**
+ * 挑第一个存在的本地 provider 配置文件（读旧写新，顺序见 loadExtraProviders 里那段注释）。
+ *
+ * 单独一个函数是为了能单测"迁移完之后到底读的是哪一份" —— 这件事出过错：
+ * 提示说 migrate 会复制，而读取只认安装目录，等于复制了没人读。
+ *
+ * @param {{dataDir?:string, pkgRoot?:string}} cfg
+ * @returns {string|null}
+ */
+export function pickLocalConfigFile(cfg = {}) {
+  const NEW = 'orbis.config.json';
+  const OLD = 'pi-bot.config.json';
+  const dirs = [cfg.dataDir, cfg.pkgRoot].filter(Boolean);
+  for (const dir of dirs) {
+    const file = path.join(dir, NEW);
+    if (fs.existsSync(file)) return file;
+  }
+  for (const dir of dirs) {
+    const file = path.join(dir, OLD);
+    if (!fs.existsSync(file)) continue;
+    noticeBrandDeprecation({
+      kind: 'file',
+      from: OLD,
+      to: NEW,
+      hint: '把文件改成新名字即可（内容不用动）；`orbis migrate` 会顺带复制一份',
+    });
+    return file;
+  }
+  return null;
+}
+
 /** 返回 { providerId: ProviderConfigInput } */
 export function loadExtraProviders({
   config: cfg = defaultConfig,
@@ -83,22 +114,17 @@ export function loadExtraProviders({
   const resolvedAgentDir = agentDir || defaultAgentDir();
 
   if (includeHost !== false) {
-    // 1) 服务器自带配置
-    const orbisFile = path.join(cfg.pkgRoot, 'orbis.config.json');
-    const legacyFile = path.join(cfg.pkgRoot, 'pi-bot.config.json');
-    // 读旧写新（T1.5）：旧文件还能读，但提醒一次并指向新名字。
-    // 本项目从不回写配置文件 —— “写新”是指新文档/新示例/`orbis migrate` 都用新名字。
-    const useLegacy = !fs.existsSync(orbisFile) && fs.existsSync(legacyFile);
-    if (useLegacy) {
-      noticeBrandDeprecation({
-        kind: 'file',
-        from: path.basename(legacyFile),
-        to: path.basename(orbisFile),
-        hint: '把文件改成新名字即可（内容不用动）；`orbis migrate` 会顺带复制一份',
-      });
-    }
-    const localFile = useLegacy ? legacyFile : orbisFile;
-    const local = readJson(localFile, null);
+    // 1) 部署方自带的 provider 配置
+    //
+    // 查找顺序（先用户目录、后安装目录 —— 用户的覆盖部署方的）：
+    //   <dataDir>/orbis.config.json → <dataDir>/pi-bot.config.json
+    //   → <pkgRoot>/orbis.config.json → <pkgRoot>/pi-bot.config.json
+    //
+    // ★ 为什么 dataDir 排前面：`orbis migrate` 把旧配置复制成
+    //   `<dataDir>/orbis.config.json`，只看 pkgRoot 的话等于"搬过来了却不认"。
+    //   安装目录那份留给"部署方预置"。
+    const localFile = pickLocalConfigFile(cfg);
+    const local = localFile ? readJson(localFile, null) : null;
     if (local?.providers && typeof local.providers === 'object') {
       Object.assign(out, local.providers);
       log(`📦 从 ${path.basename(localFile)} 载入 ${Object.keys(local.providers).length} 个 provider`);

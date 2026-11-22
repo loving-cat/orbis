@@ -55,9 +55,9 @@ test('新旧数据目录：<根>/<名字>/data，两级都要对（迁移搬的�
   const p = userDataPaths({ platform: 'linux', env: {}, homedir: '/home/you' });
   const base = path.join('/home/you', '.local', 'share');
   assert.equal(p.base, base);
-  assert.equal(p.legacyHome, path.join(base, 'pi-bot'));
+  assert.equal(p.legacyHome, path.join(base, LEGACY_HOME_DIR_NAME));
   assert.equal(p.targetHome, path.join(base, 'orbis'));
-  assert.equal(p.legacy, path.join(base, 'pi-bot', 'data'));
+  assert.equal(p.legacy, path.join(base, LEGACY_HOME_DIR_NAME, 'data'));
   assert.equal(p.target, path.join(base, 'orbis', 'data'));
 });
 

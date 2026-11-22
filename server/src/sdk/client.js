@@ -45,7 +45,6 @@ export class OrbisClient {
   async request(method, pathname, { body, noncePurpose = null, headers = {} } = {}) {
     const reqHeaders = {
       'x-orbis-client': this.clientName,
-      'x-orbis-client': this.clientName,
       ...headers,
     };
     if (this.token) reqHeaders.authorization = `Bearer ${this.token}`;

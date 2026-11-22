@@ -38,7 +38,7 @@ function harness({ ttlMs = REQUEST_TTL_MS } = {}) {
       issued.push(name);
       return { token: `tok-${issued.length}`, device: { id: `d_${issued.length}`, name } };
     },
-    describeServer: () => ({ serverName: 'pi-bot', workspace: '/work' }),
+    describeServer: () => ({ serverName: 'Orbis', workspace: '/work' }),
   });
   return {
     requests,
@@ -88,7 +88,7 @@ test('电脑上点了允许 → 轮询拿到 token，而且只有一次', () => 
   const first = h.requests.poll(view.id, { ip: '192.168.1.30' }).view;
   assert.equal(first.status, 'approved');
   assert.equal(first.token, 'tok-1');
-  assert.equal(first.serverName, 'pi-bot');
+  assert.equal(first.serverName, 'Orbis');
   assert.equal(first.workspace, '/work');
 
   const second = h.requests.poll(view.id, { ip: '192.168.1.30' }).view;

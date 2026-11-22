@@ -30,16 +30,68 @@
       "reason": "Dart 包名声明（pubspec.yaml）"
     },
     {
-      "pattern": "'pi-bot'",
-      "reason": "旧数据目录名与旧证书 CN 的**常量值本身**（1.x 升级、迁移命令、证书回归都要用它）；只在常量定义/断言里出现，不是新文案"
-    },
-    {
       "pattern": "pi-bot.config.json",
       "reason": "旧配置文件名的常量（C5 读旧写新：迁移命令要按这个名字找文件），2.1 之后才可能彻底消失"
     },
     {
       "pattern": "CN=pi-bot",
       "reason": "旧证书 CN 的回归断言（1.x 客户端按它认证书；SAN 里另有 orbis.local）"
+    },
+    {
+      "pattern": "LEGACY_SLUG = 'pi-bot'",
+      "reason": "旧 slug 常量的**定义**（兼容 1.x 的头/目录/包名都要它，2.1 前不删）"
+    },
+    {
+      "pattern": "LEGACY_HOME_DIR_NAME = 'pi-bot'",
+      "reason": "旧数据目录名的**定义**（`orbis migrate` 与服务端回退判定都靠它）"
+    },
+    {
+      "pattern": "stateDirNameLegacy = 'pi-bot'",
+      "reason": "App 侧旧状态目录名常量（日志/pid 文件位置，挪了老用户会找不到自己的日志）"
+    },
+    {
+      "pattern": "commonName = 'pi-bot'",
+      "reason": "证书签发函数/默认参数的旧 CN（1.x 按它认证书；SAN 里另有 orbis.local）"
+    },
+    {
+      "pattern": "commonName: 'pi-bot'",
+      "reason": "证书测试里显式传旧 CN（回归 `CN=pi-bot` 不被改动）"
+    },
+    {
+      "pattern": "OID.organization, 'pi-bot'",
+      "reason": "证书 subject 的 O 字段（改它等于换一张证书，固定指纹的客户端全部断连）"
+    },
+    {
+      "pattern": "path.join(base, 'pi-bot')",
+      "reason": "弃用/回退测试里构造旧目录（2.0 删回退时连测试一起改）"
+    },
+    {
+      "pattern": "path.basename(picked), 'pi-bot'",
+      "reason": "旧目录回退的断言（同上）"
+    },
+    {
+      "pattern": "LEGACY_SLUG, 'pi-bot'",
+      "reason": "旧 slug 常量值的断言"
+    },
+    {
+      "pattern": "LEGACY_HOME_DIR_NAME, 'pi-bot'",
+      "reason": "旧目录名常量值的断言"
+    },
+    {
+      "pattern": "stateDirNameLegacy, 'pi-bot'",
+      "reason": "App 旧状态目录名常量值的断言"
+    },
+    {
+      "pattern": "expect(name, 'pi-bot'",
+      "reason": "Dart 测试里旧目录名的断言"
+    },
+    {
+      "pattern": "endsWith('pi-bot')",
+      "reason": "Dart 测试里旧目录名的匹配器"
+    },
+    {
+      "pattern": "contains('pi-bot')",
+      "reason": "Dart 测试里旧目录名的匹配器（检测是否尝试过旧目录）"
     }
   ],
   "entries": [
@@ -385,7 +437,7 @@
     },
     {
       "path": "server/src/relay/server.js",
-      "count": 4
+      "count": 1
     },
     {
       "path": "server/src/role-tools.js",
