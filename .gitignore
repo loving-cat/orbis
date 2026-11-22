@@ -19,6 +19,10 @@ server/data/
 server/.orbis-demo/
 # 由 JSDoc 生成的类型（`npm run types`，T2.2）
 server/types/
+# npm 发布包（T2.6）：prepack 会复制 LICENSE / docs/SDK.md 并打出 .tgz，都不入库
+server/LICENSE
+server/docs/
+server/*.tgz
 # 构建产物
 app/build/
 app/.dart_tool/

@@ -2,7 +2,7 @@
   "package": {
     "name": "orbis-agent",
     "type": "module",
-    "private": true,
+    "private": false,
     "engines": {
       "node": ">=22"
     },
@@ -26,7 +26,8 @@
       "./server": {
         "types": "./types/index.d.ts",
         "default": "./src/index.js"
-      }
+      },
+      "./package.json": "./package.json"
     },
     "bin": {
       "orbis-server": "./src/index.js",

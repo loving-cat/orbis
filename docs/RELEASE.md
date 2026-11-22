@@ -181,6 +181,27 @@ gh release create v2.0.0-alpha.1 --prerelease --title "Orbis v2.0.0-alpha.1" \
   dist/orbis-macos-v2.0.0-alpha.1.dmg dist/orbis-android-v2.0.0-alpha.1.apk
 ```
 
+### npm 包（`orbis-agent`，T2.6）
+
+SDK 是**另一个发布物**：桌面/安卓的安装包和 npm 包可以各自发布，但版本号同源
+（都是 `server/package.json`）。发之前跑这三条：
+
+```bash
+cd server
+npm install            # 要 devDependencies（typescript）
+npm run check:pack     # files 白名单 / 体积上限 / exports.types 指向
+npm run check:pack-install   # 空目录 npm i <tgz>，再跑一遍 examples/sdk/01
+npm publish --tag alpha      # 预发布一律用 dist-tag，不要抢 latest（稳定版仍是 1.7.1）
+```
+
+要点：
+
+- `prepack` 会自动重建 `types/`、复制 `LICENSE` 与 `docs/SDK.md` —— 这三个都不入库；
+- `files` 白名单是**白名单**，新加的运行时目录（比如新的子包）要显式加，否则装出来少文件；
+- `exports` 每一项都必须带 `types`，否则 IDE 里拿不到类型；`./package.json` 必须可达；
+- 体积上限写在 `scripts/check-pack.mjs`（解包 12MB / 压缩 4MB）。要调大先说清
+  “这次多出来的是什么”，别直接改数字。
+
 ### 预发布版的三个“不能用完整版本号”的地方
 
 完整版本（`2.0.0-alpha.1`）只用在：tag / 资产名 / 服务端 API 返回 / 界面展示。

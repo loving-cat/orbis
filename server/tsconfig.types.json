@@ -14,5 +14,5 @@
     "strict": false,
     "types": []
   },
-  "include": ["src/sdk/**/*.js"]
+  "include": ["src/sdk/**/*.js", "src/index.js"]
 }

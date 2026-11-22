@@ -114,6 +114,17 @@ jobs:
         working-directory: server
         # T2.8：每个示例都真跑一遍（tests/all.mjs 里也有一份，这里单独跑是为了锁住 dev 依赖环境）
         run: node tests/sdk-examples.mjs
+      - name: Third-party license check
+        # 随包分发的依赖里有 GPL/AGPL 就是事故（第 #37 项的欠账）
+        run: node scripts/check-licenses.mjs --check
+      - name: Release package shape (files / size / exports.types)
+        working-directory: server
+        # T2.6：`files` 白名单漏文件、多打杂物、exports.types 指错，都在这条上红
+        run: npm run check:pack
+      - name: Clean-container install (npm pack → npm i → example 01)
+        working-directory: server
+        # T2.6 的验收本体：当成别人，在空目录里装一次再跑一遍示例
+        run: npm run check:pack-install
 
   native:
     name: native launcher (windows)
