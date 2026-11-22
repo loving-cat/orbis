@@ -25,7 +25,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { ENTRIES, MIGRATION_MARKER, isInside, repairSessionRefs } from './data-migration.js';
+import {
+  ENTRIES, MIGRATION_MARKER, NEEDS_MIGRATION_MARKER, isInside, repairSessionRefs,
+} from './data-migration.js';
 
 /** 迁移报告的文件名（放在**新**目录里） */
 export const MIGRATION_REPORT = 'migration-report.json';
@@ -89,8 +91,9 @@ function copyEntry(from, to, { dryRun = false } = {}) {
   // 目录
   const dstIsDir = dstExists && fs.statSync(to).isDirectory();
   if (dstExists && !dstIsDir) return 'kept'; // 同名文件挡着，别硬写
-  if (dryRun) return dstIsDir ? 'merged' : 'copied';
-  if (!dstIsDir) fs.mkdirSync(to, { recursive: true });
+  // ★ dry-run 也要**真的往下走**：只在要不要 mkdir 上分支，
+  //   否则干跑会把“目标里已经有全套文件”说成 merged，让人以为迁完会有东西变。
+  if (!dryRun && !dstIsDir) fs.mkdirSync(to, { recursive: true });
 
   let wrote = false;
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
@@ -99,6 +102,7 @@ function copyEntry(from, to, { dryRun = false } = {}) {
     const r = copyEntry(path.join(from, entry.name), path.join(to, entry.name), { dryRun });
     if (r === 'copied' || r === 'merged') wrote = true;
   }
+  // dstIsDir + 真的补了东西 = merged；目标原本就有、啥也没写 = kept
   return dstIsDir && wrote ? 'merged' : (dstIsDir ? 'kept' : 'copied');
 }
 
@@ -207,6 +211,8 @@ export function migrateHome({ from, to, force = false, dryRun = false, log = () 
   if (!dryRun) {
     fs.mkdirSync(base.to, { recursive: true });
     writeJsonAtomic(reportFile, report);
+    // 清掉启动护栏留下的"需要迁移"标记：迁完了还挂着只会误导 /health
+    fs.rmSync(path.join(base.to, NEEDS_MIGRATION_MARKER), { force: true });
     // 让服务端知道"继续用旧工作目录"（与 data-migration.js 同一个标记文件）
     if (workspace && !fs.existsSync(path.join(base.to, MIGRATION_MARKER))) {
       writeJsonAtomic(path.join(base.to, MIGRATION_MARKER), {

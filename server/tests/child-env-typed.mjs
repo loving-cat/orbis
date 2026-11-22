@@ -92,6 +92,39 @@ await test('★ 假 token 在各类子进程里都读不到', () => {
   }
 });
 
+await test('★ 服务端配置/凭据类变量不泄漏（ORBIS_SEARCH_KEY / ALLOWED_HOSTS / 自定义口令）', () => {
+  // 这几个是 2.0 审查里实际漏出去的形状：名字不像"标准密钥"，但都是凭据或部署信息
+  const probes = {
+    ORBIS_SEARCH_KEY: 'S'.repeat(20),
+    ORBIS_ALLOWED_HOSTS: 'evil.example.com',
+    ORBIS_CUSTOM_PASSWORD: 'P'.repeat(20),
+    PI_CODING_AGENT_DIR: '/home/someone/.pi/agent',
+  };
+  Object.assign(process.env, probes);
+  try {
+    for (const kind of ['mcp', 'bash', 'probe']) {
+      const env = realChildEnv(kind);
+      for (const [name, value] of Object.entries(probes)) {
+        assert.equal(env[name], undefined, kind + ' 不该有 ' + name);
+        assert.ok(!JSON.stringify(env).includes(value), kind + ' 的值泄漏了 ' + name);
+      }
+    }
+  } finally {
+    for (const name of Object.keys(probes)) delete process.env[name];
+  }
+});
+
+await test('★ 严格标记：类型化白名单不会把宿主环境"并"回来', () => {
+  // 这条守的是 marker 语义：buildChildEnv 打的是 strict: 前缀，
+  // 补丁看到它就只能输出清单内的键（以前共用 v1: 会拿 pickWhitelist 打底）
+  const base = buildChildEnv({ kind: 'bash', homeDir: instanceHomeDir(instanceDir), tmpDir: instanceTmpDir(instanceDir) });
+  const marker = String(base.ORBIS_ENV_ALLOW ?? '');
+  assert.ok(marker.startsWith('strict:'), '类型化白名单必须用严格标记，实际：' + marker.slice(0, 12));
+  // 形态是 `strict:<随机 hex>:KEY1,KEY2`：去掉两段前缀再看键名清单
+  const declared = marker.split(':').slice(2).join(':').split(',').filter(Boolean).sort();
+  assert.deepEqual(declared, Object.keys(base).filter((k) => k !== 'ORBIS_ENV_ALLOW').sort());
+});
+
 await test('★ SSH_AUTH_SOCK 在各类子进程里都读不到', () => {
   for (const kind of ['mcp', 'bash', 'probe']) {
     const env = realChildEnv(kind);

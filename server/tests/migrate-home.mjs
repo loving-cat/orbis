@@ -13,6 +13,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,7 @@ import path from 'node:path';
 import {
   MIGRATION_REPORT, migrateHome, hasLegacyData, CONFIG_RENAMES,
 } from '../src/migrate-home.js';
+import { NEEDS_MIGRATION_MARKER } from '../src/data-migration.js';
 import { LEGACY_HOME_DIR_NAME } from '../src/user-dirs.js';
 
 
@@ -63,7 +65,7 @@ function makeLegacy(tag) {
 
 const target = (tag) => path.join(root, tag, 'orbis', 'data');
 
-test('只复制、不删除：旧目录每个文件都还在，新目录拿到同样的内容', () => {
+await test('只复制、不删除：旧目录每个文件都还在，新目录拿到同样的内容', () => {
   const { dataDir } = makeLegacy('copy');
   const before = fs.readdirSync(dataDir).sort();
   const r = migrateHome({ from: dataDir, to: target('copy') });
@@ -77,7 +79,7 @@ test('只复制、不删除：旧目录每个文件都还在，新目录拿到�
   assert.equal(r.legacyUntouched, true);
 });
 
-test('会话引用被改写：state.json 里指到新目录（否则服务端会继续写旧目录）', () => {
+await test('会话引用被改写：state.json 里指到新目录（否则服务端会继续写旧目录）', () => {
   const { dataDir } = makeLegacy('refs');
   const to = target('refs');
   const r = migrateHome({ from: dataDir, to });
@@ -89,7 +91,7 @@ test('会话引用被改写：state.json 里指到新目录（否则服务端会
   assert.ok(fs.existsSync(ref), '改写后的文件必须真的在');
 });
 
-test('幂等：第二次跑返回 already，不重复复制也不覆盖', () => {
+await test('幂等：第二次跑返回 already，不重复复制也不覆盖', () => {
   const { dataDir } = makeLegacy('idem');
   const to = target('idem');
   const first = migrateHome({ from: dataDir, to });
@@ -105,7 +107,7 @@ test('幂等：第二次跑返回 already，不重复复制也不覆盖', () => 
   assert.equal(fs.readFileSync(path.join(to, 'state.json'), 'utf8'), stateBefore);
 });
 
-test('目标已有数据 → 拒绝（TARGET_HAS_DATA），一个文件都不覆盖', () => {
+await test('目标已有数据 → 拒绝（TARGET_HAS_DATA），一个文件都不覆盖', () => {
   const { dataDir } = makeLegacy('occupied');
   const to = target('occupied');
   fs.mkdirSync(to, { recursive: true });
@@ -120,7 +122,7 @@ test('目标已有数据 → 拒绝（TARGET_HAS_DATA），一个文件都不覆
   );
 });
 
-test('--force 只补齐缺失：已有的 state.json 原样保留，缺的条目补上', () => {
+await test('--force 只补齐缺失：已有的 state.json 原样保留，缺的条目补上', () => {
   const { dataDir } = makeLegacy('force');
   const to = target('force');
   fs.mkdirSync(to, { recursive: true });
@@ -136,7 +138,7 @@ test('--force 只补齐缺失：已有的 state.json 原样保留，缺的条目
   );
 });
 
-test('配置文件改名：旧名字 → orbis.config.json（旧文件留在旧目录）', () => {
+await test('配置文件改名：旧名字 → orbis.config.json（旧文件留在旧目录）', () => {
   const { dataDir } = makeLegacy('config');
   const to = target('config');
   const r = migrateHome({ from: dataDir, to });
@@ -148,7 +150,7 @@ test('配置文件改名：旧名字 → orbis.config.json（旧文件留在旧�
   assert.equal(r.configs[0].result, 'copied');
 });
 
-test('工作目录只记指针，不复制；报告与标记里记的是旧路径', () => {
+await test('工作目录只记指针，不复制；报告与标记里记的是旧路径', () => {
   const { dataDir } = makeLegacy('workspace');
   const to = target('workspace');
   const r = migrateHome({ from: dataDir, to });
@@ -162,7 +164,7 @@ test('工作目录只记指针，不复制；报告与标记里记的是旧路�
   assert.equal(marker.workspace, legacyWs, '服务端靠这个标记继续用旧 workspace');
 });
 
-test('dry-run：一个字节都不写', () => {
+await test('dry-run：一个字节都不写', () => {
   const { dataDir } = makeLegacy('dry');
   const to = target('dry');
   const r = migrateHome({ from: dataDir, to, dryRun: true });
@@ -172,7 +174,7 @@ test('dry-run：一个字节都不写', () => {
   assert.equal(fs.existsSync(to), false, 'dry-run 不能建目录');
 });
 
-test('拒绝的几种：没有旧数据 / 同一个目录 / 互为父子', () => {
+await test('拒绝的几种：没有旧数据 / 同一个目录 / 互为父子', () => {
   assert.equal(hasLegacyData(path.join(root, 'nope')), false);
   // 目标不能放在 from 里面，否则先撞的是 NESTED_PATH（那也是对的，只是不是这条要测的）
   assert.equal(
@@ -188,7 +190,7 @@ test('拒绝的几种：没有旧数据 / 同一个目录 / 互为父子', () =>
   assert.equal(migrateHome({ from: inside, to: dataDir }).code, 'NESTED_PATH');
 });
 
-test('CLI：node src/index.js migrate --json 能跑通并返回 0', () => {
+await test('CLI：node src/index.js migrate --json 能跑通并返回 0', () => {
   const { dataDir } = makeLegacy('cli');
   const to = target('cli');
   const res = spawnSync(
@@ -212,7 +214,7 @@ test('CLI：node src/index.js migrate --json 能跑通并返回 0', () => {
   assert.equal(JSON.parse(again.stdout).already, true);
 });
 
-test('CLI：目标已有数据时返回 1 并在 stderr 说清原因', () => {
+await test('CLI：目标已有数据时返回 1 并在 stderr 说清原因', () => {
   const { dataDir } = makeLegacy('cli-refuse');
   const to = target('cli-refuse');
   fs.mkdirSync(to, { recursive: true });
@@ -227,7 +229,7 @@ test('CLI：目标已有数据时返回 1 并在 stderr 说清原因', () => {
   assert.match(res.stderr, /--force/);
 });
 
-test('★ 目标已有空目录时仍然递归合并（不能整棵跳过，否则聊天记录一条都不搬）', () => {
+await test('★ 目标已有空目录时仍然递归合并（不能整棵跳过，否则聊天记录一条都不搬）', () => {
   const { dataDir } = makeLegacy('merge');
   const to = target('merge');
   // 模拟“用户先起过一次 2.0”：目标里已有空 rooms/ 与一个不该被覆盖的文件
@@ -245,7 +247,7 @@ test('★ 目标已有空目录时仍然递归合并（不能整棵跳过，否�
   );
 });
 
-test('★ 目录合并对 dry-run 也成立（要能提前看清会补哪些）', () => {
+await test('★ 目录合并对 dry-run 也成立（要能提前看清会补哪些）', () => {
   const { dataDir } = makeLegacy('merge-dry');
   const to = target('merge-dry');
   fs.mkdirSync(path.join(to, 'rooms'), { recursive: true });
@@ -254,7 +256,7 @@ test('★ 目录合并对 dry-run 也成立（要能提前看清会补哪些）'
   assert.ok(r.merged.includes('rooms'), `dry-run 应报"合并 rooms"，实际 ${JSON.stringify(r.merged)}`);
 });
 
-test('★ 配置迁移后落在 dataDir 里，providers 优先读新名字那份', async () => {
+await test('★ 配置迁移后落在 dataDir 里，providers 优先读新名字那份', async () => {
   const { dataDir } = makeLegacy('provider-config');
   const to = target('provider-config');
   const r = migrateHome({ from: dataDir, to, force: true });
@@ -266,7 +268,7 @@ test('★ 配置迁移后落在 dataDir 里，providers 优先读新名字那份
   assert.equal(picked, path.join(to, 'orbis.config.json'), 'dataDir 里的新名字要优先于安装目录');
 });
 
-test('配置查找顺序：dataDir 新名 > dataDir 旧名 > pkgRoot 新名 > pkgRoot 旧名', async () => {
+await test('配置查找顺序：dataDir 新名 > dataDir 旧名 > pkgRoot 新名 > pkgRoot 旧名', async () => {
   const { pickLocalConfigFile } = await import('../src/providers.js');
   const base = path.join(root, 'pick-order');
   const dataDir = path.join(base, 'data');
@@ -288,12 +290,70 @@ test('配置查找顺序：dataDir 新名 > dataDir 旧名 > pkgRoot 新名 > pk
   assert.equal(pickLocalConfigFile({ dataDir, pkgRoot }), path.join(dataDir, 'orbis.config.json'), 'dataDir 新名最高');
 });
 
-test('CLI：--from / --to 缺值或被吃成别的选项 → 报错，不当成目录', async () => {
+await test('CLI：--from / --to 缺值或被吃成别的选项 → 报错，不当成目录', async () => {
   const { parseArgs } = await import('../src/migrate-cli.js');
   assert.match(parseArgs(['--from', '--dry-run']).error ?? '', /--from 后面要跟/);
   assert.match(parseArgs(['--to']).error ?? '', /--to 后面要跟/);
   assert.match(parseArgs(['--from=']).error ?? '', /--from 后面要跟/);
   assert.equal(parseArgs(['--from', 'a', '--to', 'b']).error, undefined);
+});
+
+test('★ dry-run：目标目录已齐备时如实报 kept（不能一律说 merged）', () => {
+  const { dataDir } = makeLegacy('dry-kept');
+  const to = target('dry-kept');
+  const first = migrateHome({ from: dataDir, to });
+  assert.equal(first.ok, true, first.error);
+  // 第二次得加 --force：目标已经有 state.json（否则会被 TARGET_HAS_DATA 挡住）
+  const dry = migrateHome({ from: dataDir, to, dryRun: true, force: true });
+  assert.equal(dry.ok, true, dry.error);
+  assert.deepEqual(dry.merged, [], '目录已经齐备就不该报 merged，实际 ' + JSON.stringify(dry.merged));
+  assert.ok(dry.kept.includes('rooms'), 'rooms 应报 kept');
+});
+
+test('★ createConfig 真的带 legacyDataDir 字段（漏写会让 /health 永远 false）', async () => {
+  const { createConfig } = await import('../src/config.js');
+  const cfg = createConfig({ serverBoot: false, ensureDirs: false });
+  assert.ok(Object.hasOwn(cfg, 'legacyDataDir'), 'built 里必须有这个字段');
+  assert.equal(cfg.legacyDataDir, null, '非启动路径默认应为 null');
+});
+
+test('★ /health 的 needsMigration 跟着 config.legacyDataDir 走', async () => {
+  const { createHttpServer } = await import('../src/http.js');
+  const { createConfig } = await import('../src/config.js');
+  const base = createConfig({ ensureDirs: false });
+  const runner = {
+    config: { ...base, legacyDataDir: '/old/data' },
+    availableModels: [],
+    modelLabel: () => null,
+    initNote: null,
+  };
+  const server = createHttpServer({ runner, pairing: { list: () => [], claim: () => null } });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    const body = await new Promise((resolve, reject) => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/health' }, (res) => {
+        let text = '';
+        res.on('data', (c) => { text += c; });
+        res.on('end', () => resolve(JSON.parse(text)));
+      });
+      req.on('error', reject);
+    });
+    assert.equal(body.needsMigration, true, '/health 要能告诉界面先跑 orbis migrate');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('★ 迁移成功后清掉 .needs-migration.json（否则 /health 一直提示）', () => {
+  const { dataDir } = makeLegacy('clear-marker');
+  const to = target('clear-marker');
+  fs.mkdirSync(to, { recursive: true });
+  const markerFile = path.join(to, NEEDS_MIGRATION_MARKER);
+  fs.writeFileSync(markerFile, '{"from":"x"}');
+  const r = migrateHome({ from: dataDir, to, force: true });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(fs.existsSync(markerFile), false, '迁完还挂着标记只会误导');
 });
 
 console.log(`\nmigrate-home: ${pass} 通过 / ${fail} 失败`);

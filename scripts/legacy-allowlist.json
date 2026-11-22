@@ -132,10 +132,6 @@
       "count": 2
     },
     {
-      "path": "app/lib/l10n/strings/settings2.dart",
-      "count": 2
-    },
-    {
       "path": "app/lib/main.dart",
       "count": 15
     },
@@ -154,10 +150,6 @@
     {
       "path": "app/lib/open_file.dart",
       "count": 1
-    },
-    {
-      "path": "app/lib/screens/pair_screen.dart",
-      "count": 2
     },
     {
       "path": "app/lib/server/health.dart",
@@ -221,7 +213,7 @@
     },
     {
       "path": "app/test/server_bootstrap_test.dart",
-      "count": 6
+      "count": 4
     },
     {
       "path": "app/test/server_health_test.dart",
@@ -433,7 +425,7 @@
     },
     {
       "path": "server/src/server-main.js",
-      "count": 4
+      "count": 3
     },
     {
       "path": "server/src/tls.js",

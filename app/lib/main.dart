@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:screen_retriever/screen_retriever.dart';
@@ -216,7 +217,9 @@ class _PiBotAppState extends State<PiBotApp> with WidgetsBindingObserver {
     // 监听放在 bootstrap 之前：请求可能在连上 WS 的第一帧就到了。
     _state.addListener(_maybePromptPairRequest);
     _state.bootstrap().then((_) {
-      if (_devUrl.isNotEmpty && _devToken.isNotEmpty && !_state.paired) {
+      // ★ 自动登录只给 debug 构建：`--dart-define` 打进去的 token 会留在发行包里，
+      //   万一有人照着开发文档给正式包传了参数，就等于把凭据写进了安装包。
+      if (kDebugMode && _devUrl.isNotEmpty && _devToken.isNotEmpty && !_state.paired) {
         _state.useToken(_devUrl, _devToken, device: 'dev-shell');
       }
       // 启动完成后查一次更新并提示。延后几秒：让界面先画出来，

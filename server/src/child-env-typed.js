@@ -32,7 +32,7 @@
  */
 
 import { mkdirSync } from 'node:fs';
-import { CHILD_ENV_MARKER, childEnvMarker } from './child-env.js';
+import { CHILD_ENV_MARKER, childEnvMarkerStrict } from './child-env.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -239,7 +239,9 @@ export function buildChildEnv({ kind, homeDir = '', tmpDir = '', extra = null, l
   //   服务端的 spawn 补丁（child-env.js）默认会用"从 process.env 挑白名单"
   //   重建环境 —— 那会把我们精心设的固定 PATH / 实例 HOME / 私有 TMPDIR
   //   全部冲掉。带上标记后补丁只保留这里列出的键，一个不多一个不少。
-  env[CHILD_ENV_MARKER] = childEnvMarker(Object.keys(env));
+  // ★ 严格标记：这份环境是**从空白开始按类型挑出来的**，
+  //   不能再被 spawn 补丁用 `pickWhitelist(process.env)` 灌回一堆宿主变量。
+  env[CHILD_ENV_MARKER] = childEnvMarkerStrict(Object.keys(env));
   return env;
 }
 

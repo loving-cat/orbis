@@ -56,7 +56,18 @@ function isOrbisEntry(args) {
 export const CHILD_ENV_MARKER = 'ORBIS_ENV_ALLOW';
 
 const token = crypto.randomBytes(16).toString('hex');
+/** 「白名单 + 显式项」：`childEnv()` 用（宿主环境里安全的部分可以带上） */
 const markerPrefix = `v1:${token}:`;
+/**
+ * 「**只有**显式项」：`buildChildEnv()`（类型化白名单）用。
+ *
+ * ★ 为什么要分两种：两者原来共用一个 `v1:` 前缀，而 scrub 看到 `v1:` 就会
+ *   `pickWhitelist(process.env)` 打底、再把显式项并上去 —— 类型化白名单精心
+ *   构造的"只给 PATH/HOME/TMPDIR"就这样被**重新灌回**了服务端进程里所有
+ *   "看起来无害"的变量（`ORBIS_ALLOWED_HOSTS` 就是这样漏出去的）。
+ *   严格模式不并任何东西：清单里有什么就是什么。
+ */
+const strictMarkerPrefix = `strict:${token}:`;
 
 const EXACT = new Set([
   'PATH',
@@ -110,6 +121,9 @@ const ORBIS_BLOCKED = new Set([
   'ORBIS_PORT',
   'ORBIS_HOST',
   'ORBIS_HOME',
+  // 检索服务的 key（web_search 用）。名字里带 KEY，isSensitive 也会挡；
+  // 这里显式再列一次：它是"服务端凭据"，不该指望后缀规则兜住。
+  'ORBIS_SEARCH_KEY',
   // ORBIS_WORKSPACE 同属"服务端部署信息"：它暴露 bot 的工作目录在哪，
   // 子进程拿到就能直接去读写那些文件，不必再猜路径。
   'ORBIS_WORKSPACE',
@@ -124,7 +138,15 @@ function isSensitive(name) {
   return upper === 'ORBIS_TOKEN'
     || upper.endsWith('_API_KEY')
     || upper.endsWith('_TOKEN')
-    || upper.endsWith('_SECRET');
+    || upper.endsWith('_SECRET')
+    // ★ 只认 _API_KEY 是不够的：`ORBIS_SEARCH_KEY`、`ACME_KEY`、`DB_PASSWORD`、
+    //   `AWS_CREDENTIALS` 这些一眼是凭据的名字都会漏过去。宁可多挡几个无害的
+    //   （子进程拿不到就去读自己的配置），也不能漏。
+    || upper.endsWith('_KEY')
+    || upper.endsWith('_PASSWORD')
+    || upper.endsWith('_PASSWD')
+    || upper.endsWith('_CREDENTIAL')
+    || upper.endsWith('_CREDENTIALS');
 }
 
 /**
@@ -146,7 +168,11 @@ function isAllowed(name) {
   if (upper.startsWith('XDG_')) return true;
   if (upper.startsWith('GIT_SSH')) return true;
   if (upper.startsWith('SSL_CERT_')) return true;
-  if (upper.startsWith('ORBIS_')) return true;
+  // ★ 2.0：不再"ORBIS_* 一律放行"。
+  //
+  //   那样等于"只要前缀对就给"，每加一个 ORBIS_ 变量都得记得回来补例外清单 ——
+  //   迟早漏（`ORBIS_SEARCH_KEY` 就是这么漏出去的）。现在默认拒绝：
+  //   确实需要让子进程看见的服务端配置走 EXACT 或显式 extra。
   if (upper.endsWith('_PROXY')) return true;
   return false;
 }
@@ -173,11 +199,19 @@ function pickWhitelist(src) {
  * @returns {string[]|null}
  */
 function explicitNames(source) {
-  if (!source || typeof source !== 'object') return null;
-  if (!Object.prototype.hasOwnProperty.call(source, CHILD_ENV_MARKER)) return null;
-  const raw = String(source[CHILD_ENV_MARKER] ?? '');
+  const raw = String(source?.[CHILD_ENV_MARKER] ?? '');
   if (!raw.startsWith(markerPrefix)) return null;
   return raw.slice(markerPrefix.length).split(',').filter(Boolean);
+}
+
+/**
+ * 严格标记里的键名列表（`buildChildEnv` 打的）。
+ * @returns {string[]|null}
+ */
+function strictNames(source) {
+  const raw = String(source?.[CHILD_ENV_MARKER] ?? '');
+  if (!raw.startsWith(strictMarkerPrefix)) return null;
+  return raw.slice(strictMarkerPrefix.length).split(',').filter(Boolean);
 }
 
 /**
@@ -210,6 +244,17 @@ function markerValue(names) {
  */
 export function childEnvMarker(names) {
   return markerValue(Array.isArray(names) ? names : []);
+}
+
+/**
+ * 严格标记：只允许清单里的键，**不**把本进程白名单并进来。
+ *
+ * @param {string[]} names
+ * @returns {string}
+ */
+export function childEnvMarkerStrict(names) {
+  const list = Array.isArray(names) ? names : [];
+  return `${strictMarkerPrefix}${list.join(',')}`;
 }
 
 /**
@@ -260,6 +305,19 @@ export function explicitChildEnv(extra) {
  */
 function scrubEnv(source) {
   const env = source && typeof source === 'object' ? source : process.env;
+  const strict = strictNames(env);
+  if (strict) {
+    // 严格模式：一个字节都不从 process.env 抄
+    /** @type {NodeJS.ProcessEnv} */
+    const only = {};
+    for (const name of strict) {
+      if (!Object.prototype.hasOwnProperty.call(env, name)) continue;
+      const value = env[name];
+      if (value == null) continue;
+      only[name] = String(value);
+    }
+    return only;
+  }
   const names = explicitNames(env);
   if (!names) return pickWhitelist(env);
   const out = pickWhitelist(process.env);
@@ -334,6 +392,17 @@ function scrubPairs(pairs, args) {
     });
   }
   const marker = entries.find((entry) => entry.name === CHILD_ENV_MARKER);
+  // 严格模式：只输出清单内的键（不并 process.env 的白名单）
+  if (marker && marker.value.startsWith(strictMarkerPrefix)) {
+    const allowed = marker.value.slice(strictMarkerPrefix.length).split(',').filter(Boolean);
+    const strictOut = [];
+    for (const name of allowed) {
+      const found = entries.find((entry) => entry.name === name);
+      if (!found) continue;
+      strictOut.push(`${found.name}=${found.value}`);
+    }
+    return withEntryProviderKeys(strictOut, args);
+  }
   const names = marker && marker.value.startsWith(markerPrefix)
     ? marker.value.slice(markerPrefix.length).split(',').filter(Boolean)
     : null;

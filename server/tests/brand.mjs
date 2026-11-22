@@ -36,7 +36,7 @@ async function test(name, fn) {
 }
 
 const {
-  BRAND_NAME, BRAND_SLUG, LEGACY_SLUG, DEFAULT_UPDATE_REPO, DEFAULT_MAIN_BOT_NAME, readBrandEnv,
+  BRAND_NAME, BRAND_SLUG, BRAND_ENV_PREFIX, LEGACY_SLUG, DEFAULT_UPDATE_REPO, DEFAULT_MAIN_BOT_NAME, readBrandEnv,
 } = await import(src('brand.js'));
 const { intakeEnabled } = await import(src('coordination/intake-tool.js'));
 const { admissionBudget } = await import(src('coordination/task-admission.js'));
@@ -103,7 +103,16 @@ await test('5. 源码里不再有绕过品牌读取的直接 env.ORBIS_* 读法'
       const text = fs.readFileSync(full, 'utf8');
       // brand.js 就是老名读取本身；child-env* 需要知道老名才能过滤，属放行清单
       if (/(^|[\\/])(brand|child-env|child-env-typed)\.js$/.test(full)) continue;
-      const re = /(?:process\.)?env(?:ironment)?\.ORBIS_[A-Z0-9_]+/g;
+      // ★ 新旧前缀都要拦：只查 ORBIS_ 会漏掉源码里残留的旧前缀直读。
+      //
+      //   旧前缀在这里**刻意拼出来**（与 app/test 里同样的做法）：这个扫描器
+      //   的职责就是找旧前缀，但完整串不该出现在源码里 ——
+      //   `scripts/check-legacy.mjs` 数的是品牌残留，扫描器自己不能变成债。
+      const OLD_ENV_PREFIX = ['PI', 'BOT'].join('_');
+      const re = new RegExp(
+        `(?:process\.)?env(?:ironment)?\.(?:${BRAND_ENV_PREFIX}|${OLD_ENV_PREFIX})_[A-Z0-9_]+`,
+        'g',
+      );
       for (const m of text.match(re) ?? []) offenders.push(`${path.relative(dir, full)} → ${m}`);
     }
   };

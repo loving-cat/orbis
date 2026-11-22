@@ -2,7 +2,7 @@
 
 > **状态**：草案 **v2** · D1–D5 已拍板（见 §7）；v2 按 review 修正 4 处：SIM-Lite 改为 **lessons v2 演进**、恢复 `candidate → active` 人工门禁、解开 C3 与 C6 的逻辑矛盾、对齐 D3 与里程碑文案
 > **日期**：2026-11-20
-> **对应主干**：`main` @ `f6273bb`（tag `v1.7.0` 之后 6 个提交，CI 7 job 全绿）
+> **对应主干**：`main` @ `1084b50`（tag `v1.7.0` 之后 6 个提交，CI 7 job 全绿）
 > **一句话**：2.0 = 一次**破坏性收尾**（清债）+ 一次**契约冻结**（基座化）+ 一个**核心新特性**（SIM-Lite，**建在已有 lessons 体系上的 v2**）。
 > **关联**：`docs/RELEASE.md`（版本线）、`docs/spec-convergence-v1.md`（1.x 收束账本）、`docs/SPEC-FULL-DUPLEX-V1.md`（已落地的双轨架构）、`docs/SDK.md`（当前 SDK 说明）
 > **维护规则**：本文已列入 `scripts/check-spec-progress.mjs` 的 `LEDGER_FILES` —— 行内反引号里的 commit SHA 与文件路径必须真实存在，**且必须是 git 已跟踪的文件**（本地构建产物不算；2026-11-20 踩过：`server/resources` 下的 exe 本机有、CI 没有）；尚未落地的路径必须在同一行标 `（待新增）` / `（新）` / `❌` / `未开始`。

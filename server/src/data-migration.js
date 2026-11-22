@@ -50,6 +50,14 @@ export const ENTRIES = Object.freeze([
 export const MIGRATION_MARKER = '.migrated-from.json';
 
 /**
+ * “这里有旧数据、需要跑 `orbis migrate`”的标记（2.0 启动护栏写的）。
+ *
+ * 放在这里而不是 config.js：`/health`、迁移命令、诊断脚本都要认同一个文件名，
+ * 而这几处都已经依赖 data-migration。
+ */
+export const NEEDS_MIGRATION_MARKER = '.needs-migration.json';
+
+/**
  * 进程内标记：这次是不是真的在起服务端。
  * config.js 只有看到它才会迁移 / 修复数据目录。放在 globalThis 上、不用环境变量：
  * 环境变量会被子进程继承，这个不会。

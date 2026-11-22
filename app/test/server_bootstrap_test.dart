@@ -39,7 +39,7 @@ void main() {
       expect(
         serverEntryCandidates(
           executable.path,
-          environment: {'PI_BOT_SERVER': outside.path},
+          environment: {'ORBIS_SERVER': outside.path},
           operatingSystem: 'macos',
         ).first,
         outside.path,
@@ -155,7 +155,7 @@ void main() {
         await findNode(
           tmp.path,
           environment: {
-            'PI_BOT_NODE': explicit.path,
+            'ORBIS_NODE': explicit.path,
             'PATH': pathNode.parent.path,
           },
         ),

@@ -32,7 +32,7 @@ const areaSettings2 = StringArea(
         '手机和电脑要在同一个 WiFi 下。\n手机装 Orbis App → 点「配对」→ 填上面的地址和配对码。',
     'settings.connect.manualAddress': '手动填地址',
     'settings.connect.fixedTokenHint':
-        '服务端配的是固定 token（ORBIS_TOKEN / PI_BOT_TOKEN），没有二维码。手机端在「固定 token」页填那个 token 就行。',
+        '服务端配的是固定 token（ORBIS_TOKEN），没有二维码。手机端在「固定 token」页填那个 token 就行。',
     'settings.server.devices': '已连接的设备',
     'settings.server.noDevices': '还没有手机配对过',
     'settings.server.lastSeen': '最后活跃 {time}',
@@ -97,7 +97,7 @@ const areaSettings2 = StringArea(
         'Use this after switching computers or when the code expires',
     'settings.connect.wifiHint': 'Phone and computer must be on the same WiFi.\nInstall the Orbis app on your phone → tap "Scan to pair" → scan the code above.',
     'settings.connect.manualAddress': 'Enter address manually',
-    'settings.connect.fixedTokenHint': 'This server uses a fixed token (ORBIS_TOKEN / PI_BOT_TOKEN), so there is no QR code. Enter that token on the "Fixed token" page in the phone app.',
+    'settings.connect.fixedTokenHint': 'This server uses a fixed token (ORBIS_TOKEN), so there is no QR code. Enter that token on the "Fixed token" page in the phone app.',
     'settings.server.devices': 'Connected devices',
     'settings.server.noDevices': 'No phone has paired yet',
     'settings.server.lastSeen': 'last active {time}',

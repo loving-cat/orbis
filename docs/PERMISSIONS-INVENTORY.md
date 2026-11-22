@@ -56,7 +56,7 @@
 
 `GET /api/{state,policy,bots,rooms,tasks,mcp,sites,skills,hooks,models,...}`
 
-### 已接入（`df549c5`）
+### 已接入（`7716af6`）
 
 `http-admin.js` 把上面「会改状态」那批收成分级表，中间件在鉴权之后统一处理：
 
@@ -156,7 +156,7 @@ System Events 拿不到 CGWindowID，所以是按矩形截；窗口被部分遮�
 
 ### 输入层（P0-3b，按 W2 演进）
 
-- **已落地（W2a / W2b / W2c / W2e，`d3b77fc`）**：单写输入租约 `desktop-lease.js`、用户接管检测 `desktop-takeover.js`、Windows 实现 `desktop-input.js`，并经 `capabilities.js` 接入 `desktop.input`（`risk: critical` / `irreversible: true` / `chiefOnly: true` / `migration: 'never'`）；此外围绕规格 §5.6 延伸出 **T1 独立虚拟桌面** 工具（`desktop-island.js`：`desktop_island_observe` / `desktop_island_launch` / `desktop_island_input`）。
+- **已落地（W2a / W2b / W2c / W2e，`f13b233`）**：单写输入租约 `desktop-lease.js`、用户接管检测 `desktop-takeover.js`、Windows 实现 `desktop-input.js`，并经 `capabilities.js` 接入 `desktop.input`（`risk: critical` / `irreversible: true` / `chiefOnly: true` / `migration: 'never'`）；此外围绕规格 §5.6 延伸出 **T1 独立虚拟桌面** 工具（`desktop-island.js`：`desktop_island_observe` / `desktop_island_launch` / `desktop_island_input`）。
 - **待补（W2d）**：macOS `server/src/desktop-input-mac.js` 仍为空壳（统一返回 `not_platform`，由 `desktop-input-mac.mjs` 13 项守门，详见 #30）；Windows 锁屏/多屏与拖拽实机待补（#31/#32/#33）。
 
 `ego_browser` 是**页面级**（`page.goto`/`page.snapshot`/`page.evaluate`），不是桌面级，不构成 computer use。
@@ -167,8 +167,8 @@ System Events 拿不到 CGWindowID，所以是按矩形截；窗口被部分遮�
 
 1. **授权记录与存储**（规格 §6.1 字段）
 2. **统一执行边界**：一个 `enforce()`，主体/动作/资源/参数 + 每次现查有效性
-3. ~~**把现有唯一的校验点（policy-hook）改成经网关**~~ ✅ 已完成（`b130fc6`）
-4. ~~**HTTP 的危险路由接入网关**（上表「会改状态」那批）~~ ✅ 已完成（`df549c5`）
+3. ~~**把现有唯一的校验点（policy-hook）改成经网关**~~ ✅ 已完成（`9181518`）
+4. ~~**HTTP 的危险路由接入网关**（上表「会改状态」那批）~~ ✅ 已完成（`7716af6`）
 5. ~~**反向用例优先**~~ ✅ 已完成（`grants.mjs` 30 项：来源、子授权扩权、父链撤销、策略版本、世代）
 
 第 3 步刻意不改任何现有行为（默认授权仍等价于今天的 policy），先把「漏掉的入口」变成可测；之后的 Git / computer use 才有地方挂。
@@ -177,15 +177,15 @@ System Events 拿不到 CGWindowID，所以是按矩形截；窗口被部分遮�
 
 | 项 | 状态 | 提交 |
 |---|---|---|
-| 授权模型（`grants.js`）+ 网关（`grant-gate.js`） | ✅ | `b130fc6` |
-| policy-hook 经网关 + 迁移授权（行为不变） | ✅ | `b130fc6` |
-| 桌面观察（`desktop-observe.js` + 两个工具） | ✅ | `c45eb7c` |
-| HTTP 危险路由接网关（`http-admin.js` + 审计） | ✅ | `df549c5` |
-| Git 适配器（P0-6，G0/G1） | ✅ | `f73f3f9` `4db0812` `14eded9` `7e674e9` `f6e8422` |
-| 确认框架（P0-4） | ✅ | `cdb9f5a` |
-| 迁移授权补齐（桌面观察 / push / 世代 / 运行期新 bot） | ✅ | `c8f33f3` `c5da8dc` |
-| 界面：看得到每条授权并收回 | ✅ | `37ed25b` `544bf8f` |
-| 桌面输入（P0-3b：租约/接管/Windows ✅，macOS 空壳） | 🟡 | `d3b77fc`（Windows 已实机，macOS 见 #30） |
+| 授权模型（`grants.js`）+ 网关（`grant-gate.js`） | ✅ | `9181518` |
+| policy-hook 经网关 + 迁移授权（行为不变） | ✅ | `9181518` |
+| 桌面观察（`desktop-observe.js` + 两个工具） | ✅ | `651c5b2` |
+| HTTP 危险路由接网关（`http-admin.js` + 审计） | ✅ | `7716af6` |
+| Git 适配器（P0-6，G0/G1） | ✅ | `ea50cb5` `adc16e1` `d6db726` `1078fe7` `4cd5eb1` |
+| 确认框架（P0-4） | ✅ | `94481f2` |
+| 迁移授权补齐（桌面观察 / push / 世代 / 运行期新 bot） | ✅ | `fd64bf2` `ef9d5fd` |
+| 界面：看得到每条授权并收回 | ✅ | `0d41d3a` `d75106c` |
+| 桌面输入（P0-3b：租约/接管/Windows ✅，macOS 空壳） | 🟡 | `f13b233`（Windows 已实机，macOS 见 #30） |
 
 ### 迁移授权这一块的坑（已修，记在这以免再犯）
 

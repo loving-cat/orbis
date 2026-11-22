@@ -85,20 +85,22 @@ export function pickLocalConfigFile(cfg = {}) {
   const NEW = 'orbis.config.json';
   const OLD = 'pi-bot.config.json';
   const dirs = [cfg.dataDir, cfg.pkgRoot].filter(Boolean);
+  // ★ 顺序是**目录优先**：每个目录里先新名再旧名，然后才去下一个目录。
+  //   反过来（所有目录的新名都排在旧名前）会得到一个很怪的结果：
+  //   用户目录里明明有（更近的）旧名配置，却被安装目录里那份远的新名压住。
+  //   优先级本意是"用户覆盖部署方"。
   for (const dir of dirs) {
     const file = path.join(dir, NEW);
     if (fs.existsSync(file)) return file;
-  }
-  for (const dir of dirs) {
-    const file = path.join(dir, OLD);
-    if (!fs.existsSync(file)) continue;
+    const legacy = path.join(dir, OLD);
+    if (!fs.existsSync(legacy)) continue;
     noticeBrandDeprecation({
       kind: 'file',
       from: OLD,
       to: NEW,
       hint: '把文件改成新名字即可（内容不用动）；`orbis migrate` 会顺带复制一份',
     });
-    return file;
+    return legacy;
   }
   return null;
 }

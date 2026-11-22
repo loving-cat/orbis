@@ -157,9 +157,9 @@ PY
 
 | 步 | 补什么 | 文件 | 项数 | 状态 |
 |---|---|---|---|---|
-| 1 | 命令重放：已应用回放不重复 / 未应用且 sequence 变 → 不确定 / 身份篡改与坏回执 | `tests/task-commands.mjs`（新） | 14 | ✅ `7cd6147` |
-| 2 | 预算：耗尽即停 / 账本才是权威 / 只收紧不放宽 / 退款不退成负数 | `tests/task-budget.mjs`（新） | 15 | ✅ `7088c5a` |
-| 3 | 归约器不变量：暂停阻塞不擦门槛 / 旧版本结果归档 / 事件身份绑定 / 完成候选只认 returned | `tests/task-reduce.mjs`（新） | 16 | ✅ `0483814` |
+| 1 | 命令重放：已应用回放不重复 / 未应用且 sequence 变 → 不确定 / 身份篡改与坏回执 | `tests/task-commands.mjs`（新） | 14 | ✅ `46b2922` |
+| 2 | 预算：耗尽即停 / 账本才是权威 / 只收紧不放宽 / 退款不退成负数 | `tests/task-budget.mjs`（新） | 15 | ✅ `89eb688` |
+| 3 | 归约器不变量：暂停阻塞不擦门槛 / 旧版本结果归档 / 事件身份绑定 / 完成候选只认 returned | `tests/task-reduce.mjs`（新） | 16 | ✅ `a0b1a02` |
 | 4 | 未知副作用：unknown_outcome 不结算不退款 / 结算被拒不退款 / 派发失败才退款 | `tests/run-managed-attempt.mjs`（新） | 10 | ✅ 本提交 |
 | 5 | 撤销与后台句柄：控制事实身份 / 旧版本批准不放行 / 重复消费只一次 / 取消级联不连坐 / 旧句柄标取消 | `tests/task-controls.mjs`（新） | 13 | ✅ 本提交 |
 | 6 | 准入三模式与讨论态不建单：`discussion` / `direct` / `createOnly` / `new` & `existing` / 专家验收 Route 守卫 | `server/tests/task-admission.mjs` | 11 | ✅ W4b 收口 |

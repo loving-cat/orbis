@@ -9,7 +9,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { BRAND_NAME, noticeBrandDeprecation, readBrandEnv } from './brand.js';
-import { migrateLegacyData, migratedWorkspace, repairSessionRefs, SERVER_BOOT } from './data-migration.js';
+import {
+  NEEDS_MIGRATION_MARKER, migrateLegacyData, migratedWorkspace, repairSessionRefs, SERVER_BOOT,
+} from './data-migration.js';
 
 const pkgRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -89,7 +91,7 @@ export function noticeLegacyDataIfAny({ home, base = userDataBaseDir(), log = ()
     try {
       fs.mkdirSync(home, { recursive: true });
       fs.writeFileSync(
-        path.join(home, '.needs-migration.json'),
+        path.join(home, NEEDS_MIGRATION_MARKER),
         JSON.stringify({ from: legacyDir, to: home, at: new Date().toISOString() }, null, 2),
       );
     } catch { /* 标记写不进去不影响主流程，日志已经给过了 */ }
@@ -151,13 +153,16 @@ export function createConfig(overrides = {}) {
   const warn = (msg) => console.warn(msg);
   if (serverBoot === true && !overrideDataDir) {
     try {
+      // ★ 只有“没显式指定 ORBIS_HOME”时才算“默认安装位置”：
+      //   用户自己指了一个目录（多实例 / 诊断 / 容器）时，旧目录跟这次启动**无关** ——
+      //   提示他去迁移、甚至往那个 home 写 `.needs-migration.json`，都是误伤。
       if (!readBrandEnv(env, 'HOME')) {
         const legacy = path.join(pkgRoot, 'data');
         if (migrateLegacyData({ legacy, target: home, log: warn }).migrated) migratedFrom = legacy;
+        legacyDataDir = noticeLegacyDataIfAny({ home, log: warn });
       }
       // state.json 里指向数据目录之外的会话文件，每次启动改回 <数据目录>/sessions。
       repairSessionRefs({ dataDir: home, log: warn });
-      legacyDataDir = noticeLegacyDataIfAny({ home, log: warn });
     } catch (err) {
       console.warn('[config] 数据迁移/修复失败（继续启动，旧目录未动）：', err?.message || err);
     }
@@ -192,6 +197,13 @@ export function createConfig(overrides = {}) {
     workspace,
     /** 本次启动是否从旧目录迁移而来（未迁移为 null） */
     migratedFrom,
+    /**
+     * 旧目录有数据、新目录还没有时的旧目录路径。
+     *
+     * ★ 必须在这里显式列出来（不能只靠上面那个 let）—— `built` 是这个函数唯一的出口，
+     *   漏写一行字段，`/health` 的 `needsMigration` 就永远是 false，界面也就永远不会提醒。
+     */
+    legacyDataDir,
     host: readBrandEnv(env, 'HOST') || '0.0.0.0',
     port: Number(readBrandEnv(env, 'PORT') || 8787),
     serverName: readBrandEnv(env, 'NAME') || BRAND_NAME,

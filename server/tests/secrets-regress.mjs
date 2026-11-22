@@ -452,7 +452,8 @@ await test('新放行的变量会进子进程，云凭证和敏感 ORBIS_ 不进
   try {
     const env = readEnv();
     for (const [name, value] of Object.entries(added)) {
-      if (name.startsWith('AWS_') || name === 'GOOGLE_APPLICATION_CREDENTIALS') {
+      // ORBIS_SEARCH_KEY：名字里带 KEY，是检索服务的凭据 —— 必须挡
+      if (name.startsWith('AWS_') || name === 'GOOGLE_APPLICATION_CREDENTIALS' || name === 'ORBIS_SEARCH_KEY') {
         assert.equal(pick(env, name), undefined, name);
         assert.ok(!JSON.stringify(env).includes(value), name);
       } else {
@@ -474,6 +475,8 @@ await test('新放行的变量会进子进程，云凭证和敏感 ORBIS_ 不进
     assert.equal(env.ORBIS_HOST, undefined, 'ORBIS_HOST 不该传给子进程');
     assert.equal(env.ORBIS_TOKEN, undefined);
     assert.equal(env.ORBIS_SECRET_KEY, undefined);
+    // ★ 2.0 审查修的：`_KEY` 结尾也算凭据（以前只挡 `_API_KEY`）
+    assert.equal(env.ORBIS_SEARCH_KEY, undefined, 'ORBIS_SEARCH_KEY 不该传给子进程');
     // ★ 新增：通往用户凭据代理的 socket 一律不传。
     //   SSH_AUTH_SOCK 是 ssh-agent 的入口，拿到就能用用户的密钥签名；
     //   GPG / DBus / XDG_RUNTIME_DIR 同属"能碰到用户其它进程"的通道。
