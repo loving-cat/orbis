@@ -401,8 +401,8 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
     const r = http.request({
       host: '127.0.0.1', port, path: '/api/confirmations/cf_route_1/decide', method: 'POST',
       headers: {
-        authorization: 'Bearer ' + TOKEN, 'x-pi-bot-client': 'app',
-        'x-pi-bot-channel': channel,
+        authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'app',
+        'x-orbis-channel': channel,
         'content-type': 'application/json', 'content-length': Buffer.byteLength(payload),
       },
     }, (res) => {
@@ -446,8 +446,8 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
     const r = http.request({
       host: '127.0.0.1', port, path: '/api/confirmations/cf_route_read/decide', method: 'POST',
       headers: {
-        authorization: 'Bearer ' + TOKEN, 'x-pi-bot-client': 'app',
-        'x-pi-bot-channel': 'local',   // ← 桌面端
+        authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'app',
+        'x-orbis-channel': 'local',   // ← 桌面端
         'content-type': 'application/json', 'content-length': Buffer.byteLength(payload),
       },
     }, (res) => {
@@ -480,8 +480,8 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
     const r = http.request({
       host: '127.0.0.1', port, path: '/api/confirmations/cf_route_cmd/decide', method: 'POST',
       headers: {
-        authorization: 'Bearer ' + TOKEN, 'x-pi-bot-client': 'app',
-        'x-pi-bot-channel': 'local',
+        authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'app',
+        'x-orbis-channel': 'local',
         'content-type': 'application/json', 'content-length': Buffer.byteLength(payload),
       },
     }, (res) => {

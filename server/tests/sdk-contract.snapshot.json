@@ -31,8 +31,7 @@
     },
     "bin": {
       "orbis": "./src/index.js",
-      "orbis-server": "./src/index.js",
-      "pi-bot-server": "./src/index.js"
+      "orbis-server": "./src/index.js"
     }
   },
   "entries": {
@@ -64,10 +63,6 @@
       "OrbisError": {
         "kind": "function",
         "stability": "stable"
-      },
-      "PiBotClient": {
-        "kind": "function",
-        "stability": "internal"
       },
       "TOOL_SPECS": {
         "kind": "object",
@@ -104,14 +99,6 @@
       "createOrbisRuntime": {
         "kind": "function",
         "stability": "stable"
-      },
-      "createPiBotClient": {
-        "kind": "function",
-        "stability": "internal"
-      },
-      "createPiBotRuntime": {
-        "kind": "function",
-        "stability": "internal"
       },
       "createServices": {
         "kind": "function",
@@ -163,10 +150,6 @@
         "kind": "function",
         "stability": "stable"
       },
-      "PiBotClient": {
-        "kind": "function",
-        "stability": "internal"
-      },
       "TOOL_SPECS": {
         "kind": "object",
         "stability": "beta"
@@ -203,14 +186,6 @@
         "kind": "function",
         "stability": "stable"
       },
-      "createPiBotClient": {
-        "kind": "function",
-        "stability": "internal"
-      },
-      "createPiBotRuntime": {
-        "kind": "function",
-        "stability": "internal"
-      },
       "createServices": {
         "kind": "function",
         "stability": "internal"
@@ -237,17 +212,9 @@
         "kind": "function",
         "stability": "beta"
       },
-      "PiBotClient": {
-        "kind": "function",
-        "stability": "internal"
-      },
       "createOrbisClient": {
         "kind": "function",
         "stability": "stable"
-      },
-      "createPiBotClient": {
-        "kind": "function",
-        "stability": "internal"
       }
     },
     "orbis-agent/capabilities": {

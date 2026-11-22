@@ -102,6 +102,7 @@ const EXACT = new Set([
 const PI_BOT_BLOCKED = new Set([
   'PI_BOT_TOKEN',
   'PI_BOT_SECRET_KEY',
+  'ORBIS_SECRET_KEY',
   // ★ 这三项本身不是密钥，但会告诉子进程"服务端在哪个端口、数据目录在哪"。
   //   bash 工具跑的命令、MCP 子进程、后台任务都能看到进程环境 ——
   //   拿到它们就能直接往服务端发请求、甚至去读数据目录。

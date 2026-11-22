@@ -64,7 +64,7 @@ function call(pathname, method, body, headers = {}) {
         'content-type': 'application/json',
         authorization: 'Bearer ' + token,
         // 改状态的请求必须带客户端自定义头（防跨站），这是另一层，不是本测试重点
-        'x-pi-bot-client': 'test',
+        'x-orbis-client': 'test',
         ...(payload ? { 'content-length': Buffer.byteLength(payload) } : {}),
         ...headers,
       },
@@ -102,15 +102,15 @@ await test('★ 只有 token、没有 nonce → 挂 MCP 被拒 403', async () =>
 
 await test('★ 带正确 nonce → 改策略成功', async () => {
   const { nonce } = issueNonce(NONCE_PURPOSE.POLICY);
-  const r = await call('/api/policy', 'PATCH', { dangerous: 'ask' }, { 'x-pi-bot-nonce': nonce });
+  const r = await call('/api/policy', 'PATCH', { dangerous: 'ask' }, { 'x-orbis-nonce': nonce });
   assert.equal(r.status, 200, JSON.stringify(r.json));
 });
 
 await test('★ nonce 重放 → 第二次 403', async () => {
   const { nonce } = issueNonce(NONCE_PURPOSE.POLICY);
-  const first = await call('/api/policy', 'PATCH', { dangerous: 'ask' }, { 'x-pi-bot-nonce': nonce });
+  const first = await call('/api/policy', 'PATCH', { dangerous: 'ask' }, { 'x-orbis-nonce': nonce });
   assert.equal(first.status, 200);
-  const second = await call('/api/policy', 'PATCH', { dangerous: 'allow' }, { 'x-pi-bot-nonce': nonce });
+  const second = await call('/api/policy', 'PATCH', { dangerous: 'allow' }, { 'x-orbis-nonce': nonce });
   assert.equal(second.status, 403);
   assert.equal(second.json?.reason, 'unknown');
 });
@@ -130,7 +130,7 @@ await test('★ 用途不符的 nonce 不能用（policy 的不能拿去改 MCP�
 });
 
 await test('★ 伪造的 nonce → 403', async () => {
-  const r = await call('/api/policy', 'PATCH', { dangerous: 'allow' }, { 'x-pi-bot-nonce': 'forged-value' });
+  const r = await call('/api/policy', 'PATCH', { dangerous: 'allow' }, { 'x-orbis-nonce': 'forged-value' });
   assert.equal(r.status, 403);
   assert.equal(r.json?.reason, 'unknown');
 });
@@ -149,7 +149,7 @@ await test('申请 nonce 本身需要 token', async () => {
       headers: {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
-        'x-pi-bot-client': 'test',
+        'x-orbis-client': 'test',
       },
     }, (r) => { r.resume(); r.on('end', () => resolve({ status: r.statusCode })); });
     req.on('error', reject);
@@ -167,7 +167,7 @@ await test('★ 正常流程：申请 → 使用 → 成功', async () => {
 
   const r = await call('/api/mcp', 'POST', {
     name: 'fixture_mcp', type: 'stdio', command: '/bin/echo', args: ['hi'], enabled: false,
-  }, { 'x-pi-bot-nonce': issued.json.nonce });
+  }, { 'x-orbis-nonce': issued.json.nonce });
   assert.equal(r.status, 200, JSON.stringify(r.json));
 
   // 再删掉，确认 DELETE 也要 nonce 且能正常工作。
@@ -178,7 +178,7 @@ await test('★ 正常流程：申请 → 使用 → 成功', async () => {
 
   const { nonce } = issueNonce(NONCE_PURPOSE.MCP);
   const del = await call('/api/mcp/' + encodeURIComponent(realId), 'DELETE', undefined,
-    { 'x-pi-bot-nonce': nonce });
+    { 'x-orbis-nonce': nonce });
   assert.equal(del.status, 200, JSON.stringify(del.json));
 });
 

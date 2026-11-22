@@ -30,8 +30,7 @@
   },
   "bin": {
     "orbis": "./src/index.js",
-    "orbis-server": "./src/index.js",
-    "pi-bot-server": "./src/index.js"
+    "orbis-server": "./src/index.js"
   },
   "scripts": {
     "start": "node src/index.js",

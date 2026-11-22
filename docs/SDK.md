@@ -61,7 +61,8 @@ unsub();
 await runtime.dispose(); // 清空会话、停掉定时器与总线监听，事件循环可直接退出
 ```
 
-> 同时保留 `createPiBotRuntime` / `createPiBotClient` 兼容别名，平滑过渡已有调用。
+> 2.0 起旧别名 `createPiBotRuntime` / `createPiBotClient` / `PiBotClient` **已删除**：
+> 迁移就是把 import 换成 `createOrbisRuntime` / `createOrbisClient` / `OrbisClient`（签名一致）。
 
 ### `createOrbisRuntime` 主要字段
 

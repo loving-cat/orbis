@@ -59,7 +59,7 @@ async function call(pathname, { method = 'GET' } = {}) {
   const headers = {
     // 本机请求现在必须带本次启动的 token（见 src/local-token.js）
     authorization: `Bearer ${LOCAL_TOKEN}`,
-    ...(method !== 'GET' ? { 'x-pi-bot-client': 'test' } : {}),
+    ...(method !== 'GET' ? { 'x-orbis-client': 'test' } : {}),
   };
   const res = await fetch(`http://127.0.0.1:${port}${pathname}`, { method, headers });
   return { status: res.status, body: await res.json().catch(() => null) };

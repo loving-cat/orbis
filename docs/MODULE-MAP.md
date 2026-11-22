@@ -13,8 +13,8 @@
 | `config.js` | 配置工厂（`createConfig`）与默认实例；数据目录定位与一次性迁移；优先读取 `ORBIS_*` 环境变量（兼容 `PI_BOT_*`） |
 | `brand.js` | 品牌常量与 `readBrandEnv` 单一真源（`Orbis` / `loving-cat/orbis`） |
 | `bus.js` | 实例级事件总线工厂（`createBus`）与默认总线 |
-| `sdk/index.js` | 进程内 Agent SDK 门面（`createOrbisRuntime` / 兼容别名 `createPiBotRuntime`、能力声明与 `defineTool` 重导出） |
-| `sdk/client.js` | 远程 HTTP + WS 客户端 SDK（`createOrbisClient` / 兼容别名 `createPiBotClient`，自动读取本机 token 与申请 nonce） |
+| `sdk/index.js` | 进程内 Agent SDK 门面（`createOrbisRuntime`、能力声明与 `defineTool` 重导出；2.0 已删旧别名） |
+| `sdk/client.js` | 远程 HTTP + WS 客户端 SDK（`createOrbisClient`，自动读取本机 token 与申请 nonce；2.0 已删旧别名） |
 | `services/*.js` | 领域服务层（`bots`/`rooms`/`models`/`automations`/`capabilities`/`policy`），供 UI/Jarvis/SDK 三端复用 |
 | `capabilities.js` | 能力与权限清单唯一事实源（`ACTIONS`、`TOOL_SPECS`、Jarvis 高危确认判定） |
 | `http.js` | REST 路由（鉴权、房间/消息/bot/任务/定时任务/分片上传/附件/政策） |

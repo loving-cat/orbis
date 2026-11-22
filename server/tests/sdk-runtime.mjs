@@ -196,9 +196,7 @@ await test('SDK-1 package.json exports 自引用可用且 import 阶段零全局
 
   assert.equal(typeof rootPkg.createOrbisRuntime, 'function');
   assert.equal(typeof sdkMod.createOrbisRuntime, 'function');
-  assert.equal(sdkMod.createPiBotRuntime, sdkMod.createOrbisRuntime);
   assert.equal(typeof sdkMod.createOrbisClient, 'function');
-  assert.equal(sdkMod.createPiBotClient, sdkMod.createOrbisClient);
   assert.equal(sdkMod.BRAND_NAME, 'Orbis');
   assert.equal(sdkMod.createConfig({ ensureDirs: false, env: { ORBIS_NAME: 'MyOrbis' } }).serverName, 'MyOrbis');
   assert.equal(typeof sdkMod.defineTool, 'function');
@@ -408,7 +406,7 @@ await test('SDK-3b runtime.lessons 门面：形状统一 / propose 只产 candid
   assert.ok(!lf.list().some((l) => l.id === weak.lesson.id));
 });
 
-await test('SDK-4 createPiBotClient 远程 HTTP + WebSocket 控制（自动 local-token 与一次性 nonce）', async () => {
+await test('SDK-4 createOrbisClient 远程 HTTP + WebSocket 控制（自动 local-token 与一次性 nonce）', async () => {
   const { issueLocalToken } = await import('../src/local-token.js');
   const { createHttpServer } = await import('../src/http.js');
   const { attachWs } = await import('../src/ws.js');

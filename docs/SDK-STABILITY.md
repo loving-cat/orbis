@@ -41,7 +41,6 @@
 
 ### `internal`（别用）
 
-1.7 兼容别名 `createPiBotRuntime` / `createPiBotClient` / `PiBotClient`（Phase 3 删）、
 `createServices`，以及 `./capabilities` 里那一堆派生层
 （`TOOLS` / `MUTATING_TOOLS` / `READONLY_ALLOW` / `riskOf` / `actionForTool` …）。
 它们随时会随内部结构变，宿主要的是**查询**，不是这份表本身。

@@ -61,7 +61,7 @@ function call(host, pathname, { method = 'GET', body = null, token = '', headers
           ...(token ? { authorization: `Bearer ${token}` } : {}),
           ...(body ? { 'content-type': 'application/json' } : {}),
           // 真实客户端在改状态的请求上都带这个头（见 http.js CLIENT_HEADER）
-          ...(method !== 'GET' ? { 'x-pi-bot-client': 'test' } : {}),
+          ...(method !== 'GET' ? { 'x-orbis-client': 'test' } : {}),
           ...headers,
         },
       },

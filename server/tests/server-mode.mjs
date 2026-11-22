@@ -64,7 +64,7 @@ function fetchNonce(port, token, purpose = 'policy') {
         host: '127.0.0.1:' + port,
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
-        'x-pi-bot-client': 'test',
+        'x-orbis-client': 'test',
         ...(token ? { authorization: 'Bearer ' + token } : {}),
       },
     }, (res) => {
@@ -83,7 +83,7 @@ function fetchNonce(port, token, purpose = 'policy') {
 /** 申请 nonce 再改策略（模拟界面点击后立刻发出那一次请求）。 */
 async function callWithNonce(port, pathname, { method = 'PATCH', token = '', body = null, purpose = 'policy' } = {}) {
   const nonce = await fetchNonce(port, token, purpose);
-  return call(port, pathname, { method, token, body, extraHeaders: { 'x-pi-bot-nonce': nonce } });
+  return call(port, pathname, { method, token, body, extraHeaders: { 'x-orbis-nonce': nonce } });
 }
 
 async function test(name, fn) {
@@ -157,7 +157,7 @@ function call(port, pathname, { method = 'GET', token = '', host = null, body = 
           host: host ?? `127.0.0.1:${port}`,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
           ...(body ? { 'content-type': 'application/json' } : {}),
-          ...(method !== 'GET' ? { 'x-pi-bot-client': 'test' } : {}),
+          ...(method !== 'GET' ? { 'x-orbis-client': 'test' } : {}),
           ...(extraHeaders ?? {}),
         },
       },

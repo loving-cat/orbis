@@ -30,18 +30,6 @@
       "reason": "Dart 包名声明（pubspec.yaml）"
     },
     {
-      "pattern": "createPiBotRuntime",
-      "reason": "1.7 兼容别名（SDK 档位表里要原样拼出这个导出名）；Phase 3 删别名时把这条一起删（★ Phase 3 的 T1.4 删别名时**必须同步删掉本行**，否则它会永久绕过 --strict）"
-    },
-    {
-      "pattern": "createPiBotClient",
-      "reason": "1.7 兼容别名；同上，Phase 3 一并删（★ Phase 3 的 T1.4 删别名时**必须同步删掉本行**，否则它会永久绕过 --strict）"
-    },
-    {
-      "pattern": "PiBotClient",
-      "reason": "1.7 兼容别名（类本体）；同上，Phase 3 一并删（★ Phase 3 的 T1.4 删别名时**必须同步删掉本行**，否则它会永久绕过 --strict）"
-    },
-    {
       "pattern": "'pi-bot'",
       "reason": "旧数据目录名与旧证书 CN 的**常量值本身**（1.x 升级、迁移命令、证书回归都要用它）；只在常量定义/断言里出现，不是新文案"
     },
@@ -349,7 +337,7 @@
     },
     {
       "path": "server/src/http.js",
-      "count": 9
+      "count": 2
     },
     {
       "path": "server/src/local-capabilities.js",
@@ -421,7 +409,7 @@
     },
     {
       "path": "server/src/sdk/client.js",
-      "count": 3
+      "count": 1
     },
     {
       "path": "server/src/sdk/index.js",
@@ -429,7 +417,7 @@
     },
     {
       "path": "server/src/secrets.js",
-      "count": 3
+      "count": 2
     },
     {
       "path": "server/src/server-main.js",
@@ -461,7 +449,7 @@
     },
     {
       "path": "server/tests/admin-view.mjs",
-      "count": 7
+      "count": 5
     },
     {
       "path": "server/tests/approvals.mjs",
@@ -489,7 +477,7 @@
     },
     {
       "path": "server/tests/auth.mjs",
-      "count": 4
+      "count": 3
     },
     {
       "path": "server/tests/automations.mjs",
@@ -553,7 +541,7 @@
     },
     {
       "path": "server/tests/desktop-settings-route.mjs",
-      "count": 8
+      "count": 6
     },
     {
       "path": "server/tests/desktop-takeover.mjs",
@@ -565,7 +553,7 @@
     },
     {
       "path": "server/tests/device-revoke.mjs",
-      "count": 3
+      "count": 2
     },
     {
       "path": "server/tests/discovery.mjs",
@@ -637,7 +625,7 @@
     },
     {
       "path": "server/tests/grant-request.mjs",
-      "count": 26
+      "count": 20
     },
     {
       "path": "server/tests/grants.mjs",
@@ -653,7 +641,7 @@
     },
     {
       "path": "server/tests/http-admin.mjs",
-      "count": 7
+      "count": 5
     },
     {
       "path": "server/tests/jarvis-mode.mjs",
@@ -669,11 +657,11 @@
     },
     {
       "path": "server/tests/local-csrf.mjs",
-      "count": 19
+      "count": 8
     },
     {
       "path": "server/tests/local-nonce.mjs",
-      "count": 10
+      "count": 2
     },
     {
       "path": "server/tests/mcp-attach-keeps-memory.mjs",
@@ -701,7 +689,7 @@
     },
     {
       "path": "server/tests/model-config.mjs",
-      "count": 9
+      "count": 7
     },
     {
       "path": "server/tests/model-health-forget.mjs",
@@ -717,7 +705,7 @@
     },
     {
       "path": "server/tests/onboarding-route.mjs",
-      "count": 10
+      "count": 5
     },
     {
       "path": "server/tests/org.mjs",
@@ -729,7 +717,7 @@
     },
     {
       "path": "server/tests/pair-request-http.mjs",
-      "count": 3
+      "count": 2
     },
     {
       "path": "server/tests/policy-hook.mjs",
@@ -761,7 +749,7 @@
     },
     {
       "path": "server/tests/relay.mjs",
-      "count": 4
+      "count": 1
     },
     {
       "path": "server/tests/role-tools.mjs",
@@ -784,10 +772,6 @@
       "count": 10
     },
     {
-      "path": "server/tests/sdk-contract.snapshot.json",
-      "count": 1
-    },
-    {
       "path": "server/tests/secrets-regress.mjs",
       "count": 39
     },
@@ -797,11 +781,11 @@
     },
     {
       "path": "server/tests/security-p0.mjs",
-      "count": 2
+      "count": 1
     },
     {
       "path": "server/tests/security-regress.mjs",
-      "count": 4
+      "count": 3
     },
     {
       "path": "server/tests/security-shell.mjs",
@@ -809,7 +793,7 @@
     },
     {
       "path": "server/tests/server-mode.mjs",
-      "count": 28
+      "count": 25
     },
     {
       "path": "server/tests/session-resources.mjs",

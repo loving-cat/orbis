@@ -14,6 +14,7 @@ import os from 'node:os';
 import { config as defaultConfig } from './config.js';
 import { modelGroups as defaultModelGroups } from './model-groups.js';
 import { readJson, log } from './util.js';
+import { noticeBrandDeprecation } from './brand.js';
 
 function defaultAgentDir() {
   return process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), '.pi', 'agent');
@@ -84,7 +85,19 @@ export function loadExtraProviders({
   if (includeHost !== false) {
     // 1) 服务器自带配置
     const orbisFile = path.join(cfg.pkgRoot, 'orbis.config.json');
-    const localFile = fs.existsSync(orbisFile) ? orbisFile : path.join(cfg.pkgRoot, 'pi-bot.config.json');
+    const legacyFile = path.join(cfg.pkgRoot, 'pi-bot.config.json');
+    // 读旧写新（T1.5）：旧文件还能读，但提醒一次并指向新名字。
+    // 本项目从不回写配置文件 —— “写新”是指新文档/新示例/`orbis migrate` 都用新名字。
+    const useLegacy = !fs.existsSync(orbisFile) && fs.existsSync(legacyFile);
+    if (useLegacy) {
+      noticeBrandDeprecation({
+        kind: 'file',
+        from: path.basename(legacyFile),
+        to: path.basename(orbisFile),
+        hint: '把文件改成新名字即可（内容不用动）；`orbis migrate` 会顺带复制一份',
+      });
+    }
+    const localFile = useLegacy ? legacyFile : orbisFile;
     const local = readJson(localFile, null);
     if (local?.providers && typeof local.providers === 'object') {
       Object.assign(out, local.providers);

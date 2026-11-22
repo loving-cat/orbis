@@ -36,7 +36,7 @@ class Api {
   /// 浏览器跨站发自定义头必须先过 CORS 预检，服务端从不放行，所以恶意网页伪造不了。
   ///
   /// 1.7.1 起改发**正式名** `x-orbis-*`：1.7.0 服务端本来就同时认新旧两套，
-  /// 所以这个切换向前兼容；旧名 `x-pi-bot-*` 在 2.0 删。
+  /// 旧名 `x-pi-bot-*` 已在 2.0 删除（服务端只认 `x-orbis-*`）。
   /// 若哪天又收到 `x-orbis-deprecated` 响应头，说明还有调用点漏切。
   static const clientHeader = 'x-orbis-client';
   static const nonceHeader = 'x-orbis-nonce';

@@ -190,7 +190,7 @@ console.log(res.replyText);
 await rt.dispose();
 ```
 
-完整文档与远程 `createOrbisClient` 用法见 [SDK 与单骨架说明](docs/SDK.md)（同时保留 `createPiBotRuntime` / `createPiBotClient` 与 `PI_BOT_*` 环境变量兼容）。
+完整文档与远程 `createOrbisClient` 用法见 [SDK 与单骨架说明](docs/SDK.md)（2.0 已删旧别名；`PI_BOT_*` 环境变量在 2.0 期间仍双读，Phase 3 收口时删）。
 
 ## 目录
 

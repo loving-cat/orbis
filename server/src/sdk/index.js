@@ -38,12 +38,7 @@ import {
   isOrbisError,
   asOrbisError,
 } from './errors.js';
-import {
-  OrbisClient,
-  createOrbisClient,
-  PiBotClient,
-  createPiBotClient,
-} from './client.js';
+import { OrbisClient, createOrbisClient } from './client.js';
 import { clearSettleTimers } from '../runner/run-settled.js';
 
 /**
@@ -662,9 +657,6 @@ async function buildRuntime(options, cleanup) {
   };
 }
 
-/** 向后兼容旧称 */
-export const createPiBotRuntime = createOrbisRuntime;
-
 export {
   ORBIS_ERROR_CODES,
   OrbisError,
@@ -688,8 +680,6 @@ export {
   createServices,
   OrbisClient,
   createOrbisClient,
-  PiBotClient,
-  createPiBotClient,
 };
 
 /**

@@ -58,10 +58,6 @@ export const SDK_STABILITY = Object.freeze({
   auditCapabilities: 'beta',
 
   // ---------------------------------------------------------------- internal
-  /** 兼容别名（Phase 3 清债时删）：留着是为了 1.7 的宿主不炸，不是给新代码用的 */
-  createPiBotRuntime: 'internal',
-  createPiBotClient: 'internal',
-  PiBotClient: 'internal',
   /** 服务层的装配入口：签名随内部服务调整 */
   createServices: 'internal',
   /** `/capabilities` 入口的派生层：由 `capabilities.js` 自动算出，宿主不该硬编码 */

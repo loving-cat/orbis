@@ -3,7 +3,7 @@
  *   node tests/local-csrf.mjs
  *
  * 覆盖：Origin 同源才算本机主人、Sec-Fetch-Site: cross-site 全局拒、
- * 改状态请求必须带 x-pi-bot-client、content-type 只认媒体类型 application/json。
+ * 改状态请求必须带 x-orbis-client、content-type 只认媒体类型 application/json。
  * 全是假数据，目录用 os.tmpdir()，随机端口。
  */
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-local-csrf-'));
 process.env.PI_BOT_HOME = root;
 process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
 
-const { createHttpServer, CLIENT_HEADER, ORBIS_CLIENT_HEADER, DEPRECATED_HEADER, isJsonContentType } = await import('../src/http.js');
+const { createHttpServer, CLIENT_HEADER, NONCE_HEADER, CHANNEL_HEADER, isJsonContentType } = await import('../src/http.js');
 import { installLocalToken } from './_local-token.mjs';
 const { Pairing } = await import('../src/pairing.js');
 
@@ -64,10 +64,10 @@ function call(pathname, { method = 'GET', body = null, headers = {}, asAnonymous
 const JSON_BODY = JSON.stringify({ title: 'fake' });
 const client = { [CLIENT_HEADER]: 'test' };
 
-await test('头名：正式名 x-orbis-client，旧名 x-pi-bot-client 仅作 2.0 前的回退', () => {
-  assert.equal(ORBIS_CLIENT_HEADER, 'x-orbis-client');
-  assert.equal(CLIENT_HEADER, 'x-pi-bot-client');
-  assert.equal(DEPRECATED_HEADER, 'x-orbis-deprecated');
+await test('头名：2.0 只认正式名（旧头已在 T1.3b 删除）', () => {
+  assert.equal(CLIENT_HEADER, 'x-orbis-client');
+  assert.equal(NONCE_HEADER, 'x-orbis-nonce');
+  assert.equal(CHANNEL_HEADER, 'x-orbis-channel');
 });
 
 await test('isJsonContentType：只看 ; 前的媒体类型', () => {
@@ -122,61 +122,48 @@ await test('Sec-Fetch-Site: same-origin / none 不受影响', async () => {
 });
 
 // ---------- 写：必须带自定义头 + 严格 JSON ----------
-await test('★ POST 不带 x-pi-bot-client → 403', async () => {
+await test('★ POST 不带 x-orbis-client → 403', async () => {
   const r = await call('/api/tasks', { method: 'POST', body: JSON_BODY, headers: { 'content-type': 'application/json' } });
   assert.equal(r.status, 403);
   assert.match(r.text, /x-orbis-client/, '报错要指向正式名，不是旧名');
 });
 
-// ---------- 旧头过渡：可用，但响应里贴 x-orbis-deprecated ----------
-await test('新头 x-orbis-client 直接可用（1.7.1 起客户端发的就是它）', async () => {
+// ---------- 2.0（T1.3b）：旧头已删，只认正式名 ----------
+await test('新头 x-orbis-client 直接可用', async () => {
   const r = await call('/api/uploads?name=fake.txt', {
     method: 'POST',
     body: 'fake',
     headers: { 'content-type': 'text/plain', 'x-orbis-client': 'app' },
   });
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.headers[DEPRECATED_HEADER], undefined, '用新头不该有弃用头');
 });
 
-await test('只带旧头仍然能用，但响应贴 x-orbis-deprecated', async () => {
+await test('★ 旧头 x-pi-bot-client 不再被接受 → 403，且提示正式头名', async () => {
   const r = await call('/api/uploads?name=fake.txt', {
     method: 'POST',
     body: 'fake',
     headers: { 'content-type': 'text/plain', 'x-pi-bot-client': 'app' },
   });
-  assert.equal(r.status, 200, r.text);
-  assert.equal(r.headers[DEPRECATED_HEADER], 'x-pi-bot-client');
+  assert.equal(r.status, 403, '1.7.1 就已经切到新头了，2.0 不该再放旧头进来');
+  const body = JSON.parse(r.text);
+  assert.match(body.error, /x-orbis-client/, '报错要说清该带哪个头');
 });
 
-await test('两个头都带 = 已是新版客户端，不打弃用标记', async () => {
-  const r = await call('/api/uploads?name=fake.txt', {
-    method: 'POST',
-    body: 'fake',
-    headers: { 'content-type': 'text/plain', 'x-orbis-client': 'app', 'x-pi-bot-client': 'app' },
-  });
+await test('旧 channel 头不再影响通道判定（只认 x-orbis-channel）', async () => {
+  const r = await call('/api/devices', { headers: { 'x-pi-bot-channel': 'local' } });
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.headers[DEPRECATED_HEADER], undefined);
 });
-
-await test('旧 nonce / channel 头也会被记入弃用头（不阻塞请求）', async () => {
-  const r = await call('/api/devices', {
-    headers: { 'x-pi-bot-channel': 'local' },
-  });
-  assert.equal(r.status, 200, r.text);
-  assert.equal(r.headers[DEPRECATED_HEADER], 'x-pi-bot-channel');
-});
-await test('★ PATCH / PUT / DELETE 不带 x-pi-bot-client → 403', async () => {
+await test('★ PATCH / PUT / DELETE 不带 x-orbis-client → 403', async () => {
   for (const [method, p] of [['PATCH', '/api/user'], ['PUT', '/api/user'], ['DELETE', '/api/devices/d_fake']]) {
     const r = await call(p, { method, body: method === 'DELETE' ? null : JSON_BODY, headers: { 'content-type': 'application/json' } });
     assert.equal(r.status, 403, `${method} → ${r.status}`);
   }
 });
-await test('★ 上传接口不带 x-pi-bot-client → 403（上传不再是例外）', async () => {
+await test('★ 上传接口不带 x-orbis-client → 403（上传不再是例外）', async () => {
   const r = await call('/api/uploads?name=fake.txt', { method: 'POST', body: 'fake', headers: { 'content-type': 'text/plain' } });
   assert.equal(r.status, 403);
 });
-await test('上传带 x-pi-bot-client → 200（原始字节不要求 JSON）', async () => {
+await test('上传带 x-orbis-client → 200（原始字节不要求 JSON）', async () => {
   const r = await call('/api/uploads?name=fake.txt', { method: 'POST', body: 'fake', headers: { 'content-type': 'text/plain', ...client } });
   assert.equal(r.status, 200, r.text);
 });
@@ -199,10 +186,10 @@ await test('本机原生客户端带齐头 + application/json; charset=utf-8 能
   assert.notEqual(t.status, 403, t.text);
   assert.notEqual(t.status, 415, t.text);
 });
-await test('/api/pair 在鉴权之前，不要求 x-pi-bot-client（配对码本身就是凭证）', async () => {
+await test('/api/pair 在鉴权之前，不要求 x-orbis-client（配对码本身就是凭证）', async () => {
   const r = await call('/api/pair', { method: 'POST', body: JSON.stringify({ code: '000000' }), headers: { 'content-type': 'application/json' } });
   assert.equal(r.status, 401);
-  assert.doesNotMatch(r.text, /x-pi-bot-client/);
+  assert.doesNotMatch(r.text, /x-orbis-client/);
 });
 
 server.close();

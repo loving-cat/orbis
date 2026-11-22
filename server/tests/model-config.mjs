@@ -485,9 +485,9 @@ await test('假 HTTP 校验 bot 容量并只刷新历史会话', async () => {
   const LOCAL_TOKEN = installLocalToken();
   const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
   try {
-    const invalid = await fetch(endpoint, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-pi-bot-client': 'test', ...auth }, body: JSON.stringify({ contextWindow: 100 }) });
+    const invalid = await fetch(endpoint, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-orbis-client': 'test', ...auth }, body: JSON.stringify({ contextWindow: 100 }) });
     assert.equal(invalid.status, 400);
-    const valid = await fetch(endpoint, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-pi-bot-client': 'test', ...auth }, body: JSON.stringify({ contextWindow: 300_000, maxTokens: 32_000, reserveTokens: 16000 }) });
+    const valid = await fetch(endpoint, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-orbis-client': 'test', ...auth }, body: JSON.stringify({ contextWindow: 300_000, maxTokens: 32_000, reserveTokens: 16000 }) });
     assert.equal(valid.status, 200);
     assert.equal(reloads, 1);
   } finally { await new Promise((resolve) => server.close(resolve)); }

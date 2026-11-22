@@ -60,12 +60,12 @@ store.state.devices[TOKEN] = { id: 'd_ds', name: '测试机', createdAt: Date.no
 function req(method, pathname, { body = null, nonce = null } = {}) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
-    const headers = { authorization: 'Bearer ' + TOKEN, 'x-pi-bot-client': 'test' };
+    const headers = { authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'test' };
     if (payload) {
       headers['content-type'] = 'application/json';
       headers['content-length'] = Buffer.byteLength(payload);
     }
-    if (nonce) headers['x-pi-bot-nonce'] = nonce;
+    if (nonce) headers['x-orbis-nonce'] = nonce;
     const r = http.request({ host: '127.0.0.1', port: PORT, path: pathname, method, headers }, (res) => {
       let t = '';
       res.on('data', (c) => { t += c; });

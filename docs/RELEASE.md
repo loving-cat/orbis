@@ -261,6 +261,19 @@ alpha.1 的教训（这次照做）：
 - **tgz 不进 git**：`server/*.tgz` 已在 `.gitignore` 里，交付走 release 附件；
 - **tag 与 commit 的对应关系要写进 release notes**，否则 mac 端补 DMG 时不知道从哪构建。
 
+### 2.0 的破坏性变更（相对 1.7）
+
+| 变了什么 | 1.7 还能用吗 | 2.0 怎么办 |
+|---|---|---|
+| SDK 别名 `createPiBotRuntime` / `createPiBotClient` / `PiBotClient` | ✅ | ❌ **已删**：改成 `createOrbisRuntime` / `createOrbisClient` / `OrbisClient`（签名一致） |
+| 请求头 `x-pi-bot-client` / `-nonce` / `-channel` | ✅ | ❌ **已删**：只认 `x-orbis-*`，缺头 403 并提示正式头名 |
+| `bin.pi-bot-server` | ✅ | ❌ **已删**：`npm exec orbis-server`（1.7.1 起就有了） |
+| `PI_BOT_SECRET_KEY` | ✅ | ⚠️ 仍能读，但会提醒一次；新名字是 `ORBIS_SECRET_KEY`（彻底删在下一次收口） |
+| `pi-bot.config.json` | ✅ | ⚠️ 仍能读，但会提醒一次；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
+| 旧数据目录回退 | ✅ | ⚠️ 仍保留到下一次收口；现在请**主动**跑 `orbis migrate` |
+| 发现协议 | ✅ | ✅ **永久双播**：服务端同时回应 `orbis.host` 与 `pibot.host`，App 两边都发都认 |
+| TLS 证书 | ✅ | ✅ 新证书 SAN 增加 `orbis.local`，旧 `pi-bot.local` 与 CN `pi-bot` 保留 |
+
 ### 2.0 升级：先跑 `orbis migrate`
 
 2.0 起服务端**只认新目录**（`<数据根>/orbis/data`）。从 1.7 升上来的用户必须先把数据复制过去：

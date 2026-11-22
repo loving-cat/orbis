@@ -149,9 +149,9 @@ function request(pathname, { method = 'GET', body = null, nonce = null } = {}) {
   return new Promise((resolve, reject) => {
     const headers = {
       authorization: 'Bearer ' + TOKEN,
-      'x-pi-bot-client': 'test',
+      'x-orbis-client': 'test',
       ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(nonce ? { 'x-pi-bot-nonce': nonce } : {}),
+      ...(nonce ? { 'x-orbis-nonce': nonce } : {}),
     };
     const req = http.request({ host: '127.0.0.1', port: PORT, path: pathname, method, headers }, (res) => {
       let text = '';

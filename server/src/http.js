@@ -29,7 +29,6 @@ import {
 } from './attachments.js';
 import { lanAddresses } from './pairing.js';
 import { timingSafeEqual, log } from './util.js';
-import { noticeBrandDeprecation } from './brand.js';
 import { readLocalToken } from './local-token.js';
 import { NONCE_PURPOSE, consumeNonce, issueNonce } from './local-nonce.js';
 import { planAdminRoute } from './http-admin.js';
@@ -224,44 +223,12 @@ export const LOCAL_DEVICE = {
  * 浏览器跨站发自定义头必须先过 CORS 预检，而本服务从不放行预检，
  * 所以恶意网页伪造不了它（text/plain 表单、no-cors fetch 都带不上）。
  */
-// @remove-2.0 2.0 起用 ORBIS_CLIENT_HEADER，旧头一并删（客户端同版本切换）
-export const CLIENT_HEADER = 'x-pi-bot-client';
-export const ORBIS_CLIENT_HEADER = 'x-orbis-client';
-/** 过渡期响应头：告诉调用方“你还在用旧头，2.0 会删”（桌面端/App 日志里能看到） */
-export const DEPRECATED_HEADER = 'x-orbis-deprecated';
-
-/**
- * 新旧头配对表（1.7.1 过渡期）：现代头优先，两个都带就不算弃用。
- * 2.0 删旧头时，把这张表的第二列一并删掉。
- */
-const LEGACY_HEADER_PAIRS = [
-  [ORBIS_CLIENT_HEADER, CLIENT_HEADER],
-  ['x-orbis-nonce', 'x-pi-bot-nonce'],
-  ['x-orbis-channel', 'x-pi-bot-channel'],
-];
-
-/**
- * 只靠旧头认出客户端时：贴 `x-orbis-deprecated` 并进程内提醒一次。
- *
- * 为什么只在“没带现代头”时才算：新客户端两个都带（见 sdk/client.js），
- * 那不是弃用，是向后兼容。
- *
- * @returns {string[]} 本次用到的旧头名（空数组 = 没用旧头）
- */
-export function markDeprecatedHeaders(req, res) {
-  const used = [];
-  for (const [modern, legacy] of LEGACY_HEADER_PAIRS) {
-    if (!String(req.headers?.[legacy] ?? '').trim()) continue;
-    if (String(req.headers?.[modern] ?? '').trim()) continue;
-    used.push(legacy);
-    noticeBrandDeprecation({ kind: 'header', from: legacy, to: modern });
-  }
-  if (!used.length) return used;
-  try {
-    res.setHeader(DEPRECATED_HEADER, used.join(','));
-  } catch { /* 头已发出（极少见）就算了，不影响响应本身 */ }
-  return used;
-}
+// ★ 2.0（T1.3b）：旧头 `x-pi-bot-*` 已删，只认正式名。
+//   1.7.1 的 App 早就切到 `x-orbis-*` 了（那时的过渡告警就是为了这次删除）。
+export const CLIENT_HEADER = 'x-orbis-client';
+/** nonce 与通道头（都在同一个删除批次里） */
+export const NONCE_HEADER = 'x-orbis-nonce';
+export const CHANNEL_HEADER = 'x-orbis-channel';
 const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /** content-type 的媒体类型（; 前面那段）必须严格是 application/json，参数（charset 等）不管。 */
@@ -440,9 +407,6 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const clientIp = (r) => String(r.socket?.remoteAddress ?? '').replace(/^::ffff:/, '');
 
-    // 旧客户端头过渡：只用了旧头才贴 x-orbis-deprecated（2.0 删旧头时一起去掉）
-    markDeprecatedHeaders(req, res);
-
     // ★ Host 必须是本机名/本机 IP：防 DNS rebinding ——
     //   恶意域名解析到 127.0.0.1 时，Host 会是那个域名，这里直接拒。
     if (!hostAllowed(req.headers.host, config)) {
@@ -563,9 +527,9 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
       // ★ 改状态的请求（含上传、删除）必须带客户端自定义头：跨站网页带不上它。
       if (
         STATE_CHANGING_METHODS.has(req.method) &&
-        !String(req.headers[ORBIS_CLIENT_HEADER] ?? req.headers[CLIENT_HEADER] ?? '').trim()
+        !String(req.headers[CLIENT_HEADER] ?? '').trim()
       ) {
-        return send(res, 403, { error: `缺少 ${ORBIS_CLIENT_HEADER} 请求头（旧名 ${CLIENT_HEADER} 仍可用，2.0 移除）` });
+        return send(res, 403, { error: `缺少 ${CLIENT_HEADER} 请求头（2.0 起旧头不再接受）` });
       }
 
       // ★ 状态变更请求必须声明 JSON：浏览器跨域发 text/plain 不会触发预检，
@@ -617,8 +581,7 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
           //
           //   校验点集中在这里之后，各路由**不再自己消费** ——
           //   两处都消费会让第二次必然失败。
-          const check = consumeNonce(// @remove-2.0 旧头 x-pi-bot-nonce 在 2.0 删掉
-          req.headers['x-orbis-nonce'] ?? req.headers['x-pi-bot-nonce'], adminPlan.nonce);
+          const check = consumeNonce(req.headers[NONCE_HEADER], adminPlan.nonce);
           if (!check.ok) {
             log(`🔒 ${adminPlan.label} 被拒：${check.reason}（${req.method} ${pathname}）`);
             return fail(
@@ -943,10 +906,9 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
         return send(res, 200, { confirmations: store.pendingConfirmations({ roomId }) });
       }
 
-      // 客户端自报通道：桌面端带 x-orbis-channel / x-pi-bot-channel: local，手机端带 device。
+      // 客户端自报通道：桌面端带 x-orbis-channel: local，手机端带 device。
       // 不信任头本身 —— 用它只是"降权"，声称 local 只会让确认更难通过。
-      // @remove-2.0 旧头 x-pi-bot-channel 在 2.0 删掉
-      const rawChannel = req.headers['x-orbis-channel'] ?? req.headers['x-pi-bot-channel'] ?? '';
+      const rawChannel = req.headers[CHANNEL_HEADER] ?? '';
       const clientChannel = String(rawChannel).toLowerCase() === 'device'
         && !device?.isLocal
         ? 'device'

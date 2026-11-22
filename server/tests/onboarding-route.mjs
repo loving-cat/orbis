@@ -80,7 +80,7 @@ store.state.devices[TOKEN] = { id: 'd_onb', name: '测试机', createdAt: Date.n
 
 function req(pathname, { method = 'GET', auth = TOKEN } = {}) {
   return new Promise((resolve, reject) => {
-    const headers = { 'x-pi-bot-client': 'test' };
+    const headers = { 'x-orbis-client': 'test' };
     if (auth) headers.authorization = 'Bearer ' + auth;
     const r = http.request({ host: '127.0.0.1', port: PORT, path: pathname, method, headers }, (res) => {
       let t = '';
@@ -260,7 +260,7 @@ function post(pathname, body, extraHeaders = {}) {
         method: 'POST',
         headers: {
           authorization: 'Bearer ' + TOKEN,
-          'x-pi-bot-client': 'test',
+          'x-orbis-client': 'test',
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(payload),
           ...extraHeaders,
@@ -300,7 +300,7 @@ await test('★ 选完就真的建出授权（并且写进审计）', async () =
   const r = await post(
     '/api/onboarding/apply',
     { projectId: 'workspace', gitScope: 'commit' },
-    { 'x-pi-bot-nonce': n },
+    { 'x-orbis-nonce': n },
   );
   assert.equal(r.status, 200, JSON.stringify(r.json));
   assert.equal(r.json.ok, true);
@@ -336,7 +336,7 @@ await test('★ 重新选一遍：旧的被回收，不积压（否则面板上�
   const r = await post(
     '/api/onboarding/apply',
     { projectId: 'workspace', gitScope: 'read' },
-    { 'x-pi-bot-nonce': n },
+    { 'x-orbis-nonce': n },
   );
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.revoked.sort(), first.sort());
@@ -352,7 +352,7 @@ await test('选不存在的项目 → 400，且一条授权都不建', async () 
   const r = await post(
     '/api/onboarding/apply',
     { projectId: 'nope', gitScope: 'commit' },
-    { 'x-pi-bot-nonce': n },
+    { 'x-orbis-nonce': n },
   );
   assert.equal(r.status, 400);
   assert.equal(r.json.code, 'UNKNOWN_PROJECT');

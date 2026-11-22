@@ -239,7 +239,7 @@ function request(pathname, { method = 'GET', token = '', body = null } = {}) {
     const headers = {
       ...(token ? { authorization: 'Bearer ' + token } : {}),
       ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(method !== 'GET' ? { 'x-pi-bot-client': 'test' } : {}),
+      ...(method !== 'GET' ? { 'x-orbis-client': 'test' } : {}),
     };
     const req = http.request({ host: '127.0.0.1', port, path: pathname, method, headers }, (res) => {
       res.resume();

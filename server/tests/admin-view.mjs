@@ -47,9 +47,9 @@ function req(pathname, { method = 'GET', body = null, channel = null } = {}) {
   return new Promise((resolve, reject) => {
     const headers = {
       authorization: 'Bearer ' + TOKEN,
-      'x-pi-bot-client': 'test',
+      'x-orbis-client': 'test',
       ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(channel ? { 'x-pi-bot-channel': channel } : {}),
+      ...(channel ? { 'x-orbis-channel': channel } : {}),
     };
     const r = http.request({ host: '127.0.0.1', port: PORT, path: pathname, method, headers }, (res) => {
       let t = '';

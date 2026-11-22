@@ -51,7 +51,7 @@ function call(pathname, { method = 'GET', body = null, token = '', anonymous = f
         headers: {
           ...(token ? { authorization: `Bearer ${token}` } : {}),
           ...(body ? { 'content-type': 'application/json' } : {}),
-          ...(method !== 'GET' ? { 'x-pi-bot-client': 'test' } : {}),
+          ...(method !== 'GET' ? { 'x-orbis-client': 'test' } : {}),
         },
       },
       (res) => {

@@ -99,6 +99,7 @@ export const NEVER_PASS = new Set([
   'NODE_OPTIONS',
   'PI_BOT_TOKEN',
   'PI_BOT_SECRET_KEY',
+  'ORBIS_SECRET_KEY',
   'PI_BOT_PORT',
   'PI_BOT_HOST',
   'PI_BOT_HOME',

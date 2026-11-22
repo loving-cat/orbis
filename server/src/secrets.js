@@ -7,7 +7,7 @@
  *
  * 做法：
  *   · 密钥默认在 `<data>/secret.key`（权限 0600），不和数据文件放一起；
- *   · 环境变量 `PI_BOT_SECRET_KEY`（32 字节的 hex 或 base64）若设置则覆盖文件，
+ *   · 环境变量 `ORBIS_SECRET_KEY`（32 字节的 hex 或 base64）若设置则覆盖文件，
  *     此时不读、不写 secret.key；
  *   · 站点口令和模型组 API key 共用这一把密钥；
  *   · 密文串 `enc:v1:<iv>:<tag>:<data>`（全 base64url），每段独立随机 IV。
@@ -20,6 +20,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { noticeBrandDeprecation } from './brand.js';
+
 /** 密文前缀，用来识别「已加密」与「历史明文」 */
 const PREFIX = 'enc:v1:';
 
@@ -29,8 +31,15 @@ const KEY_BYTES = 32;
 /** IV 长度（GCM 标准 12 字节） */
 const IV_BYTES = 12;
 
-/** 环境变量名：设置后覆盖 secret.key */
-export const SECRET_KEY_ENV = 'PI_BOT_SECRET_KEY';
+/**
+ * 环境变量名：设置后覆盖 secret.key。
+ *
+ * 2.0（T1.5）：正式名是 `ORBIS_SECRET_KEY`。1.7 用的旧名还在读，但只当兜底并提醒一次
+ * （删旧名是 Phase 3 后面那刀「删 PI_BOT_* env」的事）。
+ */
+export const SECRET_KEY_ENV = 'ORBIS_SECRET_KEY';
+/** 1.7 的旧变量名（兜底读一次，Phase 3 收口时删） */
+export const LEGACY_SECRET_KEY_ENV = 'PI_BOT_SECRET_KEY';
 
 /** @param {string} dataDir */
 export function secretKeyPath(dataDir) {
@@ -38,20 +47,28 @@ export function secretKeyPath(dataDir) {
 }
 
 /**
- * 解析 `PI_BOT_SECRET_KEY`。未设置返回 null；设置了但不是 32 字节则抛错。
+ * 解析密钥环境变量：正式名优先，没设才看旧名（旧名会触发一次弃用提醒）。
+ * 未设置返回 null；设置了但不是 32 字节则抛错。
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {Buffer|null}
  */
 export function keyFromEnv(env = process.env) {
-  const raw = String(env?.[SECRET_KEY_ENV] ?? '').trim();
+  const modern = String(env?.[SECRET_KEY_ENV] ?? '').trim();
+  const legacy = modern ? '' : String(env?.[LEGACY_SECRET_KEY_ENV] ?? '').trim();
+  const raw = modern || legacy;
   if (!raw) return null;
+  const usedName = modern ? SECRET_KEY_ENV : LEGACY_SECRET_KEY_ENV;
+  if (!modern && legacy) {
+    // 只在真的用到旧名时提醒一次（进程内去重）
+    noticeBrandDeprecation({ kind: 'env', from: LEGACY_SECRET_KEY_ENV, to: SECRET_KEY_ENV });
+  }
   if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, 'hex');
   for (const enc of ['base64', 'base64url']) {
     const buf = Buffer.from(raw, enc);
     if (buf.length === KEY_BYTES) return buf;
   }
-  throw new Error(`${SECRET_KEY_ENV} 须为 32 字节（64 位 hex 或 base64）`);
+  throw new Error(`${usedName} 须为 32 字节（64 位 hex 或 base64）`);
 }
 
 /**
