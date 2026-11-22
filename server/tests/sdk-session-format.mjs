@@ -61,9 +61,11 @@ function exampleFromDoc() {
   const end = doc.indexOf('<!-- session-example:end -->');
   assert.ok(start >= 0 && end > start, '文档里找不到 session-example 标记');
   const block = doc.slice(start, end);
-  const fenced = /```jsonl\n([\s\S]*?)```/.exec(block);
+  // ★ `\r?\n` 不是洁癖：Windows runner checkout 出来是 CRLF，只写 `\n`
+  //   会让这条在 CI 上直接崩（本地 LF 环境完全看不到）。
+  const fenced = /```jsonl\r?\n([\s\S]*?)```/.exec(block);
   assert.ok(fenced, '示例块必须是 ```jsonl 围栏');
-  return fenced[1].trimEnd();
+  return fenced[1].trimEnd().replace(/\r\n/g, '\n');
 }
 
 const SAMPLE = exampleFromDoc();
