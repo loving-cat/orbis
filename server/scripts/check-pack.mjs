@@ -48,6 +48,36 @@ const REQUIRED = [
 /** 一定不能在包里的前缀（打进去就是事故或体积事故） */
 const FORBIDDEN_PREFIX = ['node_modules/', 'tests/', 'data/', 'examples/sdk/.orbis-demo/', '.git/'];
 
+const IS_WIN = process.platform === 'win32';
+
+/**
+ * 跑 npm：先找 npm 自己的 CLI 入口，再退回到 spawn `npm`。
+ *
+ * 为什么不直接 spawn `npm`：Windows 上它是 `npm.cmd`，Node 24 起不加
+ * `shell: true` 就 EINVAL；加了 shell 又要拼字符串（有注入风险 + 一条
+ * DeprecationWarning）。用 `process.execPath npm-cli.js …` 两头都躲开了。
+ *
+ * 三个候选按可信度排：npm 自己注入的 → 跟当前 node 同级的 → PATH 里的 npm。
+ */
+function npmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
+function npm(args, opts = {}) {
+  const cli = npmCliPath();
+  if (cli) {
+    return execFileSync(process.execPath, [cli, ...args], { encoding: 'utf8', stdio: 'pipe', ...opts });
+  }
+  return execFileSync(IS_WIN ? 'npm.cmd' : 'npm', args, {
+    encoding: 'utf8', stdio: 'pipe', shell: IS_WIN, ...opts,
+  });
+}
+
 const problems = [];
 const notes = [];
 
@@ -66,6 +96,10 @@ for (const [key, value] of Object.entries(pkg.exports ?? {})) {
 if (!Array.isArray(pkg.files) || pkg.files.length === 0) {
   problems.push('package.json 缺 `files` 白名单（会按 .gitignore 打包，极易夹带杂物）');
 }
+
+// 打包前的准备（复制 LICENSE / docs/SDK.md、清旧 tgz）—— 幂等，直接跑
+console.log('· 准备打包内容（prepare-pack）…');
+execFileSync(process.execPath, ['scripts/prepare-pack.mjs'], { cwd: serverDir, stdio: 'inherit' });
 
 if (!process.argv.includes('--no-types')) {
   console.log('· 生成声明文件（tsc）…');
@@ -86,15 +120,14 @@ if (!fs.existsSync(path.join(serverDir, 'types', 'sdk', 'index.d.ts'))) {
   problems.push('types/sdk/index.d.ts 不存在（先跑 npm run types）');
 }
 if (!fs.existsSync(path.join(serverDir, 'LICENSE'))) {
-  problems.push('server/LICENSE 不存在（prepack 会复制，单独跑本脚本前先 `node scripts/prepare-pack.mjs`）');
+  problems.push('server/LICENSE 不存在（prepare-pack 会从仓库根复制）');
+}
+if (!fs.existsSync(path.join(serverDir, 'docs', 'SDK.md'))) {
+  problems.push('server/docs/SDK.md 不存在（prepare-pack 会从仓库根复制）');
 }
 
-// `--ignore-scripts`：不让 npm 顺带跑 prepack（types 上面已经生成过了），这样 --json 输出干净
-const raw = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
-  cwd: serverDir,
-  encoding: 'utf8',
-  shell: process.platform === 'win32',
-});
+// `--ignore-scripts`：不让 npm 顺带跑 prepack（types/licenses 上面都已经准备好了），这样 --json 输出干净
+const raw = npm(['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: serverDir });
 const [info] = JSON.parse(raw);
 const files = info.files.map((f) => f.path.replace(/\\/g, '/'));
 

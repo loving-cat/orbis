@@ -33,17 +33,31 @@ function run(cmd, args, opts = {}) {
 }
 
 /**
- * 跑 npm：Windows 上 `npm` 是 .cmd，Node 24 起必须走 shell 才肯 spawn。
- * 这里的参数都不含空格（tgz 先复制到工作目录、用相对名装），所以拼字符串是安全的。
+ * 跑 npm：先找 npm 自己的 CLI 入口，再退回到 spawn `npm`。
+ *
+ * 为什么不直接 spawn `npm`：Windows 上它是 `npm.cmd`，Node 24 起不加
+ * `shell: true` 就 EINVAL；加了 shell 又要拼字符串（有注入风险 + 一条
+ * DeprecationWarning）。用 `process.execPath npm-cli.js …` 两头都躲开了。
  */
+function npmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
 function npm(args, opts = {}) {
+  const cli = npmCliPath();
+  if (cli) {
+    return execFileSync(process.execPath, [cli, ...args], { encoding: 'utf8', stdio: 'pipe', ...opts });
+  }
   return execFileSync(IS_WIN ? 'npm.cmd' : 'npm', args, {
-    encoding: 'utf8',
-    stdio: 'pipe',
-    shell: IS_WIN,
-    ...opts,
+    encoding: 'utf8', stdio: 'pipe', shell: IS_WIN, ...opts,
   });
 }
+
 
 // ① 真的打一个包（prepack 会重建 types、复制 LICENSE 与 docs）
 note('npm pack（会跑 prepack）…');
