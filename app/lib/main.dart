@@ -36,26 +36,21 @@ import 'window_state.dart';
 /// 开发用：`--dart-define=ORBIS_URL=http://127.0.0.1:8787 --dart-define=ORBIS_TOKEN=test-token`
 /// 再配合 `--dart-define=ORBIS_OPEN=main` 直接进某个群（截图 / 调 UI 用）。
 ///
-/// ★ 2.0 品牌改名：新名 `ORBIS_*` 优先，旧名 `PI_BOT_*` 仍然认 ——
-///   1.x 时代存下来的调试命令不必重写。这里两个名字都声明成编译期常量
-///   （`String.fromEnvironment` 只认字面量键），再取非空的那个。
+/// ★ 2.0 起只有 `ORBIS_*` 这一套名字（旧名已删）。
 const _devUrlOrbis = String.fromEnvironment('ORBIS_URL');
-const _devUrlLegacy = String.fromEnvironment('PI_BOT_URL');
 const _devTokenOrbis = String.fromEnvironment('ORBIS_TOKEN');
-const _devTokenLegacy = String.fromEnvironment('PI_BOT_TOKEN');
 const _devOpenOrbis = String.fromEnvironment('ORBIS_OPEN');
-const _devOpenLegacy = String.fromEnvironment('PI_BOT_OPEN');
 
-const _devUrl = _devUrlOrbis != '' ? _devUrlOrbis : _devUrlLegacy;
-const _devToken = _devTokenOrbis != '' ? _devTokenOrbis : _devTokenLegacy;
-const _devOpen = _devOpenOrbis != '' ? _devOpenOrbis : _devOpenLegacy;
+const _devUrl = _devUrlOrbis;
+const _devToken = _devTokenOrbis;
+const _devOpen = _devOpenOrbis;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 界面层的错误也要留档，和服务端的 server.log 对应
   installAppErrorLogging();
 
-  // 帧耗时采样（只有带了 PI_BOT_FRAME_LOG 环境变量才工作，平时零开销）
+  // 帧耗时采样（只有带了 ORBIS_FRAME_LOG 环境变量才工作，平时零开销）
   FrameLog.start();
 
   // 桌面窗口控制由应用绘制，窗口动作仍交给操作系统。

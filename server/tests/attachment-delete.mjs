@@ -6,8 +6,8 @@ import path from 'node:path';
 
 // 附件模块加载前固定本测试的数据目录。
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-attach-'));
-process.env.PI_BOT_HOME = tmp;
-process.env.PI_BOT_WORKSPACE = path.join(tmp, 'workspace');
+process.env.ORBIS_HOME = tmp;
+process.env.ORBIS_WORKSPACE = path.join(tmp, 'workspace');
 
 const mod = await import('../src/attachments.js');
 

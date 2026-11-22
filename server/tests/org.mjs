@@ -92,7 +92,7 @@ const before = state0.rooms.filter((r) => r.kind === 'group').length;
 if (before > 0) {
   console.log(`  ⚠ 数据目录里已经有 ${before} 个部门 —— 本测试需要干净数据目录，否则会误报。`);
   console.log('     干净跑法：');
-  console.log('       PI_BOT_HOME=<空目录> PI_BOT_PORT=8788 node src/index.js');
+  console.log('       ORBIS_HOME=<空目录> ORBIS_PORT=8788 node src/index.js');
   console.log('       node tests/org.mjs http://127.0.0.1:8788');
   console.log('     （本次仍继续跑，但「新建了 1 个部门」可能假失败）\n');
 }

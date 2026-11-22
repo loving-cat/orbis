@@ -18,14 +18,14 @@ import { pathToFileURL } from 'node:url';
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-w4b-admit-'));
 Object.assign(process.env, {
-  PI_BOT_HOME: fixture,
-  PI_BOT_WORKSPACE: path.join(fixture, 'workspace'),
+  ORBIS_HOME: fixture,
+  ORBIS_WORKSPACE: path.join(fixture, 'workspace'),
   PI_CODING_AGENT_DIR: path.join(fixture, 'agent'),
-  PI_BOT_PROBE: '0',
-  PI_BOT_LESSON_REFLECT: '0',
-  PI_BOT_TASK_INTAKE: '0',
+  ORBIS_PROBE: '0',
+  ORBIS_LESSON_REFLECT: '0',
+  ORBIS_TASK_INTAKE: '0',
 });
-for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
   fs.mkdirSync(d, { recursive: true });
 }
 globalThis.fetch = () => { throw new Error('测试期间不允许联网'); };
@@ -97,8 +97,8 @@ await test('1. createRequestScope 与 admissionFingerprint 附件顺序无关', 
 
 await test('2. admissionBudget 取全局环境变量与部门上限的更紧者，都不配时不限额', () => {
   assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 1 });
-  assert.deepEqual(admissionBudget({ PI_BOT_TASK_MAX_RUNS: '10' }, { maxRuns: 4 }), { maxRuns: 4, concurrencyLimit: 1 });
-  assert.deepEqual(admissionBudget({ PI_BOT_TASK_MAX_RUNS: '3' }, { maxRuns: 8 }), { maxRuns: 3, concurrencyLimit: 1 });
+  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '10' }, { maxRuns: 4 }), { maxRuns: 4, concurrencyLimit: 1 });
+  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '3' }, { maxRuns: 8 }), { maxRuns: 3, concurrencyLimit: 1 });
 });
 
 await test('3. admissionAuthorize 拦住错误任务、终态取消、篡改身份/指纹与旧版本', () => {

@@ -389,7 +389,7 @@ export const CHIEF_ONLY_ACTIONS = Object.freeze(
  * 那些必须是用户明配置的。
  *
  * 它是独立的一组（不是"所有只读工具"）：`extract_file`、`web_fetch` 也只读，
- * 但负责人未必该无条件拿到，那个由 `PI_BOT_LEAD_TOOLS` 决定。
+ * 但负责人未必该无条件拿到，那个由 `ORBIS_LEAD_TOOLS` 决定。
  */
 export const LEAD_EXTRA_BUILTINS = Object.freeze(['read', 'ls', 'grep', 'find']);
 

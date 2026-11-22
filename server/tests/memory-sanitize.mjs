@@ -14,8 +14,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-mem-san-'));
-process.env.PI_BOT_HOME = home;
-process.env.PI_BOT_WORKSPACE = path.join(home, 'ws');
+process.env.ORBIS_HOME = home;
+process.env.ORBIS_WORKSPACE = path.join(home, 'ws');
 
 const { store } = await import('../src/store.js');
 const { sanitizeMemoryText } = await import('../src/memory-sanitize.js');

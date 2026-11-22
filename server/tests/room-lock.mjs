@@ -12,10 +12,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_room_lock');
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_room_lock');
 // 等忙成员的时长压到 300ms（不然这条测试要等两分钟）
-process.env.PI_BOT_GROUP_BUSY_WAIT_MS = '300';
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_GROUP_BUSY_WAIT_MS = '300';
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { store } = await import('../src/store.js');
 const { PiRunner } = await import('../src/pi-runner.js');

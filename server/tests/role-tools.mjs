@@ -9,11 +9,11 @@ const keep = new Set(['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'WINDIR', '
 for (const name of Object.keys(process.env)) if (!keep.has(name)) delete process.env[name];
 Object.assign(process.env, {
   HOME: path.join(root, 'home'), PI_CODING_AGENT_DIR: path.join(root, 'agent'),
-  PI_BOT_HOME: path.join(root, 'data'), PI_BOT_WORKSPACE: path.join(root, 'workspace'),
-  PI_BOT_MODEL: '', PI_BOT_WATCH_CHANGES: '0', PI_BOT_AUTO_ATTACH_IMAGES: '0',
-  PI_BOT_EXTENSIONS: '1', PI_BOT_MCP: '1',
+  ORBIS_HOME: path.join(root, 'data'), ORBIS_WORKSPACE: path.join(root, 'workspace'),
+  ORBIS_MODEL: '', ORBIS_WATCH_CHANGES: '0', ORBIS_AUTO_ATTACH_IMAGES: '0',
+  ORBIS_EXTENSIONS: '1', ORBIS_MCP: '1',
 });
-for (const dir of [process.env.HOME, process.env.PI_CODING_AGENT_DIR, process.env.PI_BOT_WORKSPACE]) fs.mkdirSync(dir, { recursive: true });
+for (const dir of [process.env.HOME, process.env.PI_CODING_AGENT_DIR, process.env.ORBIS_WORKSPACE]) fs.mkdirSync(dir, { recursive: true });
 globalThis.fetch = () => { throw new Error('fixture forbids network'); };
 
 const { isLeadOfRoom, roleConfigurationKey, toolsForRole, leadToolAllowed } = await import('../src/role-tools.js');

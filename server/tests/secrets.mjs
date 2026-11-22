@@ -14,7 +14,7 @@ import path from 'node:path';
 
 // store 依赖数据目录，必须在 import 之前指好
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-secrets-'));
-process.env.PI_BOT_HOME = tmpRoot;
+process.env.ORBIS_HOME = tmpRoot;
 
 const { encrypt, decrypt, isEncrypted, loadOrCreateKey, hasKey } = await import('../src/secrets.js');
 

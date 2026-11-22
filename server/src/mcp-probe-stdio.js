@@ -25,7 +25,7 @@ export function createStdioProbe(server, signal) {
       // ★ 探测进程用**和运行时同一套类型化白名单**，不是 childEnv(process.env)。
       //
       //   原来这里是 childEnv(process.env, ...) —— 等于把服务端整份环境
-      //   （含 PI_BOT_TOKEN、SSH_AUTH_SOCK、宿主 PATH）交给了 probe 起的子进程。
+      //   （含 ORBIS_TOKEN、SSH_AUTH_SOCK、宿主 PATH）交给了 probe 起的子进程。
       //   MCP server 是被调用方，探一个来路不明的 server 时不该给它这些东西。
       //
       //   inheritEnv: false 明确告诉启动器不要并上 process.env；

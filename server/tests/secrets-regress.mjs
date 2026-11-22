@@ -12,10 +12,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-delete process.env.PI_BOT_SECRET_KEY;
+delete process.env.ORBIS_SECRET_KEY;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-secrets-regress-'));
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 
 const { loadOrCreateKey } = await import('../src/secrets.js');
 const { ModelGroupStore } = await import('../src/model-groups.js');
@@ -151,33 +151,33 @@ await test('换掉密钥文件后模型 key 解不开，文件不改写', () => 
   }
 });
 
-await test('错误的 PI_BOT_SECRET_KEY 不改模型文件和密钥文件', () => {
+await test('错误的 ORBIS_SECRET_KEY 不改模型文件和密钥文件', () => {
   writePlainGroups();
   new ModelGroupStore().load();
   const beforeModel = fs.readFileSync(groupsFile);
   const beforeKey = fs.readFileSync(keyFile);
-  process.env.PI_BOT_SECRET_KEY = 'ab'.repeat(32);
+  process.env.ORBIS_SECRET_KEY = 'ab'.repeat(32);
   try {
     assert.throws(() => new ModelGroupStore().list(), /解密失败/);
     assert.deepEqual(fs.readFileSync(groupsFile), beforeModel);
     assert.deepEqual(fs.readFileSync(keyFile), beforeKey);
   } finally {
-    delete process.env.PI_BOT_SECRET_KEY;
+    delete process.env.ORBIS_SECRET_KEY;
   }
   const again = new ModelGroupStore();
   again.load();
   assert.equal(again.get('mg_legacy').apiKey, 'test-key-b');
 });
 
-await test('PI_BOT_SECRET_KEY 覆盖密钥文件，且不创建 secret.key', () => {
+await test('ORBIS_SECRET_KEY 覆盖密钥文件，且不创建 secret.key', () => {
   const dir = fs.mkdtempSync(path.join(root, 'env-key-'));
-  process.env.PI_BOT_SECRET_KEY = 'cd'.repeat(32);
+  process.env.ORBIS_SECRET_KEY = 'cd'.repeat(32);
   try {
     const key = loadOrCreateKey(dir);
     assert.equal(key.toString('hex'), 'cd'.repeat(32));
     assert.equal(fs.existsSync(path.join(dir, 'secret.key')), false);
   } finally {
-    delete process.env.PI_BOT_SECRET_KEY;
+    delete process.env.ORBIS_SECRET_KEY;
   }
 });
 
@@ -252,11 +252,11 @@ await test('站点口令密钥不对时改不了，文件保持原样', () => {
 });
 
 const leaked = {
-  PI_BOT_TOKEN: 'test-tok',
+  ORBIS_TOKEN: 'test-tok',
   OPENAI_API_KEY: 'test-key-o',
   ANTHROPIC_OAUTH_TOKEN: 'test-oaut',
   RELAY_SECRET: 'test-sec',
-  PI_BOT_SECRET_KEY: 'ef'.repeat(32),
+  ORBIS_SECRET_KEY: 'ef'.repeat(32),
   UNRELATED_CUSTOM: 'test-drop',
 };
 Object.assign(process.env, leaked);
@@ -314,14 +314,14 @@ await test('具名导入的 spawn（pi 的 shell 工具走这条）也不继承 
 
 await test('子进程默认环境只有白名单，没有 token 和 key', () => {
   const prepared = childEnv(process.env, { SPECIAL_API_KEY: 'test-key-e' });
-  assert.equal(prepared.PI_BOT_TOKEN, undefined);
+  assert.equal(prepared.ORBIS_TOKEN, undefined);
   assert.equal(prepared.SPECIAL_API_KEY, 'test-key-e');
   assert.ok(String(prepared[CHILD_ENV_MARKER] || '').startsWith('v1:'));
   const direct = childEnvDirect(process.env, { SPECIAL_API_KEY: 'test-key-e' });
   assertClean(direct, { SPECIAL_API_KEY: 'test-key-e' });
   assertClean(readEnv());
   assertClean(readEnv({ env: { ...process.env } }));
-  const forged = { ...process.env, [CHILD_ENV_MARKER]: 'OPENAI_API_KEY,PI_BOT_TOKEN' };
+  const forged = { ...process.env, [CHILD_ENV_MARKER]: 'OPENAI_API_KEY,ORBIS_TOKEN' };
   assertClean(readEnv({ env: forged }));
 });
 
@@ -336,7 +336,7 @@ await test('MCP 显式 env 在并上 process.env 之后仍然留下，继承的 
   assert.equal(cfg.local.inheritEnv, false);
   assert.equal(cfg.local.env.SPECIAL_API_KEY, 'test-key-e');
   assert.equal(cfg.local.env.PLAIN_OK, 'hello-explicit');
-  assert.equal(cfg.local.env.PI_BOT_TOKEN, undefined);
+  assert.equal(cfg.local.env.ORBIS_TOKEN, undefined);
   const merged = { ...process.env, ...cfg.local.env };
   assertClean(readEnv({ env: merged }), {
     SPECIAL_API_KEY: 'test-key-e',
@@ -344,7 +344,7 @@ await test('MCP 显式 env 在并上 process.env 之后仍然留下，继承的 
   });
   const twice = childEnv(childEnv(process.env, { SPECIAL_API_KEY: 'test-key-e' }));
   assert.equal(twice.SPECIAL_API_KEY, 'test-key-e');
-  assert.equal(twice.PI_BOT_TOKEN, undefined);
+  assert.equal(twice.ORBIS_TOKEN, undefined);
 });
 
 await test('spawnCommand 与后台 shell 也不继承 token', async () => {
@@ -417,7 +417,7 @@ await test('白名单环境里 node、npm、git 仍能启动', () => {
   }
 });
 
-await test('新放行的变量会进子进程，云凭证和敏感 PI_BOT_ 不进', () => {
+await test('新放行的变量会进子进程，云凭证和敏感 ORBIS_ 不进', () => {
   const added = {
     PI_CODING_AGENT_DIR: 'agent-dir',
     XDG_CACHE_HOME: 'xdg-cache',
@@ -433,7 +433,7 @@ await test('新放行的变量会进子进程，云凭证和敏感 PI_BOT_ 不�
     PROCESSOR_ARCHITECTURE: 'x64',
     OS: 'Windows_NT',
     PUBLIC: 'public-test',
-    PI_BOT_SEARCH_KEY: 'test-seek',
+    ORBIS_SEARCH_KEY: 'test-seek',
     AWS_ACCESS_KEY_ID: 'aws-id-x',
     AWS_SECRET_ACCESS_KEY: 'aws-sec-x',
     GOOGLE_APPLICATION_CREDENTIALS: 'gac-file',
@@ -464,16 +464,16 @@ await test('新放行的变量会进子进程，云凭证和敏感 PI_BOT_ 不�
         assert.equal(pick(env, name), expected, name);
       }
     }
-    // ★ PI_BOT_HOME 现在**必须**挡掉。
+    // ★ ORBIS_HOME 现在**必须**挡掉。
     //
     //   它会告诉子进程数据目录在哪 —— 配合本机 token 文件（0600），
     //   泄漏它就等于把"读私有文件"这一步降到"读一个环境变量"。
-    //   同理 PI_BOT_PORT / PI_BOT_HOST 会暴露服务端在哪。
-    assert.equal(env.PI_BOT_HOME, undefined, 'PI_BOT_HOME 不该传给子进程');
-    assert.equal(env.PI_BOT_PORT, undefined, 'PI_BOT_PORT 不该传给子进程');
-    assert.equal(env.PI_BOT_HOST, undefined, 'PI_BOT_HOST 不该传给子进程');
-    assert.equal(env.PI_BOT_TOKEN, undefined);
-    assert.equal(env.PI_BOT_SECRET_KEY, undefined);
+    //   同理 ORBIS_PORT / ORBIS_HOST 会暴露服务端在哪。
+    assert.equal(env.ORBIS_HOME, undefined, 'ORBIS_HOME 不该传给子进程');
+    assert.equal(env.ORBIS_PORT, undefined, 'ORBIS_PORT 不该传给子进程');
+    assert.equal(env.ORBIS_HOST, undefined, 'ORBIS_HOST 不该传给子进程');
+    assert.equal(env.ORBIS_TOKEN, undefined);
+    assert.equal(env.ORBIS_SECRET_KEY, undefined);
     // ★ 新增：通往用户凭据代理的 socket 一律不传。
     //   SSH_AUTH_SOCK 是 ssh-agent 的入口，拿到就能用用户的密钥签名；
     //   GPG / DBus / XDG_RUNTIME_DIR 同属"能碰到用户其它进程"的通道。
@@ -496,7 +496,7 @@ await test('新放行的变量会进子进程，云凭证和敏感 PI_BOT_ 不�
 await test('spawnSync 子进程看不到 *_TOKEN', () => {
   const env = readEnv();
   const blob = JSON.stringify(env);
-  assert.equal(env.PI_BOT_TOKEN, undefined);
+  assert.equal(env.ORBIS_TOKEN, undefined);
   assert.equal(env.ANTHROPIC_OAUTH_TOKEN, undefined);
   assert.ok(!blob.includes('test-tok'));
   assert.ok(!blob.includes('test-oaut'));
@@ -515,8 +515,8 @@ await test('拿不到 spawn_sync 时会警告', () => {
 });
 
 await test('别的目录里的 index.js 拿不到 provider key', () => {
-  const previous = process.env.PI_BOT_MODEL;
-  process.env.PI_BOT_MODEL = 'openai/gpt-test';
+  const previous = process.env.ORBIS_MODEL;
+  process.env.ORBIS_MODEL = 'openai/gpt-test';
   const otherDir = path.join(root, 'mcp-fake');
   fs.mkdirSync(otherDir, { recursive: true });
   const otherIndex = path.join(otherDir, 'index.js');
@@ -541,15 +541,15 @@ await test('别的目录里的 index.js 拿不到 provider key', () => {
     assert.equal(evalEnv.OPENAI_API_KEY, undefined);
     assert.ok(!JSON.stringify(evalEnv).includes('test-key-o'));
   } finally {
-    if (previous === undefined) delete process.env.PI_BOT_MODEL;
-    else process.env.PI_BOT_MODEL = previous;
+    if (previous === undefined) delete process.env.ORBIS_MODEL;
+    else process.env.ORBIS_MODEL = previous;
   }
 });
 
 await test('pi 子 agent 拿到目录和当前 provider 的 key，bash 拿不到', async () => {
   const previous = {
     PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
-    PI_BOT_MODEL: process.env.PI_BOT_MODEL,
+    ORBIS_MODEL: process.env.ORBIS_MODEL,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
     ACME_KEY: process.env.ACME_KEY,
   };
@@ -559,7 +559,7 @@ await test('pi 子 agent 拿到目录和当前 provider 的 key，bash 拿不到
     providers: { acme: { apiKey: '$ACME_KEY' } },
   }));
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  process.env.PI_BOT_MODEL = 'openai/gpt-test';
+  process.env.ORBIS_MODEL = 'openai/gpt-test';
   process.env.ANTHROPIC_API_KEY = 'test-key-n';
   process.env.ACME_KEY = 'test-key-c';
   try {
@@ -582,7 +582,7 @@ await test('pi 子 agent 拿到目录和当前 provider 的 key，bash 拿不到
     assert.equal(scrubbed.OPENAI_API_KEY, 'test-key-o');
     assert.equal(scrubbed.ANTHROPIC_API_KEY, undefined);
     assert.equal(scrubbed.ACME_KEY, undefined);
-    assert.equal(scrubbed.PI_BOT_TOKEN, undefined);
+    assert.equal(scrubbed.ORBIS_TOKEN, undefined);
     assert.equal(scrubbed[CHILD_ENV_MARKER], undefined);
 
     const bash = readEnv();
@@ -591,7 +591,7 @@ await test('pi 子 agent 拿到目录和当前 provider 的 key，bash 拿不到
     assert.equal(bash.ACME_KEY, undefined);
     assert.equal(bash.PI_CODING_AGENT_DIR, agentDir);
 
-    process.env.PI_BOT_MODEL = 'acme/widget';
+    process.env.ORBIS_MODEL = 'acme/widget';
     const acmeKeys = providerKeys(process.env, []);
     assert.deepEqual(acmeKeys, { ACME_KEY: 'test-key-c' });
     const acmeChild = readEnv({ env: childEnv(process.env, acmeKeys) });

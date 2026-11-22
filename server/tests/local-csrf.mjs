@@ -12,11 +12,11 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
-delete process.env.PI_BOT_TOKEN;
-delete process.env.PI_BOT_TRUST_LOCAL;
+delete process.env.ORBIS_TOKEN;
+delete process.env.ORBIS_TRUST_LOCAL;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-local-csrf-'));
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 
 const { createHttpServer, CLIENT_HEADER, NONCE_HEADER, CHANNEL_HEADER, isJsonContentType } = await import('../src/http.js');
 import { installLocalToken } from './_local-token.mjs';

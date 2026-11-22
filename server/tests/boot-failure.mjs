@@ -47,11 +47,11 @@ function boot({ port, timeoutMs = 15000, env = {} }) {
       cwd: serverDir,
       env: {
         ...process.env,
-        PI_BOT_HOME: path.join(root, `home-${port}`),
-        PI_BOT_WORKSPACE: path.join(root, `ws-${port}`),
-        PI_BOT_PORT: String(port),
+        ORBIS_HOME: path.join(root, `home-${port}`),
+        ORBIS_WORKSPACE: path.join(root, `ws-${port}`),
+        ORBIS_PORT: String(port),
         // 别让它去连真实模型
-        PI_BOT_MODEL: '',
+        ORBIS_MODEL: '',
         ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

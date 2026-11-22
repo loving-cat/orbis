@@ -435,6 +435,9 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
           // 加密监听的端口/指纹（null = 明文）。手机端据此显示"已加密 · 校验码"，
           // 桌面端弹窗用它显示同一串 6 位码给人比对。
           tls: activeTls(),
+          // 旧数据目录里有数据、新目录还没有 → 前端据此提示"先跑 orbis migrate"
+          // （2.0 不再自动读旧目录；绝不能静默建空库让人以为聊天记录丢了）
+          needsMigration: Boolean(config.legacyDataDir),
           ...(config.trustLocal
             ? { stats: store.stats(), model: runner.modelLabel(), note: runner.initNote }
             : {}),
@@ -2069,7 +2072,7 @@ function pairPage(snap, config = defaultConfig) {
 <div class="card">
   <div class="logo">◉</div>
   <h1>${config.serverName}</h1>
-  <p class="dim">服务端配的是固定 token（ORBIS_TOKEN / PI_BOT_TOKEN），不需要配对码。</p>
+  <p class="dim">服务端配的是固定 token（ORBIS_TOKEN），不需要配对码。</p>
   <p class="dim">在 App 的「固定 token」页填入服务端 .env 里的那个 token 就行。</p>
 </div></body></html>`;
   }

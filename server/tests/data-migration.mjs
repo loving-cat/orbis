@@ -242,7 +242,7 @@ function stateWithOutsideRef() {
 function runChild(code, home) {
   return execFileSync(process.execPath, ['--input-type=module', '-e', code], {
     cwd: process.cwd(),
-    env: { ...process.env, PI_BOT_HOME: home, PI_BOT_WORKSPACE: '' },
+    env: { ...process.env, ORBIS_HOME: home, ORBIS_WORKSPACE: '' },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -279,7 +279,7 @@ await test('★ 标记不会经环境变量传给子进程（bot 的 shell 里�
     `const m = await import(${JSON.stringify(migrationUrl)}); m.markServerBoot();` +
       ` const cp = await import('node:child_process');` +
       ` cp.execFileSync(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(child)}],` +
-      ` { env: { ...process.env, PI_BOT_HOME: ${JSON.stringify(target)} }, stdio: 'ignore' });`,
+      ` { env: { ...process.env, ORBIS_HOME: ${JSON.stringify(target)} }, stdio: 'ignore' });`,
     parentHome,
   );
   assert.equal(fs.readFileSync(path.join(target, 'state.json'), 'utf8'), text, '子进程不该修复');

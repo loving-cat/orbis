@@ -2,7 +2,7 @@
  * 文件解析自测：只造自包含的样本，不依赖本机任何私人文件。
  *
  * 想顺便测真实 PDF / Word 的话，用环境变量指路径：
- *   PI_BOT_TEST_PDF=/path/to/any.pdf PI_BOT_TEST_DOCX=/path/to/any.docx node tests/extract.mjs
+ *   ORBIS_TEST_PDF=/path/to/any.pdf ORBIS_TEST_DOCX=/path/to/any.docx node tests/extract.mjs
  *
  *   node tests/extract.mjs
  */
@@ -45,8 +45,8 @@ const cases = [
   [path.join(dir, 'sample.csv'), 'CSV'],
   [path.join(dir, 'sample.json'), 'JSON'],
 ];
-if (process.env.PI_BOT_TEST_PDF) cases.push([process.env.PI_BOT_TEST_PDF, 'PDF（外部）']);
-if (process.env.PI_BOT_TEST_DOCX) cases.push([process.env.PI_BOT_TEST_DOCX, 'Word（外部）']);
+if (process.env.ORBIS_TEST_PDF) cases.push([process.env.ORBIS_TEST_PDF, 'PDF（外部）']);
+if (process.env.ORBIS_TEST_DOCX) cases.push([process.env.ORBIS_TEST_DOCX, 'Word（外部）']);
 
 let ok = 0;
 for (const [file, label] of cases) {

@@ -88,8 +88,8 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 
 | 项 | 值 | 关掉/改掉 |
 |---|---|---|
-| 发现端口 | UDP 8788（只收 IPv4） | `PI_BOT_DISCOVERY_PORT` |
-| 关闭发现 | — | `PI_BOT_DISCOVERY=0`（会议室/公共 Wi-Fi 用；手机仍可手填地址） |
+| 发现端口 | UDP 8788（只收 IPv4） | `ORBIS_DISCOVERY_PORT` |
+| 关闭发现 | — | `ORBIS_DISCOVERY=0`（会议室/公共 Wi-Fi 用；手机仍可手填地址） |
 | 连接请求接口 | `POST /api/pair/request` → `{id}` | — |
 | 手机轮询 | `GET /api/pair/request/<32位hex>` | — |
 | 电脑处理 | `GET /api/pair/requests`、`POST /api/pair/request/<id>` `{approve}` | 需要本机身份 |
@@ -108,7 +108,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 
 1. 两台设备是不是**同一个 Wi-Fi**（有些路由器的访客网络互相隔离，AP isolation）。
 2. 电脑上 Windows 防火墙第一次会问"是否允许 pi-bot 访问网络" —— 要选**允许**；只放行过 TCP 8787 的话，UDP 8788 可能还是拦着的（发现靠它）。
-3. 服务端日志里应该有 `[discovery] 局域网发现已开启：UDP 8788`。没有这行就是端口被占或被 `PI_BOT_DISCOVERY=0` 关了。
+3. 服务端日志里应该有 `[discovery] 局域网发现已开启：UDP 8788`。没有这行就是端口被占或被 `ORBIS_DISCOVERY=0` 关了。
 4. 实在找不到就点"找不到？手动填地址"，填 `http://<电脑IP>:8787` + 电脑屏幕上那 6 位配对码 —— 这条路一直都能用。
 
 ### 换一台电脑
@@ -148,7 +148,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 | 端口 | 协议 | 谁在用 | 说明 |
 |---|---|---|---|
 | 8787 | HTTP / WS | 桌面端（本机回环） | 本机没有中间人，保持明文省掉证书轮换的麻烦 |
-| 8443 | **HTTPS / WSS** | 手机（局域网） | 自签证书 + 指纹固定；`PI_BOT_TLS_PORT` 可改 |
+| 8443 | **HTTPS / WSS** | 手机（局域网） | 自签证书 + 指纹固定；`ORBIS_TLS_PORT` 可改 |
 | 8788 | UDP | 发现 | 应答里带 `tls: {port, fingerprint}` 和 `https://` 地址 |
 
 Windows 防火墙第一次会问"是否允许 pi-bot 访问网络"，**TCP 8787、TCP 8443、
@@ -156,7 +156,7 @@ UDP 8788 三个都要放行**（允许的是同一个程序，通常一次就够
 
 ### 关掉加密
 
-`PI_BOT_TLS=0`：只起 8787 的明文监听。手机端会因为发现应答里没有 `tls` 而
+`ORBIS_TLS=0`：只起 8787 的明文监听。手机端会因为发现应答里没有 `tls` 而
 退回 `http://`，设置页会明确写 **"未加密（明文 http，同一个 Wi-Fi 能被抓包）"**。
 只在排障时用。
 
@@ -281,9 +281,9 @@ cd app && flutter test test/phone_layout_test.dart
 | `JAVA_HOME is set to an invalid directory` | `JAVA_HOME` 指着 JDK 8。见 [PITFALLS 21](PITFALLS.md) |
 | `checkReleaseAarMetadata` 说某个插件要 compileSdk 36 | 见 [PITFALLS 10](PITFALLS.md) |
 | 手机报"应用未安装"/`INSTALL_FAILED_UPDATE_INCOMPATIBLE` | 签名证书和已装版本不同 —— 换个 key 打的包，或换了机器（见上文签名一节） |
-| 配对时 App 提示 `bad host` | 服务端防 DNS rebinding：`Host` 头必须是本机名/IP。走反向代理要设 `PI_BOT_ALLOWED_HOSTS`；模拟器里访问 `10.0.2.2` 也算"外部 Host"，需要显式加进去 |
+| 配对时 App 提示 `bad host` | 服务端防 DNS rebinding：`Host` 头必须是本机名/IP。走反向代理要设 `ORBIS_ALLOWED_HOSTS`；模拟器里访问 `10.0.2.2` 也算"外部 Host"，需要显式加进去 |
 | 后台收不到消息 | 关掉电池优化（设置页有入口）；国产 ROM 还要在系统设置里允许"自启动/后台活动" |
 | 手机提示证书错误 / 连不上 8443 | 电脑换过网络（证书要重签）或换了端口：看电脑日志里 `证书指纹`；手机设置里「换一台电脑」重新配一次（配对会带上新指纹） |
-| 设置页显示「未加密」 | 要么服务端 `PI_BOT_TLS=0`，要么 8443 起不来（日志有 `⚠ 加密监听起不来`），要么这台电脑是老版本（发现应答里没有 `tls`） |
+| 设置页显示「未加密」 | 要么服务端 `ORBIS_TLS=0`，要么 8443 起不来（日志有 `⚠ 加密监听起不来`），要么这台电脑是老版本（发现应答里没有 `tls`） |
 | 跑完脚本后 `app/windows/flutter/generated_plugins.cmake` 变成已修改 | `flutter pub get` 顺手重生成 Windows 的插件清单（少一行 `jni`）。**不要把它混进安卓的提交**；要提交就单独确认 Windows 编得过（CI 每次都会重生成，仓库里那份不是权威） |
 | 打出来的包名/版本号跟预期不符 | `flutter build apk --no-pub` 之前没 `pub get`，或者 pubspec 改了没重编；`scripts/pack-android.mjs` 会通过 Gradle 的 `output-metadata.json` 交叉校验 |

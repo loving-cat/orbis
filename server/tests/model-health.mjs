@@ -14,8 +14,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_health');
-const HOME = process.env.PI_BOT_HOME;
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_health');
+const HOME = process.env.ORBIS_HOME;
 fs.rmSync(HOME, { recursive: true, force: true });
 
 const { ModelHealth } = await import('../src/model-health.js');
@@ -121,7 +121,7 @@ await test('停过的健康检查不会留下定时器（进程能退出）', ()
   assert.equal(h.refreshTimer, null);
 });
 
-await test('★ PI_BOT_PROBE=0（autoProbe:false）：结果过期也不自己发请求', async () => {
+await test('★ ORBIS_PROBE=0（autoProbe:false）：结果过期也不自己发请求', async () => {
   const h = new ModelHealth(fakeRunner(), { ttlMs: 20, autoProbe: false });
   let calls = 0;
   h.runAll = async () => {

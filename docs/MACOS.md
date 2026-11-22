@@ -235,8 +235,8 @@ pid 分叉尤其麻烦 —— 会出现「服务端在跑、App 以为自己没�
 
 ### 环境变量
 
-服务端统一走 `readBrandEnv`：`ORBIS_*` 优先，未设置或空串时回退 `PI_BOT_*`。
-桌面端传的 `PI_BOT_PORT` / `PI_BOT_TLS_PORT` / `PI_BOT_HOME` **继续有效**，
+服务端统一走 `readBrandEnv`：`ORBIS_*` 优先，未设置或空串时回退 `ORBIS_*`。
+桌面端传的 `ORBIS_PORT` / `ORBIS_TLS_PORT` / `ORBIS_HOME` **继续有效**，
 不需要改；新代码/文档一律写 `ORBIS_*`。2.0 起只认 `ORBIS_*`。
 
 ### 从旧版本升上来的自查

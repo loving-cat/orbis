@@ -8,7 +8,7 @@
  *   · 探针格式不对 / 是垃圾包 → 一个字都不回（不能当端口扫描器的望远镜）；
  *   · 应答里绝不能有配对码；
  *   · 同一个来源连发两次 → 第二次被节流（手机上连点"重新搜索"不会打爆主机）；
- *   · 关掉开关（PI_BOT_DISCOVERY=0）→ 不起 socket。
+ *   · 关掉开关（ORBIS_DISCOVERY=0）→ 不起 socket。
  */
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
@@ -143,7 +143,7 @@ await test('真 UDP：同一来源 500ms 内只回一次（防连点打爆主机
   }
 });
 
-await test('开关关掉（PI_BOT_DISCOVERY=0）→ 根本不起 socket', async () => {
+await test('开关关掉（ORBIS_DISCOVERY=0）→ 根本不起 socket', async () => {
   const responder = await startDiscovery({ port: 0, enabled: false, logLine: () => {} });
   assert.equal(responder, null);
 });

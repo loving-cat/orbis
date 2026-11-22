@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_bench');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_bench');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { store } = await import('../src/store.js');
 const { parseMentions } = await import('../src/mentions.js');
@@ -69,11 +69,11 @@ const walk = (d) => {
     else bytes += fs.statSync(p).size;
   }
 };
-walk(process.env.PI_BOT_HOME);
+walk(process.env.ORBIS_HOME);
 console.log(`\n落盘总量：${(bytes / 1024 / 1024).toFixed(2)} MB`);
 
 // ---- 脏房间优化验证：改 1 个房间，不该写 20 个文件（断言，失败退出 1）
-const roomsDir = path.join(process.env.PI_BOT_HOME, 'rooms');
+const roomsDir = path.join(process.env.ORBIS_HOME, 'rooms');
 store.saveNow(); // 先把前面造数据留下的脏房间都写掉
 const stamp = (f) => fs.statSync(path.join(roomsDir, f)).mtimeMs;
 const before = new Map(fs.readdirSync(roomsDir).map((f) => [f, stamp(f)]));

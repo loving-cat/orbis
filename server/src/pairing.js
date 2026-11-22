@@ -5,7 +5,7 @@
  * 二维码里放的是 JSON：{"v":1,"url":"http://192.168.1.100:8787","code":"482913"}
  * 手机 App 扫到就直接把地址和码填好。
  *
- * 也支持 PI_BOT_TOKEN 固定 token（服务器部署 / 自用免配对）。
+ * 也支持 ORBIS_TOKEN 固定 token（服务器部署 / 自用免配对）。
  */
 import os from 'node:os';
 import QRCode from 'qrcode';

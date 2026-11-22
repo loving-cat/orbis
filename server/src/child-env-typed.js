@@ -18,7 +18,7 @@
  *
  * ## 一律不传
  *
- *   PI_BOT_TOKEN / PI_BOT_SECRET_KEY / 任何 *_TOKEN / *_KEY / *_SECRET
+ *   ORBIS_TOKEN / ORBIS_SECRET_KEY / 任何 *_TOKEN / *_KEY / *_SECRET
  *   SSH_AUTH_SOCK / GPG_AGENT_INFO / DBUS_SESSION_BUS_ADDRESS / XDG_RUNTIME_DIR
  *   UV_* / PIP_* / NODE_OPTIONS / DYLD_* / LD_*
  *
@@ -97,13 +97,12 @@ export const NEVER_PASS = new Set([
   'DBUS_SESSION_BUS_ADDRESS',
   'XDG_RUNTIME_DIR',
   'NODE_OPTIONS',
-  'PI_BOT_TOKEN',
-  'PI_BOT_SECRET_KEY',
+  'ORBIS_TOKEN',
   'ORBIS_SECRET_KEY',
-  'PI_BOT_PORT',
-  'PI_BOT_HOST',
-  'PI_BOT_HOME',
-  'PI_BOT_WORKSPACE',
+  'ORBIS_PORT',
+  'ORBIS_HOST',
+  'ORBIS_HOME',
+  'ORBIS_WORKSPACE',
 ]);
 
 /** 一律不传的前缀。 */
@@ -221,7 +220,7 @@ export function buildChildEnv({ kind, homeDir = '', tmpDir = '', extra = null, l
       if (value == null) continue;
       const upper = String(key).toUpperCase();
       // 服务端凭据：绝不出服务端进程
-      if (upper.startsWith('PI_BOT_')) continue;
+      if (upper.startsWith('ORBIS_')) continue;
       // 通往用户 agent / 会话总线的 socket
       if (NEVER_PASS.has(upper)) continue;
       // 能改变"加载什么代码"的

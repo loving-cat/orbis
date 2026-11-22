@@ -66,7 +66,7 @@ async function banner(pairing, runner) {
   console.log(lines.join('\n'));
 
   if (config.staticToken) {
-    console.log('  ★ 已配置固定 token（PI_BOT_TOKEN），手机端直接填这个 token 即可');
+    console.log('  ★ 已配置固定 token（ORBIS_TOKEN），手机端直接填这个 token 即可');
     console.log(
       config.trustLocal
         ? '  ⚠ 本机请求仍免 token（PI_BOT_TRUST_LOCAL=1）：经反向代理进来的请求会被当成本机，公网部署不要这样设\n'

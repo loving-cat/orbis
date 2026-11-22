@@ -162,10 +162,10 @@ test('卡片文案一眼能读懂（谁、能干什么、多久）', () => {
 test('★ 走完一遍：申请 → 手机批准 → 授权生效 → 网关放行', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-grantreq-'));
   Object.assign(process.env, {
-    PI_BOT_HOME: root, PI_BOT_WORKSPACE: path.join(root, 'ws'),
-    PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_BOT_PROBE: '0',
+    ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
+    PI_CODING_AGENT_DIR: path.join(root, 'agent'), ORBIS_PROBE: '0',
   });
-  for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+  for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   const { store } = await import(src('store.js'));
@@ -279,10 +279,10 @@ test('没有 minChannel 时按动作名推（不可撤销 → 手机）', () => 
 test('★ 负责人发起 → 同时挂到「用户 ↔ 主 Bot」私聊（用户不用满群找卡片）', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-grantreq-fwd-'));
   Object.assign(process.env, {
-    PI_BOT_HOME: root, PI_BOT_WORKSPACE: path.join(root, 'ws'),
-    PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_BOT_PROBE: '0',
+    ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
+    PI_CODING_AGENT_DIR: path.join(root, 'agent'), ORBIS_PROBE: '0',
   });
-  for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+  for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   const storeMod = await import(`${src('store.js').href}?fwd=1`);
@@ -320,10 +320,10 @@ test('★ 负责人发起 → 同时挂到「用户 ↔ 主 Bot」私聊（用�
 test('主 Bot 自己发起时不再自我转呈（免得同一条出现两遍）', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-grantreq-fwd2-'));
   Object.assign(process.env, {
-    PI_BOT_HOME: root, PI_BOT_WORKSPACE: path.join(root, 'ws'),
-    PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_BOT_PROBE: '0',
+    ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
+    PI_CODING_AGENT_DIR: path.join(root, 'agent'), ORBIS_PROBE: '0',
   });
-  for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+  for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   const storeMod = await import(`${src('store.js').href}?fwd=2`);
@@ -352,10 +352,10 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
   const http = await import('node:http');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-grantreq-route-'));
   Object.assign(process.env, {
-    PI_BOT_HOME: root, PI_BOT_WORKSPACE: path.join(root, 'ws'),
-    PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_BOT_PROBE: '0',
+    ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
+    PI_CODING_AGENT_DIR: path.join(root, 'agent'), ORBIS_PROBE: '0',
   });
-  for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+  for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   // 换一套全新的 store/http 实例（前一个测试已经用掉了模块缓存）

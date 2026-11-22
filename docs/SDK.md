@@ -8,7 +8,7 @@
 
 | 层 | 核心模块 | 职责 |
 |---|---|---|
-| **1. 实例原语与纯算法** | `brand.js` / `config.js` / `bus.js` / `store.js` / `model-groups.js` / `capabilities.js` / `grants.js` | `createConfig`（优先读取 `ORBIS_*`，兼容 `PI_BOT_*`）、`createBus`、`createStore`、`createModelGroupStore` 按实例隔离数据目录与事件流，仅 `import` 不碰全局磁盘；能力、授权与调度规则保存在单一声明源。 |
+| **1. 实例原语与纯算法** | `brand.js` / `config.js` / `bus.js` / `store.js` / `model-groups.js` / `capabilities.js` / `grants.js` | `createConfig`（优先读取 `ORBIS_*`，兼容 `ORBIS_*`）、`createBus`、`createStore`、`createModelGroupStore` 按实例隔离数据目录与事件流，仅 `import` 不碰全局磁盘；能力、授权与调度规则保存在单一声明源。 |
 | **2. 多智能体编排内核** | `session-factory.js` / `pi-runner.js` / `policy-hook.js` / `mcp-hook.js` | 负责单 Bot 单轮运行、模型熔断与多端点轮转、全双工旁路响应、部门 `@提及` 并发轮次引擎与空回复三层恢复。 |
 | **3. 应用服务与 SDK 门面** | `services/*` / `sdk/index.js` / `sdk/client.js` | 把 Bot/部门、模型组、定时任务、技能/MCP 与全局策略收束到唯一的领域服务层（UI、Jarvis 工具、SDK 三端同源）。 |
 | **4. 宿主适配外壳** | `server-main.js` / `http.js` / `ws.js` / `tools.js` / `jarvis-tools.js` | HTTP/WS 协议传输、一次性 nonce 鉴权、以及给大模型调用的 Schema 包装，自身不复制业务规则。 |
@@ -152,7 +152,7 @@ import { createOrbisClient } from 'orbis-agent/client';
 
 const client = createOrbisClient({
   baseUrl: 'http://127.0.0.1:8787',
-  dataDir: process.env.ORBIS_HOME || process.env.PI_BOT_HOME, // 自动读取 local-token，也可直接传 token
+  dataDir: process.env.ORBIS_HOME || process.env.ORBIS_HOME, // 自动读取 local-token，也可直接传 token
 });
 
 const conn = await client.connectEvents((ev) => {

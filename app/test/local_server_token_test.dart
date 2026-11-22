@@ -15,7 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 本地拉起一般 1~3 秒；CI 的 windows-latest 冷启动能到十几秒。
 /// 这里给到 60 秒，并且允许用环境变量覆盖（排查时想让它快点失败就调小）。
 final Duration serverStartTimeout = Duration(
-  seconds: int.tryParse(Platform.environment['PI_BOT_TEST_SERVER_TIMEOUT'] ?? '') ?? 60,
+  seconds: int.tryParse(Platform.environment['ORBIS_TEST_SERVER_TIMEOUT'] ?? '') ?? 60,
 );
 
 /// 起一个带 HTTP + WS 的服务端子进程；返回端口和关闭函数。
@@ -111,9 +111,9 @@ void main() {
 
   test('服务器模式：没填 token 时停在「需要 token」，不发请求、不重连', () async {
     // ★ 服务器模式下服务端仍会写 local-token 文件（那是 HTTP 层的凭据），
-    //   但客户端在服务器模式要的是用户填的 PI_BOT_TOKEN ——
+    //   但客户端在服务器模式要的是用户填的 ORBIS_TOKEN ——
     //   两者不是一回事。这里显式清掉 localToken，模拟"用户还没填"。
-    final server = await _startServer({'PI_BOT_TOKEN': 'app-test-token'});
+    final server = await _startServer({'ORBIS_TOKEN': 'app-test-token'});
     if (server == null) {
       markTestSkipped('没有 node 或服务端依赖没装（cd server && npm install），跳过');
       return;
@@ -132,7 +132,7 @@ void main() {
   });
 
   test('服务器模式：填对 token 后连上；token 存下来，下次直接用', () async {
-    final server = await _startServer({'PI_BOT_TOKEN': 'app-test-token'});
+    final server = await _startServer({'ORBIS_TOKEN': 'app-test-token'});
     if (server == null) {
       markTestSkipped('没有 node 或服务端依赖没装（cd server && npm install），跳过');
       return;
@@ -154,7 +154,7 @@ void main() {
   });
 
   test('服务器模式：token 填错→说清楚「token 不对」，清掉存的，不重连', () async {
-    final server = await _startServer({'PI_BOT_TOKEN': 'app-test-token'});
+    final server = await _startServer({'ORBIS_TOKEN': 'app-test-token'});
     if (server == null) {
       markTestSkipped('没有 node 或服务端依赖没装（cd server && npm install），跳过');
       return;

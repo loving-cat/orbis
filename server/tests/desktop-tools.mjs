@@ -24,13 +24,13 @@ import assert from 'node:assert/strict';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-dtools-'));
 Object.assign(process.env, {
-  PI_BOT_HOME: path.join(root, 'data'),
-  PI_BOT_WORKSPACE: path.join(root, 'ws'),
+  ORBIS_HOME: path.join(root, 'data'),
+  ORBIS_WORKSPACE: path.join(root, 'ws'),
   PI_CODING_AGENT_DIR: path.join(root, 'agent'),
-  PI_BOT_PROBE: '0',
-  PI_BOT_TASK_INTAKE: '0',
+  ORBIS_PROBE: '0',
+  ORBIS_TASK_INTAKE: '0',
 });
-for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
   fs.mkdirSync(d, { recursive: true });
 }
 globalThis.fetch = () => { throw new Error('测试期间不允许联网'); };

@@ -11,8 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_abort_placeholder');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_abort_placeholder');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { store } = await import('../src/store.js');
 const { PiRunner } = await import('../src/pi-runner.js');
@@ -134,5 +134,5 @@ for (const r of results) {
   }
 }
 console.log(`\n终止留白复核：${results.length - failed}/${results.length} 通过`);
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 process.exit(failed ? 1 : 0);

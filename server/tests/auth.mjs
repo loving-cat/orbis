@@ -15,8 +15,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_auth');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_auth');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { createHttpServer, hostAllowed } = await import('../src/http.js');
 import { installLocalToken } from './_local-token.mjs';
@@ -247,5 +247,5 @@ for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : `\n     ${r.err}`}`);
 }
 console.log(`\n${passed}/${results.length} 通过`);
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 process.exit(passed === results.length ? 0 : 1);

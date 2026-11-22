@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-greet-'));
-process.env.PI_BOT_HOME = dataDir;
+process.env.ORBIS_HOME = dataDir;
 process.env.PI_AGENT_DIR = path.join(dataDir, 'agent');
-process.env.PI_BOT_WORKSPACE = path.join(dataDir, 'workspace');
+process.env.ORBIS_WORKSPACE = path.join(dataDir, 'workspace');
 
 const { store } = await import('../src/store.js');
 

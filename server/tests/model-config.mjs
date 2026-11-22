@@ -11,7 +11,7 @@ for (const name of Object.keys(process.env)) {
 }
 process.env.HOME = path.join(root, 'fixture-home');
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'fixture-agent');
-process.env.PI_BOT_DATA_DIR = root;
+process.env.ORBIS_DATA_DIR = root;
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 const localFetch = globalThis.fetch;
@@ -22,11 +22,11 @@ globalThis.fetch = (input, options) => {
   }
   return localFetch(input, options);
 };
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
-process.env.PI_BOT_MODEL = 'group-test/model-a';
-process.env.PI_BOT_WATCH_CHANGES = '0';
-process.env.PI_BOT_AUTO_ATTACH_IMAGES = '0';
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_MODEL = 'group-test/model-a';
+process.env.ORBIS_WATCH_CHANGES = '0';
+process.env.ORBIS_AUTO_ATTACH_IMAGES = '0';
 const { mergeGroupModels, capacityError } = await import('../src/model-capacity.js');
 const { ModelGroup, modelGroups } = await import('../src/model-groups.js');
 const { modelFailure, assistantFailure, fallbackModels, recoverModelReply } = await import('../src/model-reply.js');

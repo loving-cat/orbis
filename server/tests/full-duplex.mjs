@@ -13,15 +13,15 @@ fs.mkdirSync(wsDir, { recursive: true });
 Object.assign(process.env, {
   HOME: root,
   PI_CODING_AGENT_DIR: path.join(root, 'agent'),
-  PI_BOT_HOME: path.join(root, 'data'),
-  PI_BOT_WORKSPACE: wsDir,
-  PI_BOT_PROBE: '0',
-  PI_BOT_LESSON_REFLECT: '0',
-  PI_BOT_TASK_INTAKE: '0',
-  PI_BOT_WATCH_CHANGES: '0',
-  PI_BOT_AUTO_ATTACH: '0',
-  PI_BOT_AUTO_ATTACH_FILES: '0',
-  PI_BOT_FULL_DUPLEX: '1',
+  ORBIS_HOME: path.join(root, 'data'),
+  ORBIS_WORKSPACE: wsDir,
+  ORBIS_PROBE: '0',
+  ORBIS_LESSON_REFLECT: '0',
+  ORBIS_TASK_INTAKE: '0',
+  ORBIS_WATCH_CHANGES: '0',
+  ORBIS_AUTO_ATTACH: '0',
+  ORBIS_AUTO_ATTACH_FILES: '0',
+  ORBIS_FULL_DUPLEX: '1',
 });
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 globalThis.fetch = () => { throw new Error('test forbids network'); };
@@ -36,7 +36,7 @@ const { openRequest, createRequestLifecycle } = await import('../src/coordinatio
 const { createRequestReceipts } = await import('../src/tasks/task-request-receipts.js');
 
 const model = { provider: 'fixture', id: 'fixture', contextWindow: 16000, maxTokens: 1000 };
-const receipts = createRequestReceipts({ dir: path.join(process.env.PI_BOT_HOME, 'task-requests') });
+const receipts = createRequestReceipts({ dir: path.join(process.env.ORBIS_HOME, 'task-requests') });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const drain = () => new Promise((r) => setImmediate(r));
 

@@ -109,7 +109,7 @@
     },
     {
       "path": "app/lib/app_state.dart",
-      "count": 9
+      "count": 7
     },
     {
       "path": "app/lib/browser_platform_policy.dart",
@@ -128,10 +128,6 @@
       "count": 7
     },
     {
-      "path": "app/lib/frame_log.dart",
-      "count": 2
-    },
-    {
       "path": "app/lib/html_preview_document.dart",
       "count": 2
     },
@@ -141,7 +137,7 @@
     },
     {
       "path": "app/lib/main.dart",
-      "count": 20
+      "count": 15
     },
     {
       "path": "app/lib/models.dart",
@@ -213,7 +209,7 @@
     },
     {
       "path": "app/test/local_server_token_test.dart",
-      "count": 6
+      "count": 1
     },
     {
       "path": "app/test/port_launch_test.dart",
@@ -349,23 +345,19 @@
     },
     {
       "path": "server/src/brand.js",
-      "count": 3
-    },
-    {
-      "path": "server/src/capabilities.js",
-      "count": 1
+      "count": 2
     },
     {
       "path": "server/src/child-env-typed.js",
-      "count": 11
+      "count": 2
     },
     {
       "path": "server/src/child-env.js",
-      "count": 26
+      "count": 1
     },
     {
       "path": "server/src/config.js",
-      "count": 6
+      "count": 5
     },
     {
       "path": "server/src/coordination/intake-tool.js",
@@ -381,7 +373,7 @@
     },
     {
       "path": "server/src/discovery.js",
-      "count": 3
+      "count": 2
     },
     {
       "path": "server/src/git-ops.js",
@@ -389,7 +381,7 @@
     },
     {
       "path": "server/src/http.js",
-      "count": 2
+      "count": 1
     },
     {
       "path": "server/src/local-capabilities.js",
@@ -408,40 +400,12 @@
       "count": 2
     },
     {
-      "path": "server/src/mcp-probe-stdio.js",
-      "count": 1
-    },
-    {
       "path": "server/src/mcp.js",
       "count": 1
     },
     {
-      "path": "server/src/model-health.js",
-      "count": 2
-    },
-    {
-      "path": "server/src/pairing.js",
-      "count": 1
-    },
-    {
-      "path": "server/src/pi-runner.js",
-      "count": 1
-    },
-    {
-      "path": "server/src/policy-hook.js",
-      "count": 1
-    },
-    {
-      "path": "server/src/provider-keys.js",
-      "count": 2
-    },
-    {
       "path": "server/src/relay/server.js",
       "count": 1
-    },
-    {
-      "path": "server/src/role-tools.js",
-      "count": 4
     },
     {
       "path": "server/src/run-slots.js",
@@ -468,12 +432,8 @@
       "count": 1
     },
     {
-      "path": "server/src/secrets.js",
-      "count": 2
-    },
-    {
       "path": "server/src/server-main.js",
-      "count": 5
+      "count": 4
     },
     {
       "path": "server/src/tls.js",
@@ -488,152 +448,60 @@
       "count": 4
     },
     {
-      "path": "server/tests/_local-token.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/abort-placeholder.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/action-catalog.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/admin-view.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/approvals.mjs",
-      "count": 2
-    },
-    {
       "path": "server/tests/artifacts.mjs",
       "count": 1
     },
     {
       "path": "server/tests/ask-card.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/ask-guard.mjs",
-      "count": 2
+      "count": 1
     },
     {
       "path": "server/tests/attach.mjs",
       "count": 1
     },
     {
-      "path": "server/tests/attachment-delete.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/auth.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/automations.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/bench.mjs",
-      "count": 4
-    },
-    {
       "path": "server/tests/boot-failure.mjs",
-      "count": 6
+      "count": 2
     },
     {
       "path": "server/tests/brand-deprecation.mjs",
-      "count": 19
+      "count": 9
     },
     {
       "path": "server/tests/brand.mjs",
-      "count": 15
-    },
-    {
-      "path": "server/tests/capabilities.mjs",
-      "count": 4
+      "count": 5
     },
     {
       "path": "server/tests/change-watch.mjs",
       "count": 2
     },
     {
-      "path": "server/tests/child-env-typed.mjs",
-      "count": 12
-    },
-    {
       "path": "server/tests/closing-turn.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/confirm.mjs",
-      "count": 3
+      "count": 1
     },
     {
       "path": "server/tests/data-migration.mjs",
-      "count": 4
+      "count": 1
     },
     {
       "path": "server/tests/decision-settings.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/desktop-input.mjs",
-      "count": 3
+      "count": 1
     },
     {
       "path": "server/tests/desktop-island-win.mjs",
       "count": 2
     },
     {
-      "path": "server/tests/desktop-lease.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/desktop-settings-route.mjs",
-      "count": 6
-    },
-    {
-      "path": "server/tests/desktop-takeover.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/desktop-tools.mjs",
-      "count": 6
-    },
-    {
-      "path": "server/tests/device-revoke.mjs",
-      "count": 2
-    },
-    {
       "path": "server/tests/discovery.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/disk.mjs",
-      "count": 2
+      "count": 1
     },
     {
       "path": "server/tests/dm-greeting.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/dm.mjs",
-      "count": 2
+      "count": 1
     },
     {
       "path": "server/tests/ego-browser.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/exec-mode.mjs",
-      "count": 6
-    },
-    {
-      "path": "server/tests/extract.mjs",
-      "count": 6
+      "count": 1
     },
     {
       "path": "server/tests/fixtures/island/island-capture-check.ps1",
@@ -656,140 +524,48 @@
       "count": 1
     },
     {
-      "path": "server/tests/full-duplex.mjs",
-      "count": 10
-    },
-    {
       "path": "server/tests/git-ops.mjs",
-      "count": 6
+      "count": 1
     },
     {
       "path": "server/tests/git-push-flow.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/grant-generation.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/grant-reconcile.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/grant-request.mjs",
-      "count": 20
-    },
-    {
-      "path": "server/tests/grants.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/group-cursor.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/hooks.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/http-admin.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/jarvis-mode.mjs",
-      "count": 5
+      "count": 1
     },
     {
       "path": "server/tests/lessons.mjs",
-      "count": 4
+      "count": 1
     },
     {
       "path": "server/tests/local-capabilities.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/local-csrf.mjs",
-      "count": 8
-    },
-    {
-      "path": "server/tests/local-nonce.mjs",
       "count": 2
     },
     {
-      "path": "server/tests/mcp-attach-keeps-memory.mjs",
-      "count": 3
+      "path": "server/tests/local-csrf.mjs",
+      "count": 4
     },
     {
       "path": "server/tests/mcp-credential-target.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/mcp-presets.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/mcp-tool-registry.mjs",
       "count": 1
     },
     {
       "path": "server/tests/mcp.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/memory-sanitize.mjs",
-      "count": 2
+      "count": 1
     },
     {
       "path": "server/tests/model-config.mjs",
-      "count": 7
+      "count": 1
     },
     {
       "path": "server/tests/model-health-forget.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/model-health.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/net-guard.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/onboarding-route.mjs",
-      "count": 5
-    },
-    {
-      "path": "server/tests/org.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/overrides.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/pair-request-http.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/policy-hook.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/preferences.mjs",
-      "count": 5
+      "count": 1
     },
     {
       "path": "server/tests/progress-flow.mjs",
-      "count": 3
+      "count": 1
     },
     {
       "path": "server/tests/readonly-regress.mjs",
-      "count": 7
-    },
-    {
-      "path": "server/tests/reclamation.mjs",
-      "count": 6
+      "count": 1
     },
     {
       "path": "server/tests/relay-frames.mjs",
@@ -805,15 +581,7 @@
     },
     {
       "path": "server/tests/role-tools.mjs",
-      "count": 9
-    },
-    {
-      "path": "server/tests/room-lock.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/run-managed-attempt.mjs",
-      "count": 6
+      "count": 1
     },
     {
       "path": "server/tests/sandbox-win.mjs",
@@ -821,39 +589,27 @@
     },
     {
       "path": "server/tests/sandbox.mjs",
-      "count": 10
-    },
-    {
-      "path": "server/tests/secrets-regress.mjs",
-      "count": 39
-    },
-    {
-      "path": "server/tests/secrets.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/security-p0.mjs",
-      "count": 1
-    },
-    {
-      "path": "server/tests/security-regress.mjs",
       "count": 3
     },
     {
-      "path": "server/tests/security-shell.mjs",
+      "path": "server/tests/secrets-regress.mjs",
+      "count": 1
+    },
+    {
+      "path": "server/tests/secrets.mjs",
       "count": 1
     },
     {
       "path": "server/tests/server-mode.mjs",
-      "count": 25
+      "count": 1
     },
     {
       "path": "server/tests/session-resources.mjs",
-      "count": 9
+      "count": 2
     },
     {
       "path": "server/tests/shell-bypass-regress.mjs",
-      "count": 6
+      "count": 1
     },
     {
       "path": "server/tests/shells.mjs",
@@ -861,71 +617,15 @@
     },
     {
       "path": "server/tests/site-draft.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/ssrf-regress.mjs",
-      "count": 3
-    },
-    {
-      "path": "server/tests/task-admission.mjs",
-      "count": 9
-    },
-    {
-      "path": "server/tests/task-budget.mjs",
-      "count": 6
-    },
-    {
-      "path": "server/tests/task-commands.mjs",
-      "count": 7
-    },
-    {
-      "path": "server/tests/task-controls.mjs",
-      "count": 6
-    },
-    {
-      "path": "server/tests/task-file-claims.mjs",
-      "count": 4
+      "count": 1
     },
     {
       "path": "server/tests/task-intake-e2e.mjs",
-      "count": 13
-    },
-    {
-      "path": "server/tests/task-reduce.mjs",
-      "count": 6
-    },
-    {
-      "path": "server/tests/task-request-gate.mjs",
-      "count": 7
-    },
-    {
-      "path": "server/tests/task-run-store.mjs",
-      "count": 7
-    },
-    {
-      "path": "server/tests/task-supervisor.mjs",
-      "count": 4
-    },
-    {
-      "path": "server/tests/task-verification.mjs",
-      "count": 7
-    },
-    {
-      "path": "server/tests/tasks.mjs",
-      "count": 2
-    },
-    {
-      "path": "server/tests/template-grants.mjs",
-      "count": 5
+      "count": 1
     },
     {
       "path": "server/tests/tls.mjs",
       "count": 2
-    },
-    {
-      "path": "server/tests/unit.mjs",
-      "count": 3
     },
     {
       "path": "server/tests/update-check.mjs",
@@ -933,7 +633,7 @@
     },
     {
       "path": "server/tests/update-checker.mjs",
-      "count": 5
+      "count": 2
     },
     {
       "path": "server/tests/uploads.mjs",

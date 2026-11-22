@@ -15,11 +15,11 @@
  *   USERPROFILE、APPDATA、LOCALAPPDATA、HOMEDRIVE、HOMEPATH、
  *   ProgramFiles、ProgramFiles(x86)、ProgramData、PSModulePath、
  *   NUMBER_OF_PROCESSORS、PROCESSOR_ARCHITECTURE、OS、PUBLIC、
- *   PI_BOT_*（除外名单见下）、
+ *   ORBIS_*（除外名单见下）、
  *   以及名字以 `_PROXY` 结尾的代理变量。
  *
- * `PI_BOT_TOKEN`、`PI_BOT_SECRET_KEY`、`*_API_KEY`、`*_TOKEN`、`*_SECRET`
- * 一律不继承。以后新增敏感的 `PI_BOT_` 变量，加进 `PI_BOT_BLOCKED`。
+ * `ORBIS_TOKEN`、`ORBIS_SECRET_KEY`、`*_API_KEY`、`*_TOKEN`、`*_SECRET`
+ * 一律不继承。以后新增敏感的 `ORBIS_` 变量，加进 `ORBIS_BLOCKED`。
  * 云凭证不在白名单里，也没有运行时放行接口。
  * 调用方显式给的变量（MCP 配置里的 env、后台命令的 extra、
  * runPiCli 按当前模型塞进来的 provider key）原样保留。
@@ -36,24 +36,24 @@ import { fileURLToPath } from 'node:url';
 import { providerKeys } from './provider-keys.js';
 
 /** pi-bot 自己的入口。和别的 index.js 比的是绝对路径，不是文件名。 */
-const PI_BOT_ENTRY = fileURLToPath(new URL('./index.js', import.meta.url));
+const ORBIS_ENTRY = fileURLToPath(new URL('./index.js', import.meta.url));
 
 /**
  * @param {string[]|undefined|null} args
  * @returns {boolean}
  */
-function isPiBotEntry(args) {
+function isOrbisEntry(args) {
   if (!Array.isArray(args) || args.length < 2) return false;
   if (String(args[0]) !== process.execPath) return false;
   const script = path.resolve(String(args[1]));
   if (process.platform === 'win32') {
-    return script.toLowerCase() === PI_BOT_ENTRY.toLowerCase();
+    return script.toLowerCase() === ORBIS_ENTRY.toLowerCase();
   }
-  return script === PI_BOT_ENTRY;
+  return script === ORBIS_ENTRY;
 }
 
 /** 内部标记。值是本进程随机前缀加显式变量名，不是秘密。 */
-export const CHILD_ENV_MARKER = 'PI_BOT_ENV_ALLOW';
+export const CHILD_ENV_MARKER = 'ORBIS_ENV_ALLOW';
 
 const token = crypto.randomBytes(16).toString('hex');
 const markerPrefix = `v1:${token}:`;
@@ -96,24 +96,23 @@ const EXACT = new Set([
 ]);
 
 /**
- * `PI_BOT_*` 默认放行。这两项除外。
- * 以后新增敏感的 PI_BOT_ 变量，加进这里（后缀规则盖不住 PI_BOT_SECRET_KEY）。
+ * `ORBIS_*` 默认放行，这些除外。
+ * 以后新增敏感的 ORBIS_ 变量，加进这里（后缀规则盖不住 ORBIS_SECRET_KEY）。
  */
-const PI_BOT_BLOCKED = new Set([
-  'PI_BOT_TOKEN',
-  'PI_BOT_SECRET_KEY',
+const ORBIS_BLOCKED = new Set([
+  'ORBIS_TOKEN',
   'ORBIS_SECRET_KEY',
   // ★ 这三项本身不是密钥，但会告诉子进程"服务端在哪个端口、数据目录在哪"。
   //   bash 工具跑的命令、MCP 子进程、后台任务都能看到进程环境 ——
   //   拿到它们就能直接往服务端发请求、甚至去读数据目录。
   //   配合本机 token 机制（local-token.js），攻破成本会从
   //   "需要读用户的私有文件" 降成 "读一个环境变量"，所以必须挡住。
-  'PI_BOT_PORT',
-  'PI_BOT_HOST',
-  'PI_BOT_HOME',
-  // PI_BOT_WORKSPACE 同属"服务端部署信息"：它暴露 bot 的工作目录在哪，
+  'ORBIS_PORT',
+  'ORBIS_HOST',
+  'ORBIS_HOME',
+  // ORBIS_WORKSPACE 同属"服务端部署信息"：它暴露 bot 的工作目录在哪，
   // 子进程拿到就能直接去读写那些文件，不必再猜路径。
-  'PI_BOT_WORKSPACE',
+  'ORBIS_WORKSPACE',
 ]);
 
 /**
@@ -122,7 +121,7 @@ const PI_BOT_BLOCKED = new Set([
  */
 function isSensitive(name) {
   const upper = String(name ?? '').toUpperCase();
-  return upper === 'PI_BOT_TOKEN'
+  return upper === 'ORBIS_TOKEN'
     || upper.endsWith('_API_KEY')
     || upper.endsWith('_TOKEN')
     || upper.endsWith('_SECRET');
@@ -135,7 +134,7 @@ function isSensitive(name) {
 function isAllowed(name) {
   const upper = String(name ?? '').toUpperCase();
   if (!upper || upper === CHILD_ENV_MARKER) return false;
-  if (PI_BOT_BLOCKED.has(upper)) return false;
+  if (ORBIS_BLOCKED.has(upper)) return false;
   if (isSensitive(upper)) return false;
   if (EXACT.has(upper)) return true;
   if (upper.startsWith('LC_')) return true;
@@ -147,7 +146,7 @@ function isAllowed(name) {
   if (upper.startsWith('XDG_')) return true;
   if (upper.startsWith('GIT_SSH')) return true;
   if (upper.startsWith('SSL_CERT_')) return true;
-  if (upper.startsWith('PI_BOT_')) return true;
+  if (upper.startsWith('ORBIS_')) return true;
   if (upper.endsWith('_PROXY')) return true;
   return false;
 }
@@ -309,7 +308,7 @@ function upsertPair(pairs, name, value) {
  * @returns {string[]}
  */
 function withEntryProviderKeys(pairs, args) {
-  if (!isPiBotEntry(args)) return pairs;
+  if (!isOrbisEntry(args)) return pairs;
   const argv = args.slice(2).map((item) => String(item));
   const extra = providerKeys(process.env, argv);
   for (const [name, value] of Object.entries(extra)) {

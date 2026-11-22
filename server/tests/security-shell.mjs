@@ -16,7 +16,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-shell-'));
-process.env.PI_BOT_HOME = root;
+process.env.ORBIS_HOME = root;
 
 const { store } = await import('../src/store.js');
 const { createPolicyExtension } = await import('../src/policy-hook.js');

@@ -18,9 +18,9 @@ fs.mkdirSync(skillsDir, { recursive: true });
 
 process.env.HOME = path.join(root, 'home');
 process.env.PI_CODING_AGENT_DIR = agentDir;
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_DATA_DIR = root;
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_DATA_DIR = root;
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 
 // --- 造几个样本 skill ---

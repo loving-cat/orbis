@@ -795,9 +795,9 @@ node -e "import('@earendil-works/pi-ai').then(async m=>{...})"
 DNS rebinding 防护只认本机名和局域网 IP，带对 token 的请求也会被拒（403）。
 
 **修法**：
-- 设了 `PI_BOT_TOKEN` 就是服务器模式：`config.trustLocal = false`，本机请求也要带 token
-  （HTTP 和 WS 都是）。`PI_BOT_TRUST_LOCAL=1/0` 可以显式覆盖。
-- `PI_BOT_ALLOWED_HOSTS` 填域名，让代理保留原始 Host 时也能通过 Host 校验。
+- 设了 `ORBIS_TOKEN` 就是服务器模式：`config.trustLocal = false`，本机请求也要带 token
+  （HTTP 和 WS 都是）。`ORBIS_TRUST_LOCAL=1/0` 可以显式覆盖。
+- `ORBIS_ALLOWED_HOSTS` 填域名，让代理保留原始 Host 时也能通过 Host 校验。
 - `/health` 返回 `auth: 'local' | 'token'`。服务器模式下不再带房间数、模型名。
   桌面端据此在连接页提示填 token，而不是拿空 token 一直重连。
 

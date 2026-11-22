@@ -84,7 +84,7 @@ export function buildAnnouncement(overrides = {}) {
   return {
     t: ANNOUNCE_TYPE,
     v: PROTOCOL_VERSION,
-    /** 用户给这台主机起的名字（PI_BOT_NAME） */
+    /** 用户给这台主机起的名字（ORBIS_NAME） */
     name: overrides.name ?? config.serverName,
     /** 机器名 —— 同一个 Wi-Fi 下有两台 pi-bot 时，靠它区分 */
     hostname: overrides.hostname ?? config.hostname,

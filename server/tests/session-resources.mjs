@@ -13,8 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_session_resources');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_session_resources');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { resourceSwitches } = await import('../src/config.js');
 const { DefaultResourceLoader } = await import('@earendil-works/pi-coding-agent');
@@ -39,23 +39,23 @@ await test('默认全关', () => {
 });
 
 await test('单独开扩展', () => {
-  const s = resourceSwitches({ PI_BOT_EXTENSIONS: '1' });
+  const s = resourceSwitches({ ORBIS_EXTENSIONS: '1' });
   assert.equal(s.noExtensions, false);
   assert.equal(s.noMcp, true, '开扩展不该顺带把 MCP 打开');
   assert.equal(s.noSkills, true);
 });
 
 await test('单独开 MCP / skills', () => {
-  assert.equal(resourceSwitches({ PI_BOT_MCP: '1' }).noMcp, false);
-  const sk = resourceSwitches({ PI_BOT_SKILLS: '1' });
+  assert.equal(resourceSwitches({ ORBIS_MCP: '1' }).noMcp, false);
+  const sk = resourceSwitches({ ORBIS_SKILLS: '1' });
   assert.equal(sk.noSkills, false);
   assert.equal(sk.noPromptTemplates, false);
   assert.equal(sk.noExtensions, true);
 });
 
 await test('别把 "0" 当成开', () => {
-  assert.equal(resourceSwitches({ PI_BOT_EXTENSIONS: '0' }).noExtensions, true);
-  assert.equal(resourceSwitches({ PI_BOT_EXTENSIONS: 'true' }).noExtensions, true);
+  assert.equal(resourceSwitches({ ORBIS_EXTENSIONS: '0' }).noExtensions, true);
+  assert.equal(resourceSwitches({ ORBIS_EXTENSIONS: 'true' }).noExtensions, true);
 });
 
 /** 造一个"像用户家目录"的 agentDir：一个扩展 + 一个 skill */

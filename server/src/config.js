@@ -1,7 +1,7 @@
 /**
  * Orbis server 配置。
  *
- * 全部可用环境变量覆盖（优先 `ORBIS_*`，兼容 `PI_BOT_*`）；默认使用平台对应的用户数据目录。
+ * 全部可用 `ORBIS_*` 环境变量覆盖；默认使用平台对应的用户数据目录。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -50,21 +50,53 @@ import { HOME_DIR_NAME, LEGACY_HOME_DIR_NAME, userDataBaseDir } from './user-dir
  * 发现程序突然不看旧目录了。
  */
 export function resolveHomeDir(base) {
-  const next = path.join(base, HOME_DIR_NAME);
-  const legacy = path.join(base, LEGACY_HOME_DIR_NAME);
+  // ★ 2.0（C2）：**不再回退旧目录**。旧目录有数据时由启动护栏
+  //   （`noticeLegacyDataIfAny`）大声给出 `orbis migrate` 指引，
+  //   而不是让服务端悄悄读旧目录、或者悄悄建一个空库。
+  return path.join(base, HOME_DIR_NAME);
+}
+
+/**
+ * 启动护栏：旧数据目录里有真数据、而新目录还没有 → **大声**给出 `orbis migrate` 指引。
+ *
+ * 2.0 删掉了旧目录回退（C2）。没有这条护栏，从 1.7 升上来的用户会看到一个
+ * **空的家**：聊天记录、任务、证书全"消失"，而服务端还会很配合地建出一套新空库 ——
+ * 那是最坏的一种失败：不报错，用户以为数据没了。
+ *
+ * 三条要求：
+ *   · **绝不静默**：日志里两条真实路径 + 一行可复制执行的命令；
+ *   · **不阻止启动**：全新安装/故意换目录的人不该被挡在门外；
+ *   · 顺带落一个 `.needs-migration.json`，界面（/health）与诊断脚本能据此提示。
+ *
+ * @param {{home:string, log?:(m:string)=>void}} opts `home` = 本次要用的数据目录
+ * @returns {string|null} 发现旧数据时返回旧目录路径（否则 null）
+ */
+export function noticeLegacyDataIfAny({ home, base = userDataBaseDir(), log = () => {} } = {}) {
   try {
-    if (!fs.existsSync(next) && fs.existsSync(legacy)) {
-      noticeBrandDeprecation({
-        kind: 'data-dir',
-        from: legacy,
-        to: next,
-        hint:
-          '2.0 不再读旧目录；可以停服务后手动把目录改名，或等 2.0 发布后用迁移工具做复制迁移',
-      });
-      return legacy;
-    }
-  } catch { /* 读不到就按新目录走 */ }
-  return next;
+    const legacyDir = path.join(base, LEGACY_HOME_DIR_NAME, 'data');
+    if (!fs.existsSync(path.join(legacyDir, 'state.json'))) return null;
+    if (fs.existsSync(path.join(home, 'state.json'))) return null;
+    log([
+      '',
+      '[Orbis] ⚠️  发现 1.7 的数据，但新目录里还没有：',
+      `          旧：${legacyDir}`,
+      `          新：${home}`,
+      '        2.0 不再自动读旧目录。请先停掉服务端，然后运行：',
+      `          orbis migrate --from "${legacyDir}" --to "${home}"`,
+      '        （只复制、不删除；旧目录原样保留，确认没问题后再自己删）',
+      '',
+    ].join(os.EOL));
+    try {
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(
+        path.join(home, '.needs-migration.json'),
+        JSON.stringify({ from: legacyDir, to: home, at: new Date().toISOString() }, null, 2),
+      );
+    } catch { /* 标记写不进去不影响主流程，日志已经给过了 */ }
+    return legacyDir;
+  } catch {
+    return null;
+  }
 }
 
 function userDataDir() {
@@ -114,6 +146,8 @@ export function createConfig(overrides = {}) {
   //   否则任何 import 了 config 的脚本（诊断、维护、一次性检查）都会改写用户的 state.json。
   //   用进程内的标记而不是环境变量：ORBIS_* / PI_BOT_* 会被子进程继承（见 child-env.js），
   //   bot 的 shell 里再跑一个导入 config 的脚本也会触发。
+  /** 旧数据目录里发现真实数据、但新目录还没有（启动护栏会大声提示） */
+  let legacyDataDir = null;
   const warn = (msg) => console.warn(msg);
   if (serverBoot === true && !overrideDataDir) {
     try {
@@ -123,6 +157,7 @@ export function createConfig(overrides = {}) {
       }
       // state.json 里指向数据目录之外的会话文件，每次启动改回 <数据目录>/sessions。
       repairSessionRefs({ dataDir: home, log: warn });
+      legacyDataDir = noticeLegacyDataIfAny({ home, log: warn });
     } catch (err) {
       console.warn('[config] 数据迁移/修复失败（继续启动，旧目录未动）：', err?.message || err);
     }

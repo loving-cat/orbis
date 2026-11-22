@@ -43,7 +43,7 @@ export class ModelHealth {
     this.file = path.join(this.dataDir, 'model-health.json');
     /** 探活结果多久算过期（提出来是为了能测：不然要等 24 小时） */
     this.ttlMs = ttlMs;
-    /** 过期了要不要自己在后台重探（PI_BOT_PROBE=0 时不探） */
+    /** 过期了要不要自己在后台重探（ORBIS_PROBE=0 时不探） */
     this.autoProbe = autoProbe !== false;
     /** @type {Record<string, {ok:boolean, ms:number, error:string|null, at:number}>} */
     this.results = {};
@@ -149,7 +149,7 @@ export class ModelHealth {
    */
   #queueRefresh(slug) {
     if (!slug || slug.includes('@')) return; // 档位组合由 runLevelMatrix 单独跑
-    if (!this.autoProbe) return; // PI_BOT_PROBE=0：结果过期也不自己发请求
+    if (!this.autoProbe) return; // ORBIS_PROBE=0：结果过期也不自己发请求
     this.refreshQueue.add(slug);
     if (this.refreshTimer) return;
     this.refreshTimer = setTimeout(() => {

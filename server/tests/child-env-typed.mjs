@@ -3,7 +3,7 @@
  *   node tests/child-env-typed.mjs
  *
  * 这一类漏洞是"服务端把自己的环境原样传给子进程"：
- *   · PI_BOT_TOKEN / SECRET_KEY 泄漏 → 子进程能直接调服务端接口
+ *   · ORBIS_TOKEN / SECRET_KEY 泄漏 → 子进程能直接调服务端接口
  *   · SSH_AUTH_SOCK → 子进程能用用户的 ssh 密钥签名
  *   · 宿主 PATH → 子进程里的命令可能解析到攻击者放的可执行文件
  *   · 真实 HOME → 子进程能读写用户的 rc 文件、密钥目录
@@ -43,8 +43,8 @@ const FAKE_TOKEN = 'X'.repeat(24);
 const FAKE_SECRET = 'Y'.repeat(24);
 const FAKE_SSH = '/tmp/fake-agent-sock-for-test';
 
-process.env.PI_BOT_TOKEN = FAKE_TOKEN;
-process.env.PI_BOT_SECRET_KEY = FAKE_SECRET;
+process.env.ORBIS_TOKEN = FAKE_TOKEN;
+process.env.ORBIS_SECRET_KEY = FAKE_SECRET;
 process.env.SSH_AUTH_SOCK = FAKE_SSH;
 process.env.UV_INDEX_URL = 'http://evil.example/simple';
 process.env.PIP_INDEX_URL = 'http://evil.example/simple';
@@ -85,8 +85,8 @@ function realChildEnv(kind, extra = null) {
 await test('★ 假 token 在各类子进程里都读不到', () => {
   for (const kind of ['mcp', 'bash', 'probe']) {
     const env = realChildEnv(kind);
-    assert.equal(env.PI_BOT_TOKEN, undefined, kind + ' 不该有 PI_BOT_TOKEN');
-    assert.equal(env.PI_BOT_SECRET_KEY, undefined, kind + ' 不该有 PI_BOT_SECRET_KEY');
+    assert.equal(env.ORBIS_TOKEN, undefined, kind + ' 不该有 ORBIS_TOKEN');
+    assert.equal(env.ORBIS_SECRET_KEY, undefined, kind + ' 不该有 ORBIS_SECRET_KEY');
     assert.ok(!JSON.stringify(env).includes(FAKE_TOKEN), kind + ' 环境里不该出现 token 值');
     assert.ok(!JSON.stringify(env).includes(FAKE_SECRET), kind + ' 环境里不该出现 secret 值');
   }
@@ -166,10 +166,10 @@ await test('显式传入的普通变量保留（MCP 配置里的 API key 要能�
 await test('★ 显式传入也挡服务端凭据和用户 agent socket', () => {
   for (const kind of ['mcp', 'bash', 'probe']) {
     const env = realChildEnv(kind, {
-      PI_BOT_TOKEN: 'sneaky',
+      ORBIS_TOKEN: 'sneaky',
       SSH_AUTH_SOCK: '/tmp/sneaky.sock',
     });
-    assert.equal(env.PI_BOT_TOKEN, undefined, kind + ' 显式传也不给 PI_BOT_TOKEN');
+    assert.equal(env.ORBIS_TOKEN, undefined, kind + ' 显式传也不给 ORBIS_TOKEN');
     assert.equal(env.SSH_AUTH_SOCK, undefined, kind + ' 显式传也不给 SSH_AUTH_SOCK');
   }
 });
@@ -189,7 +189,7 @@ await test('代理变量透传（企业内网必需，不是凭据）', () => {
 await test('NEVER_PASS 覆盖关键项', () => {
   for (const name of [
     'SSH_AUTH_SOCK', 'GPG_AGENT_INFO', 'DBUS_SESSION_BUS_ADDRESS',
-    'XDG_RUNTIME_DIR', 'NODE_OPTIONS', 'PI_BOT_TOKEN', 'PI_BOT_SECRET_KEY',
+    'XDG_RUNTIME_DIR', 'NODE_OPTIONS', 'ORBIS_TOKEN', 'ORBIS_SECRET_KEY',
   ]) {
     assert.ok(NEVER_PASS.has(name), name + ' 应在 NEVER_PASS 里');
   }

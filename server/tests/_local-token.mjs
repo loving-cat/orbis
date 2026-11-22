@@ -17,11 +17,11 @@ import { issueLocalToken, readLocalToken } from '../src/local-token.js';
 /**
  * 给当前测试的数据目录签发一个 token 并返回。
  *
- * 测试通常在 await import('../src/http.js') **之前**设好 process.env.PI_BOT_HOME，
+ * 测试通常在 await import('../src/http.js') **之前**设好 process.env.ORBIS_HOME，
  * 这里直接读那个目录，和 config.dataDir 同一处。
  */
 export function installLocalToken() {
-  const dataDir = process.env.PI_BOT_HOME || path.join(process.cwd(), 'data');
+  const dataDir = process.env.ORBIS_HOME || path.join(process.cwd(), 'data');
   issueLocalToken(dataDir);
   const token = readLocalToken(dataDir);
   if (!token) throw new Error('签发本机 token 失败：' + dataDir);
@@ -42,6 +42,6 @@ export function withLocalToken(call, token) {
 
 /** 清理（部分测试会自己清目录）。 */
 export function removeLocalToken() {
-  const dataDir = process.env.PI_BOT_HOME || path.join(process.cwd(), 'data');
+  const dataDir = process.env.ORBIS_HOME || path.join(process.cwd(), 'data');
   try { fs.rmSync(path.join(dataDir, 'local-token'), { force: true }); } catch {}
 }

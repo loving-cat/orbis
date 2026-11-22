@@ -45,6 +45,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { INPUT_FAIL, classifyInputNoise } from './desktop-input.js';
+import { readBrandEnv } from './brand.js';
 import { normalizeProbe } from './desktop-takeover.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -55,7 +56,8 @@ export const HELPER_PROTOCOL = 1;
 /** 助手可能的位置，按优先级。 */
 export function helperCandidates() {
   const out = [];
-  const env = (process.env.ORBIS_DESKTOP_MAC_BIN || '').trim();
+  // 走品牌读取助手（不直接戳 env）：环境变量名统一在 brand.js 一处定义
+  const env = String(readBrandEnv(process.env, 'DESKTOP_MAC_BIN') ?? '').trim();
   if (env) out.push(env);
   // 发行包：server/resources/orbis-desktop-mac（打包脚本拷进来）
   out.push(path.join(HERE, '..', 'resources', 'orbis-desktop-mac'));

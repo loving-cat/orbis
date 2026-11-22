@@ -1,7 +1,7 @@
 /**
  * 当前模型要用的 provider key。只交给 pi 子 agent，不进白名单。
  *
- * 模型从哪来：命令行 `--model` / `-m`，否则 `PI_BOT_MODEL`，
+ * 模型从哪来：命令行 `--model` / `-m`，否则 `ORBIS_MODEL`，
  * 否则 pi 的 settings.json 里的 `defaultModel`。
  * 变量名：内置 provider 的环境变量，再加上 models.json 里这个 provider
  * 写成 `$NAME` 的引用。值只从本进程环境里拿。
@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import { readBrandEnv } from './brand.js';
 
 /** 跟 pi-ai 的 API key 环境变量对齐。不含云凭证。 */
 const PROVIDER_ENV = {
@@ -124,7 +126,7 @@ function defaultModelSlug(env) {
 export function currentModelSlug(argv = [], env = process.env) {
   const fromArgv = flagValue(argv, '--model') || flagValue(argv, '-m');
   if (fromArgv.trim()) return fromArgv.trim();
-  const fromEnv = String(env?.PI_BOT_MODEL ?? '').trim();
+  const fromEnv = String(readBrandEnv(env, 'MODEL') ?? '').trim();
   if (fromEnv) return fromEnv;
   return defaultModelSlug(env);
 }

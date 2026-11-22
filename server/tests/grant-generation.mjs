@@ -107,10 +107,10 @@ test('脏数据不炸', () => {
 test('★ 续期后网关真的放行（端到端：这就是用户看到的"权限回来了"）', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-gen-'));
   Object.assign(process.env, {
-    PI_BOT_HOME: root, PI_BOT_WORKSPACE: path.join(root, 'ws'),
-    PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_BOT_PROBE: '0',
+    ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
+    PI_CODING_AGENT_DIR: path.join(root, 'agent'), ORBIS_PROBE: '0',
   });
-  for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+  for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   const { store } = await import(src('store.js'));

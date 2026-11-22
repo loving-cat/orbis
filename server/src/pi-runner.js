@@ -230,7 +230,7 @@ export class PiRunner {
         .runLevelMatrix(menuSlugs(this.modelGroups))
         .catch((err) => log('档位矩阵出错：', err?.message || err));
     } else {
-      log('模型探活已关闭（PI_BOT_PROBE=0）：不自动探活');
+      log('模型探活已关闭（ORBIS_PROBE=0）：不自动探活');
     }
 
     return this;

@@ -163,10 +163,10 @@ test('复盘输出没有 preferences 字段 → 空数组，不报错', () => {
 test('★ store.addPreference 生效并能被提示词读到', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-prefs-'));
   Object.assign(process.env, {
-    PI_BOT_HOME: root, PI_BOT_WORKSPACE: path.join(root, 'ws'),
-    PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_BOT_PROBE: '0',
+    ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
+    PI_CODING_AGENT_DIR: path.join(root, 'agent'), ORBIS_PROBE: '0',
   });
-  for (const d of [process.env.PI_BOT_HOME, process.env.PI_BOT_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
+  for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.env.PI_CODING_AGENT_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   const { store } = await import(src('store.js'));

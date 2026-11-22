@@ -8,8 +8,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import WebSocket from 'ws';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_security');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_security');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { createHttpServer } = await import('../src/http.js');
 import { installLocalToken } from './_local-token.mjs';
@@ -115,7 +115,7 @@ await test('relay：带 x-pi-relay 和伪造 Bearer 的 WS 被拒', async () => 
 });
 
 server.close();
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 let failed = 0;
 for (const r of results) {
   if (r.ok) console.log(`✓ ${r.name}`); else { failed++; console.log(`✗ ${r.name}：${r.err}`); }

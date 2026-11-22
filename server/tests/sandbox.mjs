@@ -159,7 +159,7 @@ await test('★ 沙箱不负责 env：凭据靠 buildChildEnv 清理（D4）', a
   // 必须由调用方清理，不能指望沙箱。两条路径各自负责：
   const { buildChildEnv } = await import('../src/child-env-typed.js');
   const env = buildChildEnv({ kind: 'bash', homeDir: instDir, tmpDir });
-  assert.equal(env.PI_BOT_TOKEN, undefined, 'buildChildEnv 应挡掉 token');
+  assert.equal(env.ORBIS_TOKEN, undefined, 'buildChildEnv 应挡掉 token');
 
   if (!canRun) return;
   const r = runSandboxed('env');
@@ -304,23 +304,23 @@ await test('★ A：真跑——env 里没有 token，HOME 不是真实家目录
     workDir: workDir2, instanceDir: instDir, dataDir: path.join(root, 'a-data'),
   });
 
-  const prevToken = process.env.PI_BOT_TOKEN;
-  process.env.PI_BOT_TOKEN = 'SHOULD-NOT-LEAK-INTO-SHELL';
+  const prevToken = process.env.ORBIS_TOKEN;
+  process.env.ORBIS_TOKEN = 'SHOULD-NOT-LEAK-INTO-SHELL';
   try {
     const chunks = [];
     const res = await ops.exec(
-      'echo "TOKEN=[${PI_BOT_TOKEN:-none}]"; echo "HOME=${HOME}"; echo MARK-DONE',
+      'echo "TOKEN=[${ORBIS_TOKEN:-none}]"; echo "HOME=${HOME}"; echo MARK-DONE',
       workDir2,
       { onData: (d) => chunks.push(d.toString()) },
     );
     const out = chunks.join('');
     assert.equal(res.exitCode, 0, '命令应成功：' + out.slice(0, 200));
-    assert.ok(!out.includes('SHOULD-NOT-LEAK-INTO-SHELL'), '子进程不该看到 PI_BOT_TOKEN');
+    assert.ok(!out.includes('SHOULD-NOT-LEAK-INTO-SHELL'), '子进程不该看到 ORBIS_TOKEN');
     assert.match(out, /MARK-DONE/, '命令应真的执行了');
     assert.ok(!out.includes('HOME=' + os.homedir()), 'HOME 不该是真实家目录');
   } finally {
-    if (prevToken === undefined) delete process.env.PI_BOT_TOKEN;
-    else process.env.PI_BOT_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.ORBIS_TOKEN;
+    else process.env.ORBIS_TOKEN = prevToken;
   }
 });
 

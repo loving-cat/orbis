@@ -76,8 +76,8 @@ await test('mentions: rosterLine 带出老大标记', () => {
 // ---------------------------------------------------------------------------
 // store：房间 / 消息 / 游标 / 脏标记
 // ---------------------------------------------------------------------------
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 const { store } = await import('../src/store.js');
 
 await test('store: 初始化有且只有一个总经理 + 一个私聊', () => {
@@ -512,7 +512,7 @@ await test('store: 能改用户名，空字符串等于没设（退回默认）'
   store.updateUserName('小陈');
   assert.equal(store.userName(), '小陈');
   store.updateUserName('');
-  // 退回的是配置里的默认名（PI_BOT_USER_NAME 或系统用户名），不是上一次设的「小陈」。
+  // 退回的是配置里的默认名（ORBIS_USER_NAME 或系统用户名），不是上一次设的「小陈」。
   const { config } = await import('../src/config.js');
   assert.equal(store.userName(), config.userName, '空值应该退回默认名');
   assert.notEqual(store.userName(), '小陈', '不该还是上次设的名字');

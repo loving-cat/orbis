@@ -220,9 +220,9 @@ for (const name of Object.keys(process.env)) {
 }
 process.env.HOME = path.join(root, 'home');
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_DATA_DIR = root;
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_DATA_DIR = root;
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 

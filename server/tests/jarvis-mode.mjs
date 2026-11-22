@@ -37,12 +37,12 @@ fs.writeFileSync(
 );
 
 Object.assign(process.env, {
-  PI_BOT_HOME: dataDir,
-  PI_BOT_WORKSPACE: wsDir,
+  ORBIS_HOME: dataDir,
+  ORBIS_WORKSPACE: wsDir,
   PI_CODING_AGENT_DIR: agentDir,
-  PI_BOT_PROBE: '0',
-  PI_BOT_LESSON_REFLECT: '0',
-  PI_BOT_TASK_INTAKE: '0',
+  ORBIS_PROBE: '0',
+  ORBIS_LESSON_REFLECT: '0',
+  ORBIS_TASK_INTAKE: '0',
 });
 globalThis.fetch = () => {
   throw new Error('jarvis-mode 单元测试禁止真实联网');

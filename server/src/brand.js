@@ -9,9 +9,14 @@ export const BRAND_NAME = 'Orbis';
 export const BRAND_SLUG = 'orbis';
 export const LEGACY_SLUG = 'pi-bot';
 
-/** 环境变量前缀：新名 / 旧名（旧名 2.0 移除） */
+/**
+ * 环境变量前缀。
+ *
+ * ★ 2.0（C1）：只认 `ORBIS_*`。1.7 的 `PI_BOT_*` 双读已删除 ——
+ *   桌面端从 1.7.0 起传的就是 `ORBIS_*`（见 `app/lib/server/options.dart`），
+ *   所以删掉旧前缀不影响任何配套发布的组合。
+ */
 export const BRAND_ENV_PREFIX = 'ORBIS';
-export const LEGACY_ENV_PREFIX = 'PI_BOT';
 
 export const DEFAULT_MAIN_BOT_NAME = 'Orbis';
 export const DEFAULT_MAIN_BOT_EMOJI = '◉';
@@ -70,23 +75,12 @@ export function noticeBrandDeprecation({ kind, from, to, hint = '' }) {
 }
 
 /**
- * 优先读取 `ORBIS_<SUFFIX>`，未设置或为空串时回退 `PI_BOT_<SUFFIX>`。
- * 这样老用户的 `.env` / 桌面端传参零破坏，新文档与 CLI 统一用 `ORBIS_*`。
+ * 读 `ORBIS_<SUFFIX>`（空串视为没设）。
  *
- * 回退命中时经 `noticeBrandDeprecation` 提醒一次（去重，热路径安全）。
+ * 2.0 起**不再**回退旧前缀：两套名字同时在用的时候，"到底哪份生效"会变成
+ * 没人能说清的事。旧前缀的删除与桌面端切换是同一次发布（1.7.0 起就只传新名）。
  */
 export function readBrandEnv(env = process.env, suffix) {
-  const modern = env?.[`${BRAND_ENV_PREFIX}_${suffix}`];
-  if (modern !== undefined && modern !== '') return modern;
-  // @remove-2.0 2.0 起只认 ORBIS_*；现在兼容是为了不打断老配置
-  const legacy = env?.[`${LEGACY_ENV_PREFIX}_${suffix}`];
-  if (legacy !== undefined && legacy !== '') {
-    noticeBrandDeprecation({
-      kind: 'env',
-      from: `${LEGACY_ENV_PREFIX}_${suffix}`,
-      to: `${BRAND_ENV_PREFIX}_${suffix}`,
-    });
-    return legacy;
-  }
-  return undefined;
+  const value = env?.[`${BRAND_ENV_PREFIX}_${suffix}`];
+  return value === undefined || value === '' ? undefined : value;
 }

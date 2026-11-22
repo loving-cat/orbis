@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-p0-'));
-process.env.PI_BOT_HOME = root;
+process.env.ORBIS_HOME = root;
 
 const { store } = await import('../src/store.js');
 const { createPolicyExtension, summarizeToolCall } = await import('../src/policy-hook.js');

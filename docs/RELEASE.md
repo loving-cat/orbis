@@ -86,7 +86,7 @@ grep -rn "@remove-2.0" server/src app/lib
 1.7.1 用户根本看不到 alpha；而 alpha 用户自己想升级到正式版时，
 `releases.atom` 那条路会跳过带 `-` 的 tag，等 `2.0.0` 正式版发出来就会提示。
 
-**alpha 期间 1.7.1 兼容层仍然保留**（`PI_BOT_*` 双读、`x-pi-bot-*` 旧头、旧数据目录回退全部不动）——
+**beta.1 起兼容层已按 Phase 3 分刀删除**（旧头 / 旧别名 / 旧 env 前缀 / 旧目录回退）——
 真正删兼容层是 Phase 3 / `2.0.0-rc.1` 之后的事，见 `docs/ROADMAP-2.0.md` §3。
 
 ## 3. 版本号唯一真源是 `server/package.json`
@@ -268,9 +268,10 @@ alpha.1 的教训（这次照做）：
 | SDK 别名 `createPiBotRuntime` / `createPiBotClient` / `PiBotClient` | ✅ | ❌ **已删**：改成 `createOrbisRuntime` / `createOrbisClient` / `OrbisClient`（签名一致） |
 | 请求头 `x-pi-bot-client` / `-nonce` / `-channel` | ✅ | ❌ **已删**：只认 `x-orbis-*`，缺头 403 并提示正式头名 |
 | `bin.pi-bot-server` | ✅ | ❌ **已删**：`npm exec orbis-server`（1.7.1 起就有了） |
-| `PI_BOT_SECRET_KEY` | ✅ | ⚠️ 仍能读，但会提醒一次；新名字是 `ORBIS_SECRET_KEY`（彻底删在下一次收口） |
-| `pi-bot.config.json` | ✅ | ⚠️ 仍能读，但会提醒一次；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
-| 旧数据目录回退 | ✅ | ⚠️ 仍保留到下一次收口；现在请**主动**跑 `orbis migrate` |
+| 全部 `PI_BOT_*` 环境变量 | ✅ | ❌ **已删**：只认 `ORBIS_*`（桌面端 1.7.0 起传的就是新名） |
+| `PI_BOT_SECRET_KEY` | ✅ | ❌ **已删**：只认 `ORBIS_SECRET_KEY` |
+| `pi-bot.config.json` | ✅ | ⚠️ 仍能读（提醒一次）；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
+| 旧数据目录回退 | ✅ | ❌ **已删**：2.0 只认新目录；旧目录有数据时启动会在日志里给出 `orbis migrate` 指引（`/health` 的 `needsMigration=true`） |
 | 发现协议 | ✅ | ✅ **永久双播**：服务端同时回应 `orbis.host` 与 `pibot.host`，App 两边都发都认 |
 | TLS 证书 | ✅ | ✅ 新证书 SAN 增加 `orbis.local`，旧 `pi-bot.local` 与 CN `pi-bot` 保留 |
 

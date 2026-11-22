@@ -1,13 +1,13 @@
 /**
- * 服务器部署模式（设了 PI_BOT_TOKEN）的鉴权回归。
+ * 服务器部署模式（设了 ORBIS_TOKEN）的鉴权回归。
  *   node tests/server-mode.mjs
  *
  * 背景：反向代理和服务端在同一台机器上时，公网请求经代理转发后在服务端看来来自回环地址。
  * 「本机免 token」在这种部署下等于谁都能进。这里验：
- *   ① 本机部署（没设 PI_BOT_TOKEN）：行为不变，本机免 token；
- *   ② 服务器部署（设了 PI_BOT_TOKEN）：本机不带 token 也拒，带 token 放行（HTTP 和 WS 都是）；
- *   ③ PI_BOT_TRUST_LOCAL 可以显式覆盖默认；
- *   ④ PI_BOT_ALLOWED_HOSTS：反向代理保留原始域名时不再被 Host 校验拒掉。
+ *   ① 本机部署（没设 ORBIS_TOKEN）：行为不变，本机免 token；
+ *   ② 服务器部署（设了 ORBIS_TOKEN）：本机不带 token 也拒，带 token 放行（HTTP 和 WS 都是）；
+ *   ③ ORBIS_TRUST_LOCAL 可以显式覆盖默认；
+ *   ④ ORBIS_ALLOWED_HOSTS：反向代理保留原始域名时不再被 Host 校验拒掉。
  *
  * config 只在进程启动时读一次环境变量，所以每种配置起一个独立子进程。
  */
@@ -104,9 +104,9 @@ const CHILD = `
   const { attachWs } = await import('./src/ws.js');
   const { Pairing } = await import('./src/pairing.js');
   // 真实的 server-main.js 会在这里签发本机 token；本测试直接起 HTTP，
-  // 所以手动补上同样的动作（数据目录来自 PI_BOT_HOME）。
+  // 所以手动补上同样的动作（数据目录来自 ORBIS_HOME）。
   const { issueLocalToken } = await import('./src/local-token.js');
-  issueLocalToken(process.env.PI_BOT_HOME);
+  issueLocalToken(process.env.ORBIS_HOME);
   const runner = { availableModels: [], modelLabel: () => null, initNote: null, contextUsage: () => ({}) };
   const pairing = new Pairing();
   const server = createHttpServer({ runner, pairing });
@@ -118,7 +118,7 @@ async function startServer(env, tag) {
   const home = path.join(root, tag);
   const child = spawn(process.execPath, ['--input-type=module', '-e', CHILD], {
     cwd: process.cwd(),
-    env: { ...process.env, PI_BOT_TOKEN: '', PI_BOT_TRUST_LOCAL: '', PI_BOT_ALLOWED_HOSTS: '', ...env, PI_BOT_HOME: home },
+    env: { ...process.env, ORBIS_TOKEN: '', ORBIS_TRUST_LOCAL: '', ORBIS_ALLOWED_HOSTS: '', ...env, ORBIS_HOME: home },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const port = await new Promise((resolve, reject) => {
@@ -220,8 +220,8 @@ await test('① 本机部署：带本次启动的 token 正常放行', async () 
   }
 });
 
-await test('② 服务器部署（设了 PI_BOT_TOKEN）：本机不带 token 也拒（模拟反向代理转发）', async () => {
-  const s = await startServer({ PI_BOT_TOKEN: TOKEN }, 'server');
+await test('② 服务器部署（设了 ORBIS_TOKEN）：本机不带 token 也拒（模拟反向代理转发）', async () => {
+  const s = await startServer({ ORBIS_TOKEN: TOKEN }, 'server');
   try {
     assert.equal(await call(s.port, '/api/state'), 401, '经代理转发、不带 token 的读请求必须拒');
     assert.equal(
@@ -236,7 +236,7 @@ await test('② 服务器部署（设了 PI_BOT_TOKEN）：本机不带 token �
 });
 
 await test('② 服务器部署：带正确 token 放行，带错 token 拒', async () => {
-  const s = await startServer({ PI_BOT_TOKEN: TOKEN }, 'server-ok');
+  const s = await startServer({ ORBIS_TOKEN: TOKEN }, 'server-ok');
   try {
     assert.equal(await call(s.port, '/api/state', { token: TOKEN }), 200);
     assert.equal(await call(s.port, '/api/state', { token: 'wrong-token' }), 401);
@@ -253,7 +253,7 @@ async function health(port) {
 }
 
 await test('② 服务器部署：/health 只报身份和 auth=token，不暴露房间数、模型名', async () => {
-  const s = await startServer({ PI_BOT_TOKEN: TOKEN }, 'health-server');
+  const s = await startServer({ ORBIS_TOKEN: TOKEN }, 'health-server');
   try {
     const h = await health(s.port);
     assert.equal(h.ok, true);
@@ -276,8 +276,8 @@ await test('① 本机部署：/health 报 auth=local，照旧带 stats（桌面
   }
 });
 
-await test('③ PI_BOT_TRUST_LOCAL=1：本机也要带 token（不再免 token）', async () => {
-  const s = await startServer({ PI_BOT_TOKEN: TOKEN, PI_BOT_TRUST_LOCAL: '1' }, 'trust-on');
+await test('③ ORBIS_TRUST_LOCAL=1：本机也要带 token（不再免 token）', async () => {
+  const s = await startServer({ ORBIS_TOKEN: TOKEN, ORBIS_TRUST_LOCAL: '1' }, 'trust-on');
   try {
     // trustLocal=1 现在只表示"接受本机 token"，不再表示"免 token"。
     // 不带 token 一律 401 —— 这正是 P0-2 要堵的洞。
@@ -288,8 +288,8 @@ await test('③ PI_BOT_TRUST_LOCAL=1：本机也要带 token（不再免 token�
   }
 });
 
-await test('③ PI_BOT_TRUST_LOCAL=0：没设 token 也不信任本机（本机也要配对）', async () => {
-  const s = await startServer({ PI_BOT_TRUST_LOCAL: '0' }, 'trust-off');
+await test('③ ORBIS_TRUST_LOCAL=0：没设 token 也不信任本机（本机也要配对）', async () => {
+  const s = await startServer({ ORBIS_TRUST_LOCAL: '0' }, 'trust-off');
   try {
     assert.equal(await call(s.port, '/api/state'), 401);
   } finally {
@@ -297,14 +297,14 @@ await test('③ PI_BOT_TRUST_LOCAL=0：没设 token 也不信任本机（本机�
   }
 });
 
-await test('④ 反向代理保留原始域名：不在白名单 → 403；加进 PI_BOT_ALLOWED_HOSTS → 带 token 可进', async () => {
-  const before = await startServer({ PI_BOT_TOKEN: TOKEN }, 'host-default');
+await test('④ 反向代理保留原始域名：不在白名单 → 403；加进 ORBIS_ALLOWED_HOSTS → 带 token 可进', async () => {
+  const before = await startServer({ ORBIS_TOKEN: TOKEN }, 'host-default');
   try {
     assert.equal(await call(before.port, '/api/state', { token: TOKEN, host: 'pi.example.com' }), 403);
   } finally {
     await before.stop();
   }
-  const after = await startServer({ PI_BOT_TOKEN: TOKEN, PI_BOT_ALLOWED_HOSTS: 'PI.example.com, other.example.org' }, 'host-allowed');
+  const after = await startServer({ ORBIS_TOKEN: TOKEN, ORBIS_ALLOWED_HOSTS: 'PI.example.com, other.example.org' }, 'host-allowed');
   try {
     assert.equal(await call(after.port, '/api/state', { token: TOKEN, host: 'pi.example.com' }), 200, '大小写不敏感');
     assert.equal(await call(after.port, '/api/state', { token: TOKEN, host: 'pi.example.com:443' }), 200, '带端口也认');

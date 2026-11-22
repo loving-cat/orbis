@@ -10,14 +10,14 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-readonly-'));
-process.env.PI_BOT_HOME = path.join(root, 'data');
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
-process.env.PI_BOT_MODEL = '';
-process.env.PI_BOT_WATCH_CHANGES = '0';
-process.env.PI_BOT_AUTO_ATTACH_IMAGES = '0';
+process.env.ORBIS_HOME = path.join(root, 'data');
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_MODEL = '';
+process.env.ORBIS_WATCH_CHANGES = '0';
+process.env.ORBIS_AUTO_ATTACH_IMAGES = '0';
 process.env.HOME = path.join(root, 'home');
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
-for (const dir of [process.env.HOME, process.env.PI_CODING_AGENT_DIR, process.env.PI_BOT_WORKSPACE]) {
+for (const dir of [process.env.HOME, process.env.PI_CODING_AGENT_DIR, process.env.ORBIS_WORKSPACE]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 

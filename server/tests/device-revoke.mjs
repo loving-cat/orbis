@@ -12,9 +12,9 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_device_revoke');
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_device_revoke');
 const fs = await import('node:fs');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { createHttpServer } = await import('../src/http.js');
 import { installLocalToken } from './_local-token.mjs';

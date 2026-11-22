@@ -12,8 +12,8 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_ssrf');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_ssrf');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { assertPublicTarget, webFetch } = await import('../src/web.js');
 const { publicFetch } = await import('../src/net-guard.js');
@@ -179,7 +179,7 @@ await test('云元数据：更新检查拒绝，且不发请求', async () => {
   let called = false;
   const info = await checkForUpdate({
     force: true,
-    env: { PI_BOT_UPDATE_URL: 'http://169.254.169.254/latest/meta-data/' },
+    env: { ORBIS_UPDATE_URL: 'http://169.254.169.254/latest/meta-data/' },
     fetchImpl: async () => {
       called = true;
       throw new Error('不应该发出请求');

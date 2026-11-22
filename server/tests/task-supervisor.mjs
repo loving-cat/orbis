@@ -25,11 +25,11 @@ import { pathToFileURL } from 'node:url';
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-sup-'));
 Object.assign(process.env, {
-  PI_BOT_HOME: fixture,
-  PI_BOT_WORKSPACE: path.join(fixture, 'workspace'),
+  ORBIS_HOME: fixture,
+  ORBIS_WORKSPACE: path.join(fixture, 'workspace'),
   PI_CODING_AGENT_DIR: path.join(fixture, 'agent'),
-  PI_BOT_PROBE: '0',
-  PI_BOT_LESSON_REFLECT: '0',
+  ORBIS_PROBE: '0',
+  ORBIS_LESSON_REFLECT: '0',
 });
 // 这条路径下任何外呼都当失败：测试不依赖网络，也不该悄悄联网
 globalThis.fetch = () => {

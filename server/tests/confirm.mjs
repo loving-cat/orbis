@@ -17,10 +17,10 @@ import { pathToFileURL } from 'node:url';
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-confirm-'));
 Object.assign(process.env, {
-  PI_BOT_HOME: fixture,
-  PI_BOT_WORKSPACE: path.join(fixture, 'workspace'),
+  ORBIS_HOME: fixture,
+  ORBIS_WORKSPACE: path.join(fixture, 'workspace'),
   PI_CODING_AGENT_DIR: path.join(fixture, 'agent'),
-  PI_BOT_PROBE: '0',
+  ORBIS_PROBE: '0',
 });
 
 const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f));

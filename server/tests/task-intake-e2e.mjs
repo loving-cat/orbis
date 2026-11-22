@@ -4,7 +4,7 @@
  *
  * ## 守住的五件事
  *
- *   1. `intakeEnabled()` 默认开启，`ORBIS_TASK_INTAKE=0`（及兼容 `PI_BOT_TASK_INTAKE=0`）可关；
+ *   1. `intakeEnabled()` 默认开启，`ORBIS_TASK_INTAKE=0`（及兼容 `ORBIS_TASK_INTAKE=0`）可关；
  *   2. 日常私聊与 Jarvis 即时控制零额外轮次延迟：不强跑第二次模型追问，直接按 `answer` 收口；
  *   3. `accept_task` 准入落盘后由 `taskHost` 真正派发执行，账本留下执行记录；
  *   4. 全双工三路协同：`side_reply` 独立旁路、`amend` 直通 `steer` 不进 `requestQueues`、
@@ -22,16 +22,16 @@ fs.mkdirSync(wsDir, { recursive: true });
 Object.assign(process.env, {
   HOME: root,
   PI_CODING_AGENT_DIR: path.join(root, 'agent'),
-  PI_BOT_HOME: path.join(root, 'data'),
-  PI_BOT_WORKSPACE: wsDir,
-  PI_BOT_PROBE: '0',
-  PI_BOT_LESSON_REFLECT: '0',
-  PI_BOT_WATCH_CHANGES: '0',
-  PI_BOT_AUTO_ATTACH: '0',
-  PI_BOT_AUTO_ATTACH_FILES: '0',
+  ORBIS_HOME: path.join(root, 'data'),
+  ORBIS_WORKSPACE: wsDir,
+  ORBIS_PROBE: '0',
+  ORBIS_LESSON_REFLECT: '0',
+  ORBIS_WATCH_CHANGES: '0',
+  ORBIS_AUTO_ATTACH: '0',
+  ORBIS_AUTO_ATTACH_FILES: '0',
 });
 delete process.env.ORBIS_TASK_INTAKE;
-delete process.env.PI_BOT_TASK_INTAKE;
+delete process.env.ORBIS_TASK_INTAKE;
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 globalThis.fetch = () => { throw new Error('test forbids network'); };
 
@@ -99,12 +99,12 @@ async function test(name, fn) {
   }
 }
 
-await test('1. ★ intakeEnabled() 默认开启，ORBIS_TASK_INTAKE 优先于 PI_BOT_TASK_INTAKE 可显式关闭', () => {
+await test('1. ★ intakeEnabled() 默认开启，ORBIS_TASK_INTAKE 可显式关闭（旧前缀 2.0 起失效）', () => {
   assert.equal(intakeEnabled({}), true);
   assert.equal(intakeEnabled({ ORBIS_TASK_INTAKE: '0' }), false);
-  assert.equal(intakeEnabled({ PI_BOT_TASK_INTAKE: '0' }), false);
-  assert.equal(intakeEnabled({ ORBIS_TASK_INTAKE: '1', PI_BOT_TASK_INTAKE: '0' }), true);
-  assert.equal(intakeEnabled({ ORBIS_TASK_INTAKE: '0', PI_BOT_TASK_INTAKE: '1' }), false);
+  assert.equal(intakeEnabled({ ORBIS_TASK_INTAKE: '1' }), true);
+  // ★ C1：旧前缀已删 —— 只剩旧名时按“没配”处理（默认开启）
+  assert.equal(intakeEnabled({ PI_BOT_TASK_INTAKE: '0' }), true);
 });
 
 await test('2. ★ 日常私聊与 Jarvis 即时控制零额外轮次延迟：不强跑二次追问，直接 answer 收口', async () => {

@@ -12,8 +12,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_net_guard');
-fs.rmSync(process.env.PI_BOT_HOME, { recursive: true, force: true });
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_net_guard');
+fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 
 const { assertPublicTarget, webFetch } = await import('../src/web.js');
 

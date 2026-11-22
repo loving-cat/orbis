@@ -16,8 +16,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-nonce-'));
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_PROBE = '0';
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_PROBE = '0';
 globalThis.fetch = () => { throw new Error('测试期间不允许联网'); };
 
 const { store } = await import('../src/store.js');

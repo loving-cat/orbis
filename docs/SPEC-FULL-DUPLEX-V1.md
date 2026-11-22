@@ -15,7 +15,7 @@
 2. **一个事实只存一份**：旁路对话轨（`Talk Lane`）的只读工具边界必须直接派生自 `server/src/capabilities.js`（复用 `READONLY_ALLOW` 与 `dangerous: 'deny'` 策略过滤，再显式停用副作用扩展），禁止在第二个文件里手写工具白名单。
 3. **单写多读、零并发写冲突**：同一 `(roomId, botId)` 任意时刻最多只有 **1 个**持久会话（`Work Lane`）有权打开并写入磁盘会话文件（`store.sessionFileFor(roomId, botId)`）及执行写文件 / 写 Shell / Git 操作；旁路对话轨（`Talk Lane`）强制运行在**内存态临时会话**中，严禁打开同一会话文件或挂载写类工具。
 4. **请求回执与幂等不退化**：完整保留 `app/lib/app_state.dart` 的 `RequestOutbox`、`server/src/ws.js` 的 `openRequest` / `closeRequest`（`server/src/coordination/task-request-gate.js`）与 `request.result` 终态确认闭环——绝不能靠去掉 `requestId` 来“绕出”忙时秒回。
-5. **一项一项收口**：按 `FD-0 → FD-1 → FD-2 → FD-3` 四阶段落地，由总开关 `PI_BOT_FULL_DUPLEX`（受控灰度 → 默认开启）护航；每阶段独立提交、独立测试、可无损退回半双工串行行为。
+5. **一项一项收口**：按 `FD-0 → FD-1 → FD-2 → FD-3` 四阶段落地，由总开关 `ORBIS_FULL_DUPLEX`（受控灰度 → 默认开启）护航；每阶段独立提交、独立测试、可无损退回半双工串行行为。
 
 ---
 
@@ -25,7 +25,7 @@
 
 | # | 现状现象 | 代码真因（精确位置） | 后果 |
 |---|---|---|---|
-| **A** | **私聊忙时连“插话”都变成死排队** | `app/lib/app_state.dart`（`sendMessageTracked`）每次发送都携带 `requestId`；`server/src/ws.js`（`startAdmittedSend`）封装 `request: { scope }` 传给 `runner.send`。进入 `server/src/pi-runner.js` 的 `send()` 后，优先命中 `if (this.isBusy(roomId, botId) && request)`，**无论 `PI_BOT_TASK_INTAKE` 是否开启**，忙时消息一律进 `requestQueues` 等整轮完全结束再由 `#drainRequestQueue` 串行拉起。 | 哪怕后台正在跑 3 分钟脚本、只是问一句“到哪步了”，用户消息也会干等 3 分钟才进模型，连原有的 `steer` 通道也被旁路。 |
+| **A** | **私聊忙时连“插话”都变成死排队** | `app/lib/app_state.dart`（`sendMessageTracked`）每次发送都携带 `requestId`；`server/src/ws.js`（`startAdmittedSend`）封装 `request: { scope }` 传给 `runner.send`。进入 `server/src/pi-runner.js` 的 `send()` 后，优先命中 `if (this.isBusy(roomId, botId) && request)`，**无论 `ORBIS_TASK_INTAKE` 是否开启**，忙时消息一律进 `requestQueues` 等整轮完全结束再由 `#drainRequestQueue` 串行拉起。 | 哪怕后台正在跑 3 分钟脚本、只是问一句“到哪步了”，用户消息也会干等 3 分钟才进模型，连原有的 `steer` 通道也被旁路。 |
 | **B** | **单会话“脑手耦合” + 跨 Bot 同步死等** | `PiRunner.sessions` 按 `${roomId}:${botId}` 单实例缓存；正在跑工具时 `entry.busy = true`，同一 `AgentSession` 无法并行第二个 `prompt()`。即使走旧 `steer()`，也需等当前阻塞工具返回，并调用 `store.moveMessageAfter` 将正在流式写的 `liveMsgId` 强行挪到用户新消息后面；同时 `server/src/tools.js` 的 `message_bot` 内部 `await runner.runBotOnce` 同步阻塞最长达 `300_000ms`。 | 1. 气泡在时间线上来回瞬移，因果顺序错乱。<br>2. 主控用 `message_bot` 找同事帮忙期间，主控自己也被整整堵死几分钟，无法陪用户说话。 |
 | **C** | **部门群“一开口就全员急刹”** | `server/src/pi-runner.js` 的 `#dispatchGroupRound`（及 `send()` 的 `room.kind === 'group'` 分支）规定“用户说话 = 本轮作废”：无条件将房间加入 `aborting`、清空 `roundQueue`、向所有运行中成员发出 `abort`。 | 在群聊里随口问负责人一句“大家跑得怎么样了？”，正在执行测试或修改代码的成员会话会被当场掐断重来。 |
 | **D** | **客户端单流 `typing` 假设误抹忙碌态** | `app/lib/app_state.dart` 对 `typing` 事件只维护 `typing[rid] = active` 布尔值与按 `botId` 去重的 `typingBots[rid]` Set，并在 `ev['active'] != true` 时执行 `queued.remove(ev['roomId'])`。 | 若服务端开出并行 `Talk` 轨并在 1 秒后发 `typing(active: false)`，客户端会误以为整房彻底空闲，当场抹除仍在后台执行的 `Work` 状态提示。 |
@@ -69,7 +69,7 @@
 | **历史存储** | 持久化读写 `store.sessionFileFor(roomId, botId)` | **纯内存会话（In-Memory `SessionManager`）**，绝不碰磁盘会话文件 |
 | **注入上下文** | 完整工作区、历史 JSONL 记忆、记忆摘要、技能/经验 | 系统人设 + 记忆摘要 + 最近 12 条房间消息 + `LiveWorkSnapshot` 实时只读投影 |
 | **工具能力** | 按既有角色（`toolsForRole` / `customToolsForRole`）+ 部门策略授权 | **强制只读**：策略覆盖 `dangerous: 'deny'`；剥离 `bash` / `powershell` / `run_background` / `git` / MCP 扩展 / `accept_task` / `dispatch_to_department` / `message_bot` / `dispatch_bot` / `ask_user` |
-| **并发槽位** | 普通/人类开轮按原有 `PRIORITY` 获取 `RunSlots` | **固定 `PRIORITY.human`**（使用 `PI_BOT_RUN_SLOT_RESERVE` 保底位，不被后台长任务堵死） |
+| **并发槽位** | 普通/人类开轮按原有 `PRIORITY` 获取 `RunSlots` | **固定 `PRIORITY.human`**（使用 `ORBIS_RUN_SLOT_RESERVE` 保底位，不被后台长任务堵死） |
 | **消息承载** | 锚定在触发轮次创建时的原位 `workMsgId`（保留步骤列表） | 在用户最新发言正下方新建 `talkMsgId` 气泡，**永不调用 `moveMessageAfter`** |
 | **生命周期** | 会话池缓存 + LRU 驱逐（`evictIdle`） | 单实例串行互斥（`talkInflight`），流式回复结束并在记忆摘要入队后立即 `releaseEntry` 释放 |
 
@@ -184,7 +184,7 @@ export function buildLiveWorkSnapshot({
    - 系统提示追加短指令：
      > 你现在处于「边干活边回话」的快速旁路频道：后台工具正在执行，请结合《实时工作台快照》直接用自然口吻在 2～4 句内回答用户问题或确认已记下补充要求；你无法在当前旁路频道直接改文件或跑命令，也不要重复复述快照格式。
 3. **快速模型选择与低思考档位**：
-   - 默认沿用 Bot 配置的模型；对强制高思考延迟过长的模型，可通过可选环境变量 `PI_BOT_TALK_THINKING`（默认 `'low'` 或 `'minimal'`）降延迟以保证 ~1s 级首字输出。
+   - 默认沿用 Bot 配置的模型；对强制高思考延迟过长的模型，可通过可选环境变量 `ORBIS_TALK_THINKING`（默认 `'low'` 或 `'minimal'`）降延迟以保证 ~1s 级首字输出。
 
 ### 4.2 `PiRunner` 双轨调度与消息时间线（`server/src/pi-runner.js`）
 
@@ -263,11 +263,11 @@ PiRunner.send(roomId, text, { mode, attachments, request, duplexMode })
 
 | 开关态 | 忙时路由结果 | 服务端 `scope` 与回执动作 | 客户端 `RequestOutbox` 表现 |
 |---|---|---|---|
-| **`PI_BOT_TASK_INTAKE = 0`**<br>（默认聊天态） | `side_reply` | 由 `Talk` 轨独占该 `scope`；`Talk` 流式结束时调用 `requestLifecycle.close(scope, err, 'answer')` | 收到 `request.result (status: 'answered')`，当场清理该条 outbox |
-| **`PI_BOT_TASK_INTAKE = 0`** | `amend` | `steer` 投递成功且 `Talk` 轻确认完成后调用 `close(scope, err, 'answer')` | 同上，绝不因为后台还在跑就永挂等待 |
-| **`PI_BOT_TASK_INTAKE = 0`** | `abort_replace` | `scope` 移交给新启动的 `Work` 轮次，新轮次彻底结束时 `close` | 与正常一轮发言一致 |
-| **`PI_BOT_TASK_INTAKE = 1`**<br>（受管接单态） | `side_reply` | 只读旁路不触发 `accept_task`、**不消耗**根预算 `PI_BOT_TASK_MAX_RUNS`；结束时 `close(..., 'answer')` | 正常收口，不影响受管任务状态机 |
-| **`PI_BOT_TASK_INTAKE = 1`** | `amend` | 若房间无活跃受管 `TaskRun`，按普通 `amend` 或接单队列处理；若已有活跃受管 `TaskRun`，严禁绕过 `appliedCommands` 私改目标，由 `Talk` 告知已转交修订确认（或引导至 `task_revise` / `taskControls` 并校验 `expectedRevision`） | 保持命令应用事实与版本号强一致 |
+| **`ORBIS_TASK_INTAKE = 0`**<br>（默认聊天态） | `side_reply` | 由 `Talk` 轨独占该 `scope`；`Talk` 流式结束时调用 `requestLifecycle.close(scope, err, 'answer')` | 收到 `request.result (status: 'answered')`，当场清理该条 outbox |
+| **`ORBIS_TASK_INTAKE = 0`** | `amend` | `steer` 投递成功且 `Talk` 轻确认完成后调用 `close(scope, err, 'answer')` | 同上，绝不因为后台还在跑就永挂等待 |
+| **`ORBIS_TASK_INTAKE = 0`** | `abort_replace` | `scope` 移交给新启动的 `Work` 轮次，新轮次彻底结束时 `close` | 与正常一轮发言一致 |
+| **`ORBIS_TASK_INTAKE = 1`**<br>（受管接单态） | `side_reply` | 只读旁路不触发 `accept_task`、**不消耗**根预算 `ORBIS_TASK_MAX_RUNS`；结束时 `close(..., 'answer')` | 正常收口，不影响受管任务状态机 |
+| **`ORBIS_TASK_INTAKE = 1`** | `amend` | 若房间无活跃受管 `TaskRun`，按普通 `amend` 或接单队列处理；若已有活跃受管 `TaskRun`，严禁绕过 `appliedCommands` 私改目标，由 `Talk` 告知已转交修订确认（或引导至 `task_revise` / `taskControls` 并校验 `expectedRevision`） | 保持命令应用事实与版本号强一致 |
 
 ---
 
@@ -339,7 +339,7 @@ PiRunner.send(roomId, text, { mode, attachments, request, duplexMode })
 
 ## 8. 分阶段实施路线图与验收矩阵（`FD-0` ～ `FD-3`）
 
-使用配置开关 `PI_BOT_FULL_DUPLEX`（`config.js`，支持热读取 / 测试注入）：**开发阶段默认可灰度开启，异常时关掉即完整退回原串行行为**。
+使用配置开关 `ORBIS_FULL_DUPLEX`（`config.js`，支持热读取 / 测试注入）：**开发阶段默认可灰度开启，异常时关掉即完整退回原串行行为**。
 
 | 阶段 | 包含范围与交付模块 | 必过自动化验收标准（写错必须变红） |
 |---|---|---|

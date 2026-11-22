@@ -9,11 +9,11 @@ import assert from 'node:assert/strict';
 import { decideCommand } from '../src/shell-policy.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-shell-bypass-'));
-process.env.PI_BOT_HOME = path.join(root, 'data');
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
-process.env.PI_BOT_MODEL = '';
-process.env.PI_BOT_WATCH_CHANGES = '0';
-process.env.PI_BOT_AUTO_ATTACH_IMAGES = '0';
+process.env.ORBIS_HOME = path.join(root, 'data');
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_MODEL = '';
+process.env.ORBIS_WATCH_CHANGES = '0';
+process.env.ORBIS_AUTO_ATTACH_IMAGES = '0';
 
 const { resetStdin } = await import('../src/shell-policy.js');
 const { store } = await import('../src/store.js');

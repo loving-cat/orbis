@@ -237,7 +237,7 @@ export function createPolicyExtension({
         // 执行前读取当前角色：审批授权和缓存中的旧工具不能绕过只读模式。
         //
         // ★ 这里原来还有一道“负责人只能用 leadToolAllowed 里的工具”的门，
-        //   实测后果是：哪怕用户把 bash 写进 PI_BOT_LEAD_TOOLS，负责人也永远
+        //   实测后果是：哪怕用户把 bash 写进 ORBIS_LEAD_TOOLS，负责人也永远
         //   拿不到 —— 而且拦下的理由写的是“请把这项操作交给成员执行”，
         //   用户完全看不出问题出在哪里。
         //

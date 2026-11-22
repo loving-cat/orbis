@@ -15,7 +15,7 @@
 |---|---|---|
 | 1 | 主动压缩在建消息与订阅事件之前执行，压缩期间无任何 UI 信号，界面静止 0–5 分钟 | 已修 `047cab3` |
 | 2 | 压缩横条落在正在流式的回复之后，顺序与重载后不一致 | 已修 |
-| 3 | `PI_BOT_AUTO_COMPACT=0` 关不掉主动压缩 | 已修 |
+| 3 | `ORBIS_AUTO_COMPACT=0` 关不掉主动压缩 | 已修 |
 | 4 | ContextChip 在刚压缩完时整个消失（不是跳变，是消失再出现） | 已修 |
 | 5 | 压缩失败后只 log，接着照常跑 → 撞 pi 的 98% 阈值，用户经历两段卡顿 | 已修 `950af2e` |
 | 6 | 群聊压缩期间 `entry.busy=true`，用户一说话就 `#interruptRoundForUser` 把全群 abort | 已修 `776f350` |
@@ -47,7 +47,7 @@
   并补一条矛盾处理规则：**以用户更正为准，只保留现行结论，不并列两份相反事实**，
   旧摘要里仍成立的结论和数字必须保留。
   `#summarizeMemoryNow` 有缓存文本时只对 `memoryProgress` 返回的 **newMessages** 做 digest，
-  首次仍取整窗口。开关 `PI_BOT_MEMORY_RECURSIVE=0` 可退回旧行为（整窗口 digest + 旧提示词）。
+  首次仍取整窗口。开关 `ORBIS_MEMORY_RECURSIVE=0` 可退回旧行为（整窗口 digest + 旧提示词）。
   空结果、超时、脱敏失败都不覆盖旧摘要。
 - 写入脱敏：新增 `memory-sanitize.js`，`setMemorySummary` 落盘前调用，
   `#summarizeMemoryNow` 写入前也过一次（双重把关）。抹掉邮箱、PEM 私钥块、Bearer 令牌、

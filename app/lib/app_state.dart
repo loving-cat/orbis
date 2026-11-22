@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, Platform;
+import 'dart:io' show Platform;
 
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -995,25 +995,18 @@ class AppState extends ChangeNotifier {
   ///
   /// 只在用户没填 serverDataDir 时用作**候选**：读不到就返回 null，
   /// 由 401 兜底引导用户去填 token。
-  /// 在 base 下选数据目录：`orbis/data` 优先，旧 `pi-bot/data` 只在
-  /// 前者不存在时沿用（与服务端 config.js 的 resolveHomeDir 同一条规则）。
-  static String _pickDataDir(String base) {
-    final next = '$base/orbis/data';
-    // @remove-2.0 与 server/src/config.js 的目录回退一起删
-    final legacy = '$base/pi-bot/data';
-    try {
-      if (!Directory(next).existsSync() && Directory(legacy).existsSync()) {
-        return legacy;
-      }
-    } catch (_) {}
-    return next;
-  }
+  /// 在 base 下选数据目录。
+  ///
+  /// 2.0 起**只有** `orbis/data`：旧 `pi-bot/data` 不再自动沿用
+  /// （与服务端 `config.js` 的 `resolveHomeDir` 同一条规则）。
+  /// 老用户必须先跑 `orbis migrate` —— 服务端启动时会在日志里给出完整指引，
+  /// `/health` 的 `needsMigration` 也会是 true。
+  static String _pickDataDir(String base) => '$base/orbis/data';
   String? _defaultLocalDataDir() {
     final home =
         Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
     if (home == null || home.isEmpty) return null;
-    // ★ 新品牌是 orbis，老安装的数据还在 pi-bot：与服务端 config.js 的
-    //   resolveHomeDir 同一套规则（新目录不存在、旧目录存在 → 用旧的）。
+    // ★ 与服务端 config.js 的 resolveHomeDir 同一套规则：2.0 只认 orbis。
     //   两处必须一致，否则这里显示/探测的目录和真正用的不是同一个。
     return switch (Platform.operatingSystem) {
       'macos' => _pickDataDir('$home/Library/Application Support'),

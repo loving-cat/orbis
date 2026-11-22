@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = path.join(process.cwd(), 'data', '_unit_test_hooks');
-const HOME = process.env.PI_BOT_HOME;
+process.env.ORBIS_HOME = path.join(process.cwd(), 'data', '_unit_test_hooks');
+const HOME = process.env.ORBIS_HOME;
 fs.rmSync(HOME, { recursive: true, force: true });
 
 const { applyHooks, validateHook, normalizeHooks, loadHooks, saveHooks } = await import('../src/hooks.js');

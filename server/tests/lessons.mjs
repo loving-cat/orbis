@@ -156,9 +156,9 @@ test('渲染：没有命中就返回空数组（不注入任何东西）', () =>
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-lessons-'));
 process.env.HOME = path.join(root, 'home');
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
-process.env.PI_BOT_HOME = root;
-process.env.PI_BOT_DATA_DIR = root;
-process.env.PI_BOT_WORKSPACE = path.join(root, 'workspace');
+process.env.ORBIS_HOME = root;
+process.env.ORBIS_DATA_DIR = root;
+process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 

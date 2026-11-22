@@ -21,7 +21,7 @@
 - 不可变请求信封随 runner.send 进入实际队列；真正取得执行权时激活作用域、该轮真正结束时收尾。WS/HTTP 只交信封，不各自 begin/finally。
 - 忙时新的独立请求按信封排队，不 steer 进正在跑的目标，不借身份。
 - 残缺 managed 上下文明确拒绝，不降级到准入或 legacy；群聊明确拒绝（REQUEST_GROUP_UNSUPPORTED），不静默走旧路径。
-- 预算由宿主给（PI_BOT_TASK_MAX_RUNS，默认 12）；理解轮不计入任务额度。
+- 预算由宿主给（ORBIS_TASK_MAX_RUNS，默认 12）；理解轮不计入任务额度。
 
 ## 回执读结果原则
 
@@ -95,7 +95,7 @@ appliedCommands 与命令回执同键：requesterId + commandId + fingerprint �
 ## 生产启动与受控启用（批次 07）
 
 - 真实入口 `src/index.js → server-main.js` 在 PiRunner 初始化后装配唯一 `TaskRuntime`（bootstrap/task-host.js），默认机械验收 access 只按附件 id 读写真实产物；HTTP/WS 就绪后执行一次 `recover()`；SIGINT/SIGTERM 时 dispose 任务调度并保存 store。测试不再在外部手装 runtime 或手动 notify。
-- 开关 `PI_BOT_TASK_INTAKE` 默认关闭。关闭态：新 App 携带合法 requestId 的私聊/群聊按普通聊天处理，不要求 accept_task、不建 TaskRun，本轮结束记 answered 并发布终态确认；无 requestId 旧协议保持；显式非法 requestId 明确 400/error，不静默回落 legacy。
+- 开关 `ORBIS_TASK_INTAKE` 默认关闭。关闭态：新 App 携带合法 requestId 的私聊/群聊按普通聊天处理，不要求 accept_task、不建 TaskRun，本轮结束记 answered 并发布终态确认；无 requestId 旧协议保持；显式非法 requestId 明确 400/error，不静默回落 legacy。
 - 开启态：自然消息→主控既有理解轮→真实 accept_task→组织/直派→负责人/成员→默认验收→completed；createOnly/direct/discussion 沿用 04/06 语义。
 - 任务咨询/修订工具 `task_status` / `task_revise` 只在受控启用时注册给主控；查询只读，修订以“认证来源+requestId”派生稳定命令身份，冻结原 taskRunId、expectedRevision 与完整修改方案，重放先查原命令应用事实；不覆盖 TaskRun.request 原接单身份，不按最新 updatedAt 猜目标，同一次修改重试不重复升版。
 - 改版事件在归约当前记录上核对 expectedRevision，入口与执行之间被并发改版时拒绝旧提交。
@@ -182,11 +182,11 @@ appliedCommands 与命令回执同键：requesterId + commandId + fingerprint �
 
 ## 启用边界
 
-PI_BOT_TASK_INTAKE 默认关闭；批次 07 已在真实 server-main 装配一个 TaskRuntime 并执行 recover；关闭态按下方“生产启动与受控启用”处理。
+ORBIS_TASK_INTAKE 默认关闭；批次 07 已在真实 server-main 装配一个 TaskRuntime 并执行 recover；关闭态按下方“生产启动与受控启用”处理。
 
 ## 当前状态（v1.4.1）
 
-- 引擎代码在位（约 2900 行，其中 `task-supervisor` 1564 行），**默认关闭**（`PI_BOT_TASK_INTAKE`）。
+- 引擎代码在位（约 2900 行，其中 `task-supervisor` 1564 行），**默认关闭**（`ORBIS_TASK_INTAKE`）。
 - 关闭的原因不是功能不能用，而是**开启前的三道门还没过**：
   1. 核心路径测试（命令重放幂等 / 预算耗尽 / 撤销不丢 / 终态必达）；
   2. 端到端（用户加任务 → 真派出去执行，`task-intake-e2e.mjs` 用假模型替身）；

@@ -112,12 +112,12 @@ export function toolsForPolicy(baseTools = [], policy = {}) {
  * ★ 现在**不再只放行只读** —— 负责人和成员一样能动手。
  *
  *   原来的实现是 `COORDINATION_TOOLS.has(name) || 只读集合.has(name) && 配置里有`：
- *   哪怕你把 `bash` 写进 `PI_BOT_LEAD_TOOLS`，也会被这个函数过滤掉 ——
+ *   哪怕你把 `bash` 写进 `ORBIS_LEAD_TOOLS`，也会被这个函数过滤掉 ——
  *   配置形同虚设，而且没有任何提示说明为什么改了不生效。
  *
  *   现在：配置里有什么就给什么（属于“负责人额外通道”的组织工具恒放行）。
  *   “先派后干”是**提示词层面的行为规则**，不靠断能力来实现。
- *   真要禁，把工具从 `PI_BOT_LEAD_TOOLS` / `PI_BOT_TOOLS` 里拿掉就行，
+ *   真要禁，把工具从 `ORBIS_LEAD_TOOLS` / `ORBIS_TOOLS` 里拿掉就行，
  *   那是配置该干的事，不是代码里静默覆盖。
  */
 export function leadToolAllowed(name, leadTools = []) {
@@ -145,7 +145,7 @@ export function customToolsForRole(tools, { room, bot, policy = {} } = {}) {
   //
   //   原来这里对“多人部门的负责人”再过滤一遍 leadToolAllowed，而那份名单
   //   只有只读 + 组织类 —— 于是即便用户把 run_background 加进
-  //   PI_BOT_LEAD_TOOLS，负责人也永远拿不到。能力边界现在只由两处决定：
+  //   ORBIS_LEAD_TOOLS，负责人也永远拿不到。能力边界现在只由两处决定：
   //   工具集本身（按配置/角色算出来的那一份）和只读策略。
   const chief = bot?.role === 'main';
   const list = tools.filter((tool) => chief || !CHIEF_ONLY_SET.has(tool.name));

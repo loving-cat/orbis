@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-process.env.PI_BOT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-toolreg-'));
+process.env.ORBIS_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-toolreg-'));
 
 const results = [];
 async function test(name, fn) {
