@@ -191,24 +191,16 @@ const isAllowed = (line) => ALLOW.some((re) => re.test(line));
  */
 const HISTORY_EXEMPTIONS = [
   {
-    sha: '78f608a',
+    sha: 'd140a07',
     rule: '邮箱不是 noreply',
     reason:
       '另一台机器的本地身份（域名不带点，发不出信）；改它要重写其后 160+ 个提交，'
       + '而旧对象在远端仍然取得到，重写救不了什么',
   },
   {
-    sha: '33692eb',
+    sha: 'd4d66db',
     rule: 'macOS 用户目录',
     reason: '提交信息在**举反例**说明扫描器自己的规则（“写死了本机路径 … → 命中…”），不是真路径',
-  },
-  {
-    sha: 'bec76ba',
-    rule: 'OpenAI/Anthropic 风格 key',
-    reason:
-      '同一类：提交信息在解释“占位符 vs 真 key”。但它形状像真 key（51 字符、'
-      + '高熵），已在 2026-11-16 提请轮换；本仓库无法核实是否已撤销 —— '
-      + '**在确认之前，这是一条已知的历史暴露，不是误报**',
   },
 ];
 
