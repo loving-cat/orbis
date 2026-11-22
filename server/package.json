@@ -44,7 +44,7 @@
     "types": "tsc -p tsconfig.types.json",
     "check:types": "tsc -p tsconfig.examples.json",
     "examples": "node examples/sdk/01-minimal.mjs",
-    "prepack": "npm run types",
+    "prepack": "node scripts/prepare-pack.mjs && npm run types",
     "check:pack": "node scripts/check-pack.mjs",
     "check:pack-install": "node scripts/check-pack-install.mjs"
   },
