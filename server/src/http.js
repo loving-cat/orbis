@@ -276,7 +276,10 @@ function authenticate(req, url, { config = defaultConfig, store = defaultStore }
     if (config.staticToken && timingSafeEqual(token, config.staticToken)) {
       return { id: 'static', name: 'static-token', createdAt: 0, lastSeenAt: Date.now(), isStatic: true };
     }
-    if (config.trustLocal && isLocalTokenValid(req, url, config.dataDir)) {
+    // ★ 本机 token 必须**同时**来自回环地址（对齐 ws.js 的同一处判断）。
+    //   只校验 token 的话，任何拿到这串 token 的人（它经常出现在本地脚本、
+    //   日志、崩溃转储里，强度远低于设备 token）都能从中转/局域网冒充本机。
+    if (config.trustLocal && isLoopback(req, config) && isLocalTokenValid(req, url, config.dataDir)) {
       return { ...LOCAL_DEVICE, lastSeenAt: Date.now(), viaLocalToken: true };
     }
     const device = store.findDeviceByToken(token);

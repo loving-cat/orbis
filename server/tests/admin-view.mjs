@@ -40,8 +40,8 @@ const runner = {
 const server = createHttpServer({ runner, pairing: new Pairing() });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
-const TOKEN = 'tok-view-test';
-store.state.devices[TOKEN] = { id: 'd_view', name: '测试机', createdAt: Date.now(), lastSeenAt: Date.now() };
+// 让服务端认这台设备：走真实签发路径（state 里只有散列键，手写明文键认不出来）
+const { token: TOKEN } = store.addDevice('测试机');
 
 function req(pathname, { method = 'GET', body = null, channel = null } = {}) {
   return new Promise((resolve, reject) => {

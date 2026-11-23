@@ -27,15 +27,19 @@ import { LEGACY_HOME_DIR_NAME } from '../src/user-dirs.js';
 
 let pass = 0;
 let fail = 0;
+// ★ 串行且真等：async 用例的 promise 以前被直接丢掉，失败不会计数（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`✓ ${name}`);
-    pass++;
-  } catch (err) {
-    console.log(`✗ ${name}\n    ${err?.stack || err}`);
-    fail++;
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      console.log(`✓ ${name}`);
+      pass++;
+    } catch (err) {
+      console.log(`✗ ${name}\n    ${err?.stack || err}`);
+      fail++;
+    }
+  });
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-migrate-'));
@@ -356,5 +360,6 @@ test('★ 迁移成功后清掉 .needs-migration.json（否则 /health 一直提
   assert.equal(fs.existsSync(markerFile), false, '迁完还挂着标记只会误导');
 });
 
+await tests;
 console.log(`\nmigrate-home: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

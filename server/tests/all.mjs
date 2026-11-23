@@ -43,6 +43,8 @@ const TESTS = [
   'unit',
   'tasks',
   'task-projection',
+  'auth-device-token',
+  'credential-target-reuse',
   'task-plan-tool',
   'task-supervisor',
   'task-commands',

@@ -27,13 +27,18 @@ const { channelSufficesFor } = await import(src('confirm.js'));
 const { ACTION, MODE } = await import(src('grants.js'));
 
 const results = [];
+// ★ 用例必须真的等：以前这里直接 `fn()`，async 用例返回的 promise 被丢掉，
+//   断言失败只变成一条未处理的 rejection，测试仍然"通过"（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push({ name, ok: true });
-  } catch (err) {
-    results.push({ name, ok: false, err: err?.message || String(err) });
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      results.push({ name, ok: true });
+    } catch (err) {
+      results.push({ name, ok: false, err: err?.message || String(err) });
+    }
+  });
 }
 
 const NOW = 1_700_000_000_000;
@@ -374,13 +379,15 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
     currentGeneration: () => 'g-route',
   });
   const server = httpMod.createHttpServer({
-    runner: { grantGate: gate, modelLabel: () => 't', sessions: new Map(), isBusy: () => false, stats: null, health: null, model: 't', escalate: async () => {}, abortManagedTask: () => {}, contextUsage: () => ({}) },
+    // ★ 必须把同一个 store 交给 HTTP：`?route=1` 的 store 与 http.js 内部 import 的
+    //   defaultStore 是两个模块实例，不给就查不到这台设备（鉴权 401）。
+    runner: { store, grantGate: gate, modelLabel: () => 't', sessions: new Map(), isBusy: () => false, stats: null, health: null, model: 't', escalate: async () => {}, abortManagedTask: async () => {}, contextUsage: () => ({}) },
     pairing: new pairMod.Pairing(),
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  const TOKEN = 'tok_grantreq';
-  store.state.devices[TOKEN] = { id: 'd_mobile', name: 'iPhone', createdAt: Date.now(), lastSeenAt: Date.now() };
+  // 设备 token 只以散列形态落库，手写明文键不会被认出来
+  const { token: TOKEN } = store.addDevice('iPhone');
 
   const bot = store.createBot({ name: '编码手', role: 'member' });
   const req = reqMod.planGrantRequest({ actions: [gMod.ACTION.desktopInput], bots: [store.getBot(bot.id)] }).request;
@@ -399,7 +406,7 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
   const decide = (channel) => new Promise((resolve, reject) => {
     const payload = JSON.stringify({ approve: true });
     const r = http.request({
-      host: '127.0.0.1', port, path: '/api/confirmations/cf_route_1/decide', method: 'POST',
+      host: '127.0.0.1', port, path: '/api/confirmations/cf_route_1', method: 'POST',
       headers: {
         authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'app',
         'x-orbis-channel': channel,
@@ -444,7 +451,7 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
   const local = await new Promise((resolve, reject) => {
     const payload = JSON.stringify({ approve: true });
     const r = http.request({
-      host: '127.0.0.1', port, path: '/api/confirmations/cf_route_read/decide', method: 'POST',
+      host: '127.0.0.1', port, path: '/api/confirmations/cf_route_read', method: 'POST',
       headers: {
         authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'app',
         'x-orbis-channel': 'local',   // ← 桌面端
@@ -478,7 +485,7 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
   const weakened = await new Promise((resolve, reject) => {
     const payload = JSON.stringify({ approve: true });
     const r = http.request({
-      host: '127.0.0.1', port, path: '/api/confirmations/cf_route_cmd/decide', method: 'POST',
+      host: '127.0.0.1', port, path: '/api/confirmations/cf_route_cmd', method: 'POST',
       headers: {
         authorization: 'Bearer ' + TOKEN, 'x-orbis-client': 'app',
         'x-orbis-channel': 'local',
@@ -501,6 +508,7 @@ test('★ 走 HTTP 路由批准 → 真的多出授权（接线）', async () =>
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+await tests;
 const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

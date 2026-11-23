@@ -23,13 +23,18 @@ const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f))
 const { reconcileGrants, applyReconcile } = await import(src('grant-reconcile.js'));
 
 const results = [];
+// ★ 用例必须真的等：以前这里直接 `fn()`，async 用例返回的 promise 被丢掉，
+//   断言失败只变成一条未处理的 rejection，测试仍然"通过"（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push({ name, ok: true });
-  } catch (err) {
-    results.push({ name, ok: false, err: err?.message || String(err) });
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      results.push({ name, ok: true });
+    } catch (err) {
+      results.push({ name, ok: false, err: err?.message || String(err) });
+    }
+  });
 }
 
 const NOW = 1_700_000_000_000;
@@ -168,7 +173,7 @@ test('没有可收的时候不落盘', () => {
 });
 
 // ---------------------------------------------------------------- 角色变更（store 层）
-test('★ 主 Bot 被降成普通成员 → host 授权当场回收', async () => {
+test('★ 主 Bot 不再是主控（角色被改）→ host 授权随对账作废（规格 §13.1）', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-reconcile-'));
   Object.assign(process.env, {
     ORBIS_HOME: root, ORBIS_WORKSPACE: path.join(root, 'ws'),
@@ -188,14 +193,20 @@ test('★ 主 Bot 被降成普通成员 → host 授权当场回收', async () =
   store.updateBot(chief.id, { name: '改个名' });
   assert.equal(store.state.grants[0].revokedAt, null, '改名字不该动权限');
 
-  // 降级才触发
-  store.updateBot(chief.id, { role: 'member' });
+  // 角色真的变了（用户手改 / 升级前的旧数据）→ 服务启动时的对账必须收掉 host。
+  // ★ 这里走 applyReconcile 而不是 updateBot：`updateBot` 今天不接受 role 补丁，
+  //   可以让主 Bot 不再是主控的唯一现实路径就是「数据被改成这样」，而启动对账
+  //   正是为这种情况准备的（server-main.js 启动时调用）。
+  store.state.bots[chief.id] = { ...chief, role: 'member' };
+  const { revoked } = applyReconcile({ store, workspace: process.env.ORBIS_WORKSPACE, log: () => {} });
+  assert.ok(revoked.includes('g_host_chief'), '对账要回收这条 host 授权');
   assert.notEqual(store.state.grants[0].revokedAt, null, '不再是主 Bot，host 授权必须作废');
-  assert.equal(store.state.grants[0].revokedBy, 'system');
+  assert.equal(store.state.grants[0].revokedBy, 'system', '自动回收要和"用户收回"分开记账');
   clearTimeout(store.saveTimer);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+await tests;
 const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

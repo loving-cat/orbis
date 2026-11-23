@@ -395,6 +395,21 @@ await test('对话式系统管家：定时任务 / 形象形状颜色 / 用户�
     evidence: [{ quote: '用户实测生效' }],
   });
   assert.equal(addLs.isError, false, addLs.text);
+  // ★ 主控不能自己把经验推到「生效」：candidate → active 是人工门禁，
+  //   模型传 status: 'active' 必须被忽略（与 SDK 的 lessons.propose 一致）。
+  assert.equal(addLs.details.lesson.status, 'candidate', 'add_lesson 只许落 candidate');
+  const forced = await call(chiefToolsMap, 'manage_knowledge', {
+    op: 'update_lesson',
+    id: addLs.details.lesson.id,
+    status: 'active',
+  });
+  assert.equal(forced.isError, true, 'update_lesson 不许把状态改成 active');
+  assert.match(forced.text, /设置页|手动启用/);
+  assert.equal(
+    store.lessonLibrary().find((l) => l.id === addLs.details.lesson.id)?.status,
+    'candidate',
+    '被拒之后库里仍然是 candidate',
+  );
   const lsList = await call(chiefToolsMap, 'manage_knowledge', { op: 'list_lessons' });
   assert.match(lsList.text, /改完配置后/);
   await call(chiefToolsMap, 'manage_knowledge', { op: 'delete_lesson', id: addLs.details.lesson.id });

@@ -26,13 +26,18 @@ const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f))
 const { restampPlan, applyRestamp } = await import(src('grant-generation.js'));
 
 const results = [];
+// ★ 用例必须真的等：以前这里直接 `fn()`，async 用例返回的 promise 被丢掉，
+//   断言失败只变成一条未处理的 rejection，测试仍然"通过"（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push({ name, ok: true });
-  } catch (err) {
-    results.push({ name, ok: false, err: err?.message || String(err) });
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      results.push({ name, ok: true });
+    } catch (err) {
+      results.push({ name, ok: false, err: err?.message || String(err) });
+    }
+  });
 }
 
 const NOW = 1_700_000_000_000;
@@ -149,6 +154,7 @@ test('★ 续期后网关真的放行（端到端：这就是用户看到的"权
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+await tests;
 const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

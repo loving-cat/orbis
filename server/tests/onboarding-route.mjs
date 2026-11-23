@@ -75,8 +75,7 @@ const runner = {
 const server = createHttpServer({ runner, pairing: new Pairing() });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
-const TOKEN = 'tok-onboarding-test';
-store.state.devices[TOKEN] = { id: 'd_onb', name: '测试机', createdAt: Date.now(), lastSeenAt: Date.now() };
+const { token: TOKEN } = store.addDevice('测试机');
 
 function req(pathname, { method = 'GET', auth = TOKEN } = {}) {
   return new Promise((resolve, reject) => {

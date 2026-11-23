@@ -6,6 +6,7 @@
  */
 import { modelGroups as defaultModelGroups, testModelGroup, maskKey } from '../model-groups.js';
 import { jevProbe } from '../jev-client.js';
+import { endpointTarget } from '../model-endpoints.js';
 
 export function publicDecision(d = {}) {
   const { apiKey, ...rest } = d;
@@ -75,9 +76,18 @@ export function createModelService({ store, runner = null, modelGroups = default
         store.redactRoomSecrets(redactRoomId, [input.apiKey]);
       }
       const saved = input.id ? modelGroups.get(input.id) : null;
+      // ★ 换目标时绝不复用已保存的凭据。
+      //
+      //   调用方显式传了 baseUrl 且和已保存的目标不是同一台服务器（规范化后比较，
+      //   见 model-endpoints 的 endpointTarget），说明这次请求要去别处：
+      //   把 saved.apiKey 带过去，等于用户点一次「测试连接」就把密钥交给那台机器。
+      const askedBaseUrl = String(input.baseUrl ?? '').trim();
+      const savedBaseUrl = String(saved?.baseUrl ?? '').trim();
+      const sameTarget = !askedBaseUrl || !savedBaseUrl
+        || endpointTarget(askedBaseUrl) === endpointTarget(savedBaseUrl);
       return testModelGroup({
-        baseUrl: input.baseUrl || saved?.baseUrl,
-        apiKey: input.apiKey || saved?.apiKey,
+        baseUrl: askedBaseUrl || savedBaseUrl,
+        apiKey: input.apiKey || (sameTarget ? saved?.apiKey : ''),
         api: input.api || saved?.api,
         model: input.model || saved?.models?.[0]?.id,
       });
@@ -111,9 +121,14 @@ export function createModelService({ store, runner = null, modelGroups = default
     async probeDecision(input = {}) {
       const cfg = store.decision();
       const mode = input.mode === 'custom' || cfg.mode === 'custom' ? 'custom' : 'typesafe';
+      const askedBaseUrl = mode === 'custom' ? String(input.baseUrl ?? '').trim() : '';
+      const savedBaseUrl = mode === 'custom' ? String(cfg.baseUrl ?? '').trim() : '';
+      // ★ 同 testGroup：自己填一个新地址去「试一下」时，不能顺手把已保存的密钥发过去。
+      const sameTarget = !askedBaseUrl || !savedBaseUrl
+        || endpointTarget(askedBaseUrl) === endpointTarget(savedBaseUrl);
       return jevProbe({
-        baseUrl: mode === 'custom' ? String(input.baseUrl || cfg.baseUrl || '') : 'https://api.typesafe.ai',
-        apiKey: input.apiKey || cfg.apiKey,
+        baseUrl: mode === 'custom' ? (askedBaseUrl || savedBaseUrl) : 'https://api.typesafe.ai',
+        apiKey: input.apiKey || (sameTarget ? cfg.apiKey : ''),
       });
     },
   };

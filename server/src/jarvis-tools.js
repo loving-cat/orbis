@@ -346,13 +346,18 @@ export function buildJarvisTools({
           return ok(`已删除技能 ${id}。`, { deleted: true, id });
         }
         if (op === 'add_lesson') {
+          // ★ 主控不能自己把经验推进「生效」。
+          //
+          //   candidate → active 是**人工门禁**：用户在设置页看过、点过启用才算数
+          //   （与 SDK 的 runtime.lessons.propose 同一套语义）。以前这里把
+          //   params.status 原样透传，模型传 status: 'active' 就绕过了这道门。
           const r = services.capabilities.addLesson({
             roomId: params.roomId ?? '',
             dept: params.dept ?? '',
             cue: params.cue ?? '',
             lesson: params.lesson ?? '',
             verdict: params.verdict,
-            status: params.status,
+            status: 'candidate',
             evidence: params.evidence ?? [],
           });
           if (!r.ok) return fail(r.error);
@@ -361,6 +366,9 @@ export function buildJarvisTools({
         }
         if (op === 'update_lesson') {
           if (!id) return fail('update_lesson 需要 id');
+          if (String(params.status ?? '').trim() === 'active') {
+            return fail('不能由主控把经验设为「生效」：candidate → active 必须由用户在设置页手动启用。');
+          }
           const patch = {};
           for (const k of ['roomId', 'dept', 'cue', 'lesson', 'verdict', 'status', 'evidence']) {
             if (params[k] !== undefined) patch[k] = params[k];

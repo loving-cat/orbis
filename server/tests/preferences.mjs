@@ -25,13 +25,18 @@ const {
 } = await import(src('preferences.js'));
 
 const results = [];
+// ★ 用例必须真的等：以前这里直接 `fn()`，async 用例返回的 promise 被丢掉，
+//   断言失败只变成一条未处理的 rejection，测试仍然"通过"（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push({ name, ok: true });
-  } catch (err) {
-    results.push({ name, ok: false, err: err?.message || String(err) });
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      results.push({ name, ok: true });
+    } catch (err) {
+      results.push({ name, ok: false, err: err?.message || String(err) });
+    }
+  });
 }
 
 const NOW = 1_700_000_000_000;
@@ -196,6 +201,7 @@ test('★ store.addPreference 生效并能被提示词读到', async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+await tests;
 const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

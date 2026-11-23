@@ -11,6 +11,7 @@
  *   state.json        设备 / bot / 房间 / 每个会话的 sessionFile
  *   rooms/<id>.json   房间消息
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config as defaultConfig } from './config.js';
@@ -28,7 +29,6 @@ import { channelSuffices, channelSufficesFor } from './confirm.js';
 import { normalizeOverride, checkOverrideBounds, resolve as resolveOverride } from './overrides.js';
 import { defaultWindowsInstanceDir, teardownWindowsInstance } from './sandbox-win.js';
 import { defaultInstanceDir } from './child-env-typed.js';
-
 const STATE_VERSION = 2;
 
 /** 正整数字符串/数字 → 正整数；其他（含空、null、负数、小数）→ null（= 用上层默认） */
@@ -77,6 +77,46 @@ import { CHIEF_MODEL_POLICY } from './model-dispatch.js';
 import { encrypt, decrypt, isEncrypted } from './secrets.js';
 import { sealedDecisionKey } from './decision-credentials.js';
 import { policyVersion as computePolicyVersion, policyChange, planPolicyChangeNotices, describePolicyChange } from './policy-version.js';
+
+/** 设备 token 在内存与 state.json 里都只以 `sha256:<hex>` 出现。 */
+const DEVICE_TOKEN_KEY_PREFIX = 'sha256:';
+
+/**
+ * token → 落盘键（散列）。
+ *
+ * ★ 为什么散列：state.json 是用户数据，会被备份工具、同步盘、崩溃转储带走。
+ *   以前 key 就是 token 本身，任何拿到这份文件的人可以直接冒充那台手机。
+ *   散列之后同一个 token 仍能查到设备，但文件本身换不回 token。
+ *
+ * @param {string} token
+ * @returns {string} `sha256:<hex>`
+ */
+function deviceTokenKey(token) {
+  return DEVICE_TOKEN_KEY_PREFIX + crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+/** 只留前 10 位给人认（`listDevices` 的预览列）。 */
+function deviceTokenPreview(token) {
+  return `${String(token).slice(0, 10)}…`;
+}
+
+/**
+ * 站点的目标 origin（scheme + host + port）。
+ *
+ * ★ 为什么按 origin 而不是整串 URL 比：登录路径（`/login`、`/api/auth`）本来就
+ *   允许改，改路径不换服务器；而 origin 一变就是另一台机器 —— 口令不能跟过去。
+ *
+ * @param {string} baseUrl
+ * @returns {string} 解析不了时返回空串
+ */
+function siteOrigin(baseUrl) {
+  try {
+    const url = new URL(String(baseUrl ?? '').trim());
+    return ['http:', 'https:'].includes(url.protocol) ? url.origin : '';
+  } catch {
+    return '';
+  }
+}
 
 export const GROUP_LIMITS_DEFAULT = {
   /** 部门老大每次发言最多跑几轮 */
@@ -416,6 +456,8 @@ export class Store {
     // 规格 §13.1 四层配置的第②层：用户自定义覆盖。与 bot 记录分开存 ——
     // 合在一起的话模板一升级就把用户改的覆盖掉了。
     if (!Array.isArray(this.state.botOverrides)) this.state.botOverrides = [];
+    // ★ 设备表加固：无原型字典 + token 只存散列（老 state.json 原地迁移）
+    const migratedDevices = this.#hardenDevices();
     /** @type {Map<string, any[]>} roomId -> messages */
     this.messages = new Map();
     for (const room of Object.values(this.state.rooms)) {
@@ -428,9 +470,46 @@ export class Store {
     /** 有变更的房间 id —— 落盘时只写这些，不要全量重写 */
     this.dirtyRooms = new Set();
     if (opts.secretsKey) this.useSecretsKey(opts.secretsKey);
+    if (migratedDevices > 0) {
+      log(`🔐 已把 ${migratedDevices} 个设备 token 迁移为散列（手机不用重新配对）`);
+      this.scheduleSave();
+    }
+  }
+
+  /**
+   * 设备表加固（P0）。
+   *
+   * 三件事，缺一件都不算修好：
+   *   1. 换成**无原型**字典 —— 以前 `devices['constructor']` / `['__proto__']`
+   *      查到的是 Object.prototype 上的函数/对象，`?? null` 之后是 truthy，
+   *      于是随便一个字符串都能"认证成功"；
+   *   2. token 只存 `sha256:<hex>` —— state.json 被备份/同步盘带走也不等于交出设备；
+   *   3. 老 state.json 的明文 `t_*` 键**原地**换成散列键（老手机不用重新配对）。
+   *
+   * @returns {number} 迁移的明文键数量
+   */
+  #hardenDevices() {
+    const raw = this.state.devices;
+    const devices = Object.create(null);
+    let migrated = 0;
+    if (raw && typeof raw === 'object') {
+      for (const [key, value] of Object.entries(raw)) {
+        if (!value || typeof value !== 'object') continue;
+        const hashed = key.startsWith(DEVICE_TOKEN_KEY_PREFIX);
+        const device = { ...value };
+        if (!device.tokenPreview) {
+          device.tokenPreview = hashed ? `${String(device.id ?? '')}…` : deviceTokenPreview(key);
+        }
+        if (!hashed) migrated += 1;
+        devices[hashed ? key : deviceTokenKey(key)] = device;
+      }
+    }
+    this.state.devices = devices;
+    return migrated;
   }
 
   #seed() {
+
     const chief = {
       id: MAIN_BOT_ID,
       name: DEFAULT_MAIN_BOT_NAME,
@@ -457,7 +536,8 @@ export class Store {
     return {
       version: STATE_VERSION,
       serverName: this.config.serverName,
-      devices: {},
+      // ★ 无原型：`devices['__proto__']` / `['constructor']` 不能落到 Object.prototype 上
+      devices: Object.create(null),
       bots: { [chief.id]: chief },
       rooms: { [dm.id]: dm },
       sessions: {},
@@ -567,20 +647,31 @@ export class Store {
       name: String(name || '未命名设备').slice(0, 60),
       createdAt: now(),
       lastSeenAt: now(),
+      // 落盘只留散列键，展示靠这个预览（否则列表里只剩 sha256:xxxx）
+      tokenPreview: deviceTokenPreview(token),
     };
-    this.state.devices[token] = device;
+    this.state.devices[deviceTokenKey(token)] = device;
     this.scheduleSave();
     return { token, device };
   }
 
+  /**
+   * 按设备 token 找设备。
+   *
+   * ★ 只认**字符串**、只查**自有**属性：`constructor` / `__proto__` /
+   *   `hasOwnProperty` 这类名字既不是 token，也不许顺着原型链摸到东西。
+   */
   findDeviceByToken(token) {
-    return this.state.devices[token] ?? null;
+    if (typeof token !== 'string' || !token) return null;
+    const key = deviceTokenKey(token);
+    return Object.hasOwn(this.state.devices, key) ? this.state.devices[key] : null;
   }
 
   /** 已配对的远程设备（token 只给前几位预览） */
   listDevices() {
+    // token 本身已经不在了（只存散列），预览列建时就记在 device 上
     return Object.entries(this.state.devices)
-      .map(([token, d]) => ({ ...d, tokenPreview: `${token.slice(0, 10)}…`, token }))
+      .map(([, d]) => ({ ...d, tokenPreview: d.tokenPreview ?? `${String(d.id ?? '')}…` }))
       .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
   }
 
@@ -594,9 +685,9 @@ export class Store {
 
   /** 按设备 id 找（token 本身不给客户端，撤销只能靠 id） */
   findDeviceById(id) {
-    if (!id) return null;
-    for (const [token, d] of Object.entries(this.state.devices)) {
-      if (d.id === id) return { token, device: d };
+    if (typeof id !== 'string' || !id) return null;
+    for (const [key, d] of Object.entries(this.state.devices)) {
+      if (d?.id === id) return { key, device: d };
     }
     return null;
   }
@@ -606,15 +697,22 @@ export class Store {
    * 事件里只带 id —— 广播给所有在线设备的消息里不能出现别人的 token。
    */
   revokeDevice(selector) {
-    const key = String(selector ?? '');
-    let token = this.state.devices[key] ? key : null;
-    if (!token) {
-      const hit = this.findDeviceById(key);
-      token = hit ? hit.token : null;
+    const raw = typeof selector === 'string' ? selector.trim() : '';
+    if (!raw) return false;
+    const devices = this.state.devices;
+    let key = null;
+    // ① 直接给了散列键（内部/诊断调用）
+    if (raw.startsWith(DEVICE_TOKEN_KEY_PREFIX) && Object.hasOwn(devices, raw)) key = raw;
+    // ② 原始 token（历史调用方式）
+    if (!key) {
+      const hashed = deviceTokenKey(raw);
+      if (Object.hasOwn(devices, hashed)) key = hashed;
     }
-    if (!token) return false;
-    const device = this.state.devices[token];
-    delete this.state.devices[token];
+    // ③ 设备 id（客户端撤销走这条）
+    if (!key) key = this.findDeviceById(raw)?.key ?? null;
+    if (!key) return false;
+    const device = devices[key];
+    delete devices[key];
     this.scheduleSave();
     // ★ 设备撤销**不回收授权**，这是刻意的。
     //
@@ -626,7 +724,9 @@ export class Store {
   }
 
   touchDevice(token) {
-    const d = this.state.devices[token];
+    if (typeof token !== 'string' || !token) return;
+    const key = deviceTokenKey(token);
+    const d = Object.hasOwn(this.state.devices, key) ? this.state.devices[key] : null;
     if (d) {
       const t = now();
       // 只是「最近在线」的时间戳：只在内存里更新，每台设备最多每分钟落一次盘。
@@ -1183,7 +1283,20 @@ export class Store {
     const list = this.siteList();
     const idx = list.findIndex((s) => s.id === id);
     if (idx < 0) return { error: '系统不存在' };
-    const merged = normalizeSite({ ...list[idx], ...patch, id, updatedAt: Date.now() });
+    const prev = list[idx];
+    const draft = { ...prev, ...patch, id, updatedAt: Date.now() };
+    // ★ 换目标不许带着旧口令走。
+    //
+    //   把 baseUrl 指到攻击者的服务器、口令留着不改，下一条「登录」就会把
+    //   旧口令明文发过去 —— 一个改配置的动作变成凭据外泄。除非这次同时给了新口令。
+    const incomingPassword = Object.hasOwn(patch ?? {}, 'password') ? String(patch['password'] ?? '') : '';
+    const prevOrigin = siteOrigin(prev.baseUrl);
+    const nextOrigin = siteOrigin(draft.baseUrl);
+    const targetChanged = (prevOrigin && nextOrigin)
+      ? prevOrigin !== nextOrigin
+      : String(prev.baseUrl ?? '').trim() !== String(draft.baseUrl ?? '').trim();
+    if (targetChanged && !incomingPassword) draft['password'] = '';
+    const merged = normalizeSite(draft);
     if (!merged) return { error: '网址和账号是必填的' };
     list[idx] = merged;
     this.#persistSites(list);

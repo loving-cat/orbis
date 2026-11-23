@@ -54,8 +54,7 @@ const runner = {
 const server = createHttpServer({ runner, pairing: new Pairing() });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
-const TOKEN = 'tok-desktop-settings';
-store.state.devices[TOKEN] = { id: 'd_ds', name: '测试机', createdAt: Date.now(), lastSeenAt: Date.now() };
+const { token: TOKEN } = store.addDevice('测试机');
 
 function req(method, pathname, { body = null, nonce = null } = {}) {
   return new Promise((resolve, reject) => {

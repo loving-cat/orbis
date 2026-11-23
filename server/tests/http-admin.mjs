@@ -140,10 +140,8 @@ const runner = {
 const server = createHttpServer({ runner, pairing: new Pairing() });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
-const TOKEN = 'test-token-for-admin';
-
-// 让服务端认这个 token：塞进 devices
-store.state.devices[TOKEN] = { id: 'd_test', name: '测试设备', createdAt: Date.now(), lastSeenAt: Date.now() };
+// 让服务端认这个 token：走真实签发路径（state 里只有散列键）
+const { token: TOKEN, device: DEVICE } = store.addDevice('测试设备');
 
 function request(pathname, { method = 'GET', body = null, nonce = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -226,7 +224,7 @@ await test('管理动作留下审计记录（不含请求体）', async () => {
 
 await test('审计里能看出是哪个设备改的', async () => {
   const latest = store.listAdminActions({ limit: 1 })[0];
-  assert.equal(latest.deviceId, 'd_test');
+  assert.equal(latest.deviceId, DEVICE.id);
   assert.equal(latest.deviceName, '测试设备');
 });
 

@@ -23,15 +23,19 @@ import {
 
 let pass = 0;
 let fail = 0;
+// ★ 串行且真等：async 用例的 promise 以前被直接丢掉，失败不会计数（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`✓ ${name}`);
-    pass++;
-  } catch (err) {
-    console.log(`✗ ${name}\n    ${err.message}`);
-    fail++;
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      console.log(`✓ ${name}`);
+      pass++;
+    } catch (err) {
+      console.log(`✗ ${name}\n    ${err.message}`);
+      fail++;
+    }
+  });
 }
 
 const EVIDENCE = [{ taskId: 't1', msgId: 'm1', quote: '他们团队应该每个功能模块都有专人负责给我汇报才对' }];
@@ -529,6 +533,8 @@ test('服务层：updateLesson 把 not-found / invalid / conflict 映射成 404 
   assert.equal(reactivated.ok, true, reactivated.error);
   assert.equal(reactivated.materialized, 0, '没有待物化的边就报 0');
 });
+
+await tests;
 
 try {
   fs.rmSync(root, { recursive: true, force: true });

@@ -740,11 +740,17 @@ mod imp {
             if let Err(e) = fs::create_dir_all(dir) {
                 fail("INSTANCE_MKDIR_FAILED", &format!("建目录失败 {}: {e}", dir.display()));
             }
-            if let Ok(canon) = fs::canonicalize(dir) {
-                let data_dir = arg_data_dir(args);
-                if let Err((c, m)) = reject_unsafe(&canon, data_dir.as_deref()) {
-                    fail(&c, &m);
-                }
+            // ★ 规范化失败必须 fail-closed（与 grant() 一致）：
+            //   以前这里是 `if let Ok(canon)` —— 路径规范化不出来就**跳过**整段
+            //   拒绝规则，直接给目录授 ACE。等价于"路径越怪越容易绕过 spec §15 的
+            //   拒绝清单"（盘符根 / 用户主目录 / AppData 全都拦不住）。
+            let canon = match fs::canonicalize(dir) {
+                Ok(c) => c,
+                Err(e) => fail("PATH_INVALID", &format!("路径无法规范化 {}: {e}", dir.display())),
+            };
+            let data_dir = arg_data_dir(args);
+            if let Err((c, m)) = reject_unsafe(&canon, data_dir.as_deref()) {
+                fail(&c, &m);
             }
             let mask = mode_mask(mode);
             if let Err((c, m)) = set_ace(dir, sid, mask, true, true) {

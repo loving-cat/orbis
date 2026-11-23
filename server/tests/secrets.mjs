@@ -20,22 +20,26 @@ const { encrypt, decrypt, isEncrypted, loadOrCreateKey, hasKey } = await import(
 
 let pass = 0;
 let fail = 0;
+// ★ 串行且真等：同步 `fn()` 会把 async 用例的 promise 丢掉（假绿）。
+let tests = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`✓ ${name}`);
-    pass++;
-  } catch (err) {
-    console.log(`✗ ${name}\n    ${err.message}`);
-    fail++;
-  }
+  tests = tests.then(async () => {
+    try {
+      await fn();
+      console.log(`✓ ${name}`);
+      pass++;
+    } catch (err) {
+      console.log(`✗ ${name}\n    ${err.message}`);
+      fail++;
+    }
+  });
 }
 
 const key = crypto.randomBytes(32);
 
 // ---------------------------------------------------------------- 加解密
 
-await test('加密后能还原', () => {
+test('加密后能还原', () => {
   const plain = 'example-pw-1234';
   const enc = encrypt(plain, key);
   assert.ok(enc.startsWith('enc:v1:'), '要有可识别前缀');
@@ -43,7 +47,7 @@ await test('加密后能还原', () => {
   assert.equal(decrypt(enc, key), plain);
 });
 
-await test('同一个口令两次加密结果不同（IV 随机）', () => {
+test('同一个口令两次加密结果不同（IV 随机）', () => {
   const a = encrypt('same', key);
   const b = encrypt('same', key);
   assert.notEqual(a, b, 'IV 必须随机，否则能看出两个口令相同');
@@ -51,13 +55,13 @@ await test('同一个口令两次加密结果不同（IV 随机）', () => {
   assert.equal(decrypt(b, key), 'same');
 });
 
-await test('换密钥解不开（报错，不返回空）', () => {
+test('换密钥解不开（报错，不返回空）', () => {
   const enc = encrypt('secret', key);
   const other = crypto.randomBytes(32);
   assert.throws(() => decrypt(enc, other), /解密失败/);
 });
 
-await test('密文被篡改后解不开', () => {
+test('密文被篡改后解不开', () => {
   const enc = encrypt('secret', key);
   // 改认证 tag 中间一位。末字符是 base64url 填充位，改它不一定会让解密失败。
   const parts = enc.split(':');
@@ -67,19 +71,19 @@ await test('密文被篡改后解不开', () => {
   assert.throws(() => decrypt(parts.join(':'), key), /解密失败/);
 });
 
-await test('空值安全', () => {
+test('空值安全', () => {
   assert.equal(encrypt('', key), '');
   assert.equal(decrypt('', key), '');
   assert.equal(decrypt(null, key), '');
 });
 
-await test('历史明文原样返回（供迁移识别）', () => {
+test('历史明文原样返回（供迁移识别）', () => {
   assert.equal(decrypt('plain-old-value', key), 'plain-old-value');
   assert.equal(isEncrypted('plain-old-value'), false);
   assert.equal(isEncrypted(encrypt('x', key)), true);
 });
 
-await test('中文与特殊字符都能还原', () => {
+test('中文与特殊字符都能还原', () => {
   for (const s of ['密码123', 'a:b:c', '{"json":"内嵌"}', 'emoji🔐test', 'x'.repeat(150)]) {
     assert.equal(decrypt(encrypt(s, key), key), s);
   }
@@ -87,7 +91,7 @@ await test('中文与特殊字符都能还原', () => {
 
 // ---------------------------------------------------------------- 密钥文件
 
-await test('密钥文件：首次创建，之后复用', () => {
+test('密钥文件：首次创建，之后复用', () => {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'key-'));
   assert.equal(hasKey(dir), false);
   const k1 = loadOrCreateKey(dir);
@@ -97,13 +101,13 @@ await test('密钥文件：首次创建，之后复用', () => {
   assert.deepEqual(k1, k2, '第二次应读到同一把密钥');
 });
 
-await test('密钥文件损坏时报错，不静默覆盖', () => {
+test('密钥文件损坏时报错，不静默覆盖', () => {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'badkey-'));
   fs.writeFileSync(path.join(dir, 'secret.key'), Buffer.alloc(5));
   assert.throws(() => loadOrCreateKey(dir), /长度异常/, '损坏的密钥必须报错，不能悄悄换一把');
 });
 
-await test('密钥文件与数据分开：拷走 state.json 没用', () => {
+test('密钥文件与数据分开：拷走 state.json 没用', () => {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'sep-'));
   const k = loadOrCreateKey(dir);
   const enc = encrypt('topsecret', k);
@@ -115,7 +119,7 @@ await test('密钥文件与数据分开：拷走 state.json 没用', () => {
 
 // ---------------------------------------------------------------- 真实 store 落盘
 
-await test('state.json 里绝不出现明文口令（真实落盘验证）', async () => {
+test('state.json 里绝不出现明文口令（真实落盘验证）', async () => {
   const { store } = await import('../src/store.js');
   const k = loadOrCreateKey(path.join(tmpRoot, 'keystore-'));
   store.useSecretsKey(k);
@@ -149,7 +153,7 @@ await test('state.json 里绝不出现明文口令（真实落盘验证）', asy
   }
 });
 
-await test('修改口令后仍是密文', async () => {
+test('修改口令后仍是密文', async () => {
   const { store } = await import('../src/store.js');
   const sites = store.siteList();
   const target = sites[0];
@@ -165,7 +169,7 @@ await test('修改口令后仍是密文', async () => {
   assert.ok(!inState.password.includes(NEW_PW));
 });
 
-await test('历史明文会在启动时自动迁成密文', async () => {
+test('历史明文会在启动时自动迁成密文', async () => {
   const { store } = await import('../src/store.js');
   // 造一条"老版本留下的明文"
   const legacyPw = 'legacy-plain-777';
@@ -191,5 +195,6 @@ await test('历史明文会在启动时自动迁成密文', async () => {
   assert.equal(store.siteList()[0].password, legacyPw, '迁移后仍要能读出正确明文');
 });
 
+await tests;
 console.log(`\n口令加密测试：${pass}/${pass + fail} 通过`);
 if (fail > 0) process.exit(1);
