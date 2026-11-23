@@ -256,7 +256,7 @@ function ensureTalkBuilder(runner) {
     runner.__buildSession(roomId, botId, { ...opts, talkLane: true }));
 }
 
-async function executeTalkItem(runner, item, inflight) {
+export async function executeTalkItem(runner, item, inflight) {
   const { roomId, botId, userMessage, cleanText, snapshotPrompt, duringMsgId, scope } = item;
   const startedAt = Date.now();
   const bot = runner.store.getBot(botId);
@@ -271,6 +271,10 @@ async function executeTalkItem(runner, item, inflight) {
   let talkErr = null;
   let unsubscribe = null;
   let pushDelta = null;
+  // ★ 必须在这里声明（try 外面）：catch 里要读它拿到上游 detail/code/status。
+  //   放在 try 块里的话，catch 访问 `responseFailure?.detail` 会当场
+  //   ReferenceError（TDZ）—— 日志与诊断记录都会被跳过。
+  let responseFailure = null;
 
   try {
     if (inflight.aborted || runner.aborting.has(roomId)) return;
@@ -318,7 +322,6 @@ async function executeTalkItem(runner, item, inflight) {
     let committed = [];
     let buffer = '';
     let usage = null;
-    let responseFailure = null;
     const meter = new RunUsage();
     const render = () => {
       const parts = [...committed];

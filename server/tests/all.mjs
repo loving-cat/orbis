@@ -175,6 +175,7 @@ const TESTS = [
   'group-round-dispatch',
   'diagnostics-log',
   'group-stream-order',
+  'talk-failure-diagnostics',
   'user-dirs',
   'storage-retention',
   'storage-housekeeping',
