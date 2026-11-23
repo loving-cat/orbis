@@ -46,6 +46,7 @@ import {
 } from './circuit-breaker.js';
 import { createSessionBuilder } from './session-factory.js';
 import { normalizeInjection } from './runner/session-injection.js';
+import { diagnosticsForRunner } from './diagnostics-log.js';
 import { createBuildInput } from './prompt-input.js';
 import { departmentOf } from './group-prompt.js';
 import { intakeEnabled } from './coordination/intake-tool.js';
@@ -81,6 +82,7 @@ export class PiRunner {
   constructor(opts = {}) {
     this.config = opts.config ?? defaultConfig;
     this.store = opts.store ?? defaultStore;
+    this.diagnostics = diagnosticsForRunner(this.config, this.store, opts.diagnostics); // 模型失败诊断（memory 零写盘）
     this.bus = opts.bus ?? defaultBus ?? createBus();
     this.modelGroups = opts.modelGroups ?? defaultModelGroups;
     this.sessionApi = opts.sessionApi ?? null;
@@ -595,8 +597,7 @@ export class PiRunner {
   sendImage({ roomId, botId, filePath, caption }) {
     const bot = this.store.getBot(botId);
     const meta = saveFromPath(filePath);
-    // ★ 记下这一轮手动发过的文件（收尾的自动附图要跳过，见 runner/sent-attachments.js）
-    recordSentAttachment(this.sessions.get(`${roomId}:${botId}`), filePath, meta, normalizeAttachmentPath);
+    recordSentAttachment(this.sessions.get(`${roomId}:${botId}`), filePath, meta, normalizeAttachmentPath); // 本轮已发过：收尾自动附图要跳过
     const attachment = { id: meta.id, name: meta.name, mime: meta.mime, kind: meta.kind, size: meta.size };
     const msg = this.store.appendMessage({
       roomId,

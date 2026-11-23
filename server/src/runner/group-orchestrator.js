@@ -107,18 +107,32 @@ export async function dispatchGroupRound(runner, roomId, text, files) {
     return;
   }
 
-  if (runner.isRoomBusy(roomId)) {
-    // 忙，但没有 drain 循环：打断旧会话后**自己持锁起一轮**，绝不入队。
-    log(`【${roomName}】房间里还有会话在忙（没有 drain 循环）→ 打断它并直接开新的一轮`);
-    interruptRoundForUser(runner, roomId);
-    runner.roundQueue.delete(roomId);
-    runner.mergeQueue.drop(roomId);
-    // 给被中断的会话一个 tick 退出：紧接着 runRound 会和它抢同一个 entry
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
+  // ★ 先加锁、再做任何 `await`。
+  //
+  //   以前是"检查忙 → await 一下 → 才加锁"：两个并发调用都能在加锁前通过上面的
+  //   `roundLocks.has` 检查，各自起一轮 drain —— 双锁并发、消息互相 steer。
   runner.roundLocks.add(roomId);
-  await drainGroupRounds(runner, roomId, { text, files });
+  try {
+    if (runner.isRoomBusy(roomId)) {
+      // 忙，但没有 drain 循环：打断旧会话后**自己持锁起一轮**，绝不入队。
+      log(`【${roomName}】房间里还有会话在忙（没有 drain 循环）→ 打断它并直接开新的一轮`);
+      interruptRoundForUser(runner, roomId);
+      runner.roundQueue.delete(roomId);
+      runner.mergeQueue.drop(roomId);
+      // 有界短轮询等旧会话真的退出（最多 1.5s，每 25ms 看一次）：
+      //   只 `setTimeout(0)` 不够 —— 旧轮可能还在收尾，新轮会和它抢同一个 entry
+      //   （被当成"插话"steer 进去，用户看到新消息没被单独回）。
+      const deadline = Date.now() + 1500;
+      while (runner.isRoomBusy(roomId) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+    await drainGroupRounds(runner, roomId, { text, files });
+  } finally {
+    // drainGroupRounds 自己也会放；这里兜底一次（delete 是幂等的），
+    // 保证它抛异常时不会把锁泄漏在房间里。
+    runner.roundLocks.delete(roomId);
+  }
 }
 
 async function drainGroupRounds(runner, roomId, first) {

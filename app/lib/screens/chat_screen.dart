@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import '../widgets/chief_summary_card.dart';
+import '../widgets/appear_once.dart';
 import '../widgets/diagnostics_sheet.dart';
 import 'dart:math' as math;
 
@@ -128,17 +129,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   /// 已经上屏过的消息 id：同一条消息**只播一次**入场动画。
   ///
-  /// 顺序变化 / 列表重建会重新挂载 widget；不记住的话 `_Appear` 会再播一遍
+  /// 顺序变化 / 列表重建会重新挂载 widget；不记住的话 `AppearOnce` 会再播一遍
   /// 240ms、8px 的位移动画 —— 群聊并发时整屏就是"一块一块地跳"。
   final Set<String> _appearedMsgIds = <String>{};
 
-  /// 让消息只在第一次出现时播入场动画（之后原样返回，key 保持一致）。
+  /// 让消息只在第一次出现时播入场动画。
+  ///
+  /// ★ 返回的**永远是 `AppearOnce`**（同一个 widget 类型 + 同一把 key）：
+  ///   以前第二次 build 会换成 `KeyedSubtree` —— 类型一变，Flutter 就把整棵子树
+  ///   卸载重建：流式 Markdown、选区、浮层全部重新 init，输入/滚动跟着抖。
+  ///   现在只是把 `animate` 置 false（内部直接定妆，0 Ticker）。
   Widget _appearOnce(String id, Widget child) {
-    if (_appearedMsgIds.contains(id)) {
-      return KeyedSubtree(key: ValueKey(id), child: child);
-    }
-    _appearedMsgIds.add(id);
-    return _Appear(key: ValueKey(id), child: child);
+    final firstTime = _appearedMsgIds.add(id);
+    return AppearOnce(key: ValueKey(id), animate: firstTime, child: child);
   }
   final _input = TextEditingController();
   final _focus = FocusNode();
@@ -1084,7 +1087,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     //   没有回调**时，Flutter 仍按 index 对位：一旦消息重排（占位消息写出第一个字
     //   后跳回时间位置、insertBefore、msg.moved、用户发消息时末尾占位后移），
     //   同一 index 上是另一条消息，key 对不上 → 旧元素销毁、新元素 init →
-    //   _Appear 的 240ms 入场动画重播。群聊多个 bot 并发时能看到最新几条闪跳。
+    //   AppearOnce 的 240ms 入场动画重播。群聊多个 bot 并发时能看到最新几条闪跳。
     //
     //   有了回调，delegate 会先解开 _SaltedValueKey、拿着 item 原来的 key 来问
     //   「它现在在第几个」，元素就能跟着挪而不是重建。
@@ -2675,61 +2678,6 @@ class _RoundButtonState extends State<_RoundButton> {
 }
 
 /// 新消息淡入 + 轻微上浮，不要"啪"地蹦出来
-class _Appear extends StatefulWidget {
-  const _Appear({super.key, required this.child});
-
-  final Widget child;
-
-  @override
-  State<_Appear> createState() => _AppearState();
-}
-
-class _AppearState extends State<_Appear> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 240),
-  );
-
-  // ★ CurvedAnimation 只建一次。
-  //
-  //   原来在 build 里 new 一个：每次重建都注册一个新的 listener 到 _c 上，
-  //   而且从不 dispose —— CurvedAnimation 自己会往 parent 加监听，
-  //   不 dispose 就一直挂着，行被反复重建时会累积。
-  //   现在在 initState 建、dispose 里释放。
-  late final CurvedAnimation _curve = CurvedAnimation(
-    parent: _c,
-    curve: Curves.easeOutCubic,
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    _c.forward();
-  }
-
-  @override
-  void dispose() {
-    _curve.dispose();
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: _curve,
-      child: AnimatedBuilder(
-        animation: _curve,
-        builder: (context, child) => Transform.translate(
-          offset: Offset(0, (1 - _curve.value) * 8),
-          child: child,
-        ),
-        child: widget.child,
-      ),
-    );
-  }
-}
-
 /// 这条消息是不是「从别处转过来的」（需要在气泡上方挂「消息来自 X」）。
 ///
 /// 判断依据是「作者不在这个会话的名单里」，但**主控永远不算**：

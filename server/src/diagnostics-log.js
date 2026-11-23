@@ -120,6 +120,24 @@ export function recordFailure(log, payload) {
   }
 }
 
+/**
+ * 给 PiRunner 造默认记录器（P2-1）。
+ *
+ * `store.memory === true` 时**零写盘** —— 测试与嵌入式宿主只 import 不落文件。
+ * 宿主显式注入 `opts.diagnostics` 时直接用它的。
+ *
+ * @param {object} config
+ * @param {object} store
+ * @param {object} [override]
+ */
+export function diagnosticsForRunner(config, store, override) {
+  if (override) return override;
+  return createDiagnosticsLog({
+    dataDir: config?.dataDir ?? '',
+    memory: store?.memory === true,
+  });
+}
+
 /** `server.log` 的位置：桌面端把服务端 stdout 重定向到数据目录的上一级。 */
 export function serverLogPath(dataDir = defaultConfig.dataDir) {
   if (!dataDir) return '';

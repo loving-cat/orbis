@@ -102,7 +102,8 @@ export function createModelService({ store, runner = null, modelGroups = default
       // 「测试连接」失败也要进诊断日志：用户看到的那句话通常只有"HTTP 502"，
       // 真正的原因（中转站挂了 / 模型名错）在 detail 里（Mac 实机 UX-4）。
       if (result && result.ok === false) {
-        recordFailure(null, {
+        // 用 runner 自己的记录器：注入的 runner 可能是 memory 模式（零写盘）
+        recordFailure(runner?.diagnostics ?? null, {
           phase: 'test',
           roomId: '',
           botId: '',

@@ -28,7 +28,7 @@ import { config } from './config.js';
 import { decrypt, encrypt, isEncrypted, loadOrCreateKey } from './secrets.js';
 import { log, newId, now, readJson, writeJsonAtomic } from './util.js';
 import { mergeGroupModels } from './model-capacity.js';
-import { modelFailure } from './model-reply.js';
+import { formatFailureDetail, modelFailure, redactDiagnostic } from './model-reply.js';
 import { publicFetch } from './net-guard.js';
 import { mergeModelEndpoints } from './model-endpoints.js';
 export {
@@ -303,8 +303,24 @@ export async function testModelGroup({
     return `接口回了 HTTP ${status}`;
   };
 
+  /**
+   * HTTP 非 2xx 时读一点响应体做 detail（截断 200 字 + 脱敏）。
+   *
+   * 只读一小段：上游 502 的 HTML 可能几十 KB，整段塞进诊断面板既没用又难读；
+   * 但"invalid_request_error: thinking budget too low"这种一句就够定位了。
+   */
+  const httpDetail = async (res, label) => {
+    try {
+      const text = String((await res.text()) ?? '').slice(0, 200);
+      return redactDiagnostic(`${label} HTTP ${res.status}${text ? ` · ${text}` : ''}`);
+    } catch {
+      return redactDiagnostic(`${label} HTTP ${res.status}`);
+    }
+  };
+
   // ① GET /models：不花 token
   let netError = null;
+  let netDetail = '';
   try {
     const res = await withTimeout(`${base}/models`, { headers });
     if (res.ok) {
@@ -325,13 +341,25 @@ export async function testModelGroup({
       };
     }
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, ms: Date.now() - t0, error: explain(res.status) };
+      return {
+        ok: false,
+        ms: Date.now() - t0,
+        status: res.status,
+        code: '',
+        detail: await httpDetail(res, 'GET /models'),
+        error: explain(res.status),
+      };
     }
     // 其他状态（404/405…）继续往下试 chat
   } catch (err) {
     const deny = blocked(err);
-    if (deny) return { ok: false, ms: Date.now() - t0, error: deny };
+    if (deny) {
+      return {
+        ok: false, ms: Date.now() - t0, status: null, code: err?.code ?? '', detail: formatFailureDetail(err), error: deny,
+      };
+    }
     netError = modelFailure(err).error;
+    netDetail = formatFailureDetail(err);
   }
 
   // ② 最小 chat 请求（一些中转站没有 /models）
@@ -354,14 +382,28 @@ export async function testModelGroup({
         via: `chat（用了 ${mid}）`,
       };
     }
-    return { ok: false, ms: Date.now() - t0, error: explain(res.status) };
+    return {
+      ok: false,
+      ms: Date.now() - t0,
+      status: res.status,
+      code: '',
+      detail: await httpDetail(res, 'chat'),
+      error: explain(res.status),
+    };
   } catch (err) {
     const deny = blocked(err);
-    if (deny) return { ok: false, ms: Date.now() - t0, error: deny };
+    if (deny) {
+      return {
+        ok: false, ms: Date.now() - t0, status: null, code: err?.code ?? '', detail: formatFailureDetail(err), error: deny,
+      };
+    }
     const e = modelFailure(err).error;
     return {
       ok: false,
       ms: Date.now() - t0,
+      status: modelFailure(err).status ?? null,
+      code: err?.code ?? err?.cause?.code ?? '',
+      detail: netDetail || formatFailureDetail(err),
       error: netError
         ? `连不上：${netError}`
         : `连不上：${e}（地址打不开 / 不是 OpenAI 兼容接口 / 需要代理）`,

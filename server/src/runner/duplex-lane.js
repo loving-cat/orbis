@@ -457,7 +457,10 @@ async function executeTalkItem(runner, item, inflight) {
       }
     }
     if (!cancelled) {
-      log(`旁路对话失败：${withModelHint(modelFailure(err).error, modelLabel)}`);
+      // 同 turn-executor：上游原文在 responseFailure 上（抛出来的 Error 只有人话）
+      const diagDetail = responseFailure?.detail || formatFailureDetail(err);
+      const diagCode = responseFailure?.code || err?.code || err?.cause?.code || '';
+      log(`旁路对话失败：${withModelHint(modelFailure(err).error, modelLabel)}${diagDetail ? ` [${diagDetail}]` : ''}`);
       recordFailure(runner.diagnostics ?? null, {
         phase: 'talk',
         roomId,
@@ -465,10 +468,10 @@ async function executeTalkItem(runner, item, inflight) {
         botId: bot.id,
         botName: bot.name,
         model: modelLabel,
-        status: modelFailure(err).status ?? null,
-        code: err?.code ?? err?.cause?.code ?? '',
+        status: responseFailure?.status ?? modelFailure(err).status ?? null,
+        code: diagCode,
         summary: withModelHint(modelFailure(err).error, modelLabel),
-        detail: formatFailureDetail(err),
+        detail: diagDetail,
         ms: Date.now() - startedAt,
       });
     }

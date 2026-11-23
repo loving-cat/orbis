@@ -1,5 +1,20 @@
-/** 模型失败分类、可展示错误与空回复恢复；不输出接口原文或连接凭据。 */
+/**
+ * 模型失败分类、可展示错误与空回复恢复；不输出接口原文或连接凭据。
+ *
+ * ★ 返回对象里除了给人看的 `.error`，还有 `code` 与 `detail`（脱敏技术摘要）：
+ *   诊断面板与 `server.log` 都靠这两项才能说出「到底是 400 参数不支持、还是
+ *   中转站 502」。只分类不给细节，用户就永远卡在「接口详情已隐藏」上。
+ */
 export function modelFailure(error) {
+  const classified = classifyFailure(error);
+  return {
+    ...classified,
+    code: String(error?.code ?? error?.cause?.code ?? '').trim(),
+    detail: formatFailureDetail(error),
+  };
+}
+
+function classifyFailure(error) {
   const raw = typeof error === 'string' ? error : String(error?.message ?? error?.errorMessage ?? '');
   if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || error?.stopReason === 'aborted'
     || /\baborted\b|\bcancelled\b|\bcanceled\b|已终止|已中止/i.test(raw)) {

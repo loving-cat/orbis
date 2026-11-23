@@ -931,10 +931,30 @@ class AppState extends ChangeNotifier {
   ///
   /// 服务端一般信任本机（不带 token）；开了服务器模式（设了 ORBIS_TOKEN）时本机也要带，
   /// 这时用用户在连接页填的 [localToken]。
-  /// 用户说「我迁好了」：重读一次 /health 并刷新界面。
+  /// 用户说「我迁好了」：重新检查（本机模式还会重启服务端进程）。
   ///
-  /// 只读、不发写请求；迁完重启服务端之后这里会自然变成 false。
+  /// ★ 本机模式必须**重启**：待迁移模式下的那个进程不会自己发现迁移完成
+  ///   （它连 store 都没打开）。只重读 /health 的话用户会一直卡在阻断页。
+  ///   迁移完 → 停掉待迁移进程 → 重新拉起 → 连上，一条路走到底。
+  ///
+  /// 远程模式只读 /health：`needsMigration` 变 false 就顺手 refresh() 拉数据。
   Future<bool> recheckMigration() async {
+    if (localMode && isHostPlatform) {
+      try {
+        await serverLauncher.stop();
+      } catch (_) {
+        // 停不掉也不阻塞：下面 ensureRunning 会自己处理端口占用
+      }
+      try {
+        await bootLocalServer(manual: true);
+        await connectLocal();
+      } catch (_) {
+        // 起不来时 serverProblem 已经由 bootLocalServer 写好了
+      }
+      _notify();
+      return !migrationStatus.needed;
+    }
+
     final base = serverUrl;
     if (base == null || base.isEmpty) return false;
     try {
@@ -944,6 +964,10 @@ class AppState extends ChangeNotifier {
       migrationStatus = MigrationStatus.none;
     }
     _notify();
+    if (!migrationStatus.needed) {
+      // 远程模式：迁完重启后把数据拉回来，用户点一下就能直接进正常界面
+      await refresh();
+    }
     return !migrationStatus.needed;
   }
 
@@ -977,6 +1001,15 @@ class AppState extends ChangeNotifier {
     if (status != migrationStatus) {
       migrationStatus = status;
       _notify();
+    }
+    if (status.needed) {
+      // ★ 待迁移模式下服务端只会回 /health 和一页提示：继续 refresh() 只会拿到
+      //   HTML 报错，界面还停在"离线 + 空房间"。直接停在这里，由 MigrationGateScreen
+      //   展示两条路径与可复制的命令（P1-4）。
+      link = LinkState.offline;
+      api = null;
+      _notify();
+      return;
     }
     if (!localNeedsToken) {
       // ★ 每次都重读（不是只在空的时候读）：服务端重启会换 token，

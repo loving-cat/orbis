@@ -95,6 +95,30 @@ test('房间空闲 → 正常持锁跑一轮', async () => {
   assert.equal(runner.roundLocks.has(roomId), false);
 });
 
+test('★ 旧会话 80ms 后才释放 busy → 新消息等它退出再跑，不会双锁并发', async () => {
+  // 模拟"上一轮还在收尾"：isRoomBusy 先真后假，80ms 后才放。
+  let busy = true;
+  const released = new Promise((resolve) => {
+    setTimeout(() => { busy = false; resolve(); }, 80);
+  });
+  const { runner, ran, roomId } = makeRunner({ busy: false, locked: false });
+  runner.isRoomBusy = () => busy;
+
+  const pending = dispatchGroupRound(runner, roomId, '这条要等旧会话退出', []);
+  // 1) 必须**立刻**持锁：否则第二个并发调用会在加锁前通过检查，双开 drain
+  assert.equal(runner.roundLocks.has(roomId), true, '★ 加锁必须发生在任何 await 之前');
+  // 2) 第二个调用看到锁 → 入队，不并发起一轮
+  await dispatchGroupRound(runner, roomId, '插一句', []);
+  assert.equal(ran.length, 0, '旧会话还忙时不该已经开跑');
+  assert.equal(runner.roundQueue.get(roomId)?.text, '插一句');
+
+  await released;
+  await pending;
+  assert.ok(ran.length >= 1, '旧会话退出后要真的跑');
+  assert.equal(ran[0].text, '这条要等旧会话退出', '先跑的是第一条真实消息');
+  assert.equal(runner.roundLocks.has(roomId), false, '跑完要放锁（含异常路径）');
+});
+
 test('★ 旁路 Talk：上游 AbortError 必须标 error（不能当用户取消整条藏掉）', () => {
   const file = path.join(import.meta.dirname, '..', 'src', 'runner', 'duplex-lane.js');
   const text = fs.readFileSync(file, 'utf8');

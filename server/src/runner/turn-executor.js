@@ -367,9 +367,9 @@ async function runWithLease(
    */
   let hasEmittedVisibleText = false;
 
-  const claimOrderOnFirstText = (text) => {
+  /** 首次可见输出（正文或附件）时的落位；多次调用只生效一次。 */
+  const claimOrder = () => {
     if (hasEmittedVisibleText) return;
-    if (!String(text ?? '').trim()) return;
     hasEmittedVisibleText = true;
     // 换条（插话）自己管顺序：pendingReseat 存在时绝不能在这里抢位置
     if (entry?.pendingReseat) return;
@@ -384,7 +384,7 @@ async function runWithLease(
   const pushDelta = throttle(() => {
     beat();
     const text = render();
-    claimOrderOnFirstText(text);
+    if (text.trim()) claimOrder();
     // ★ 同步落库（静默）：duplex-lane 判「这一轮到底写出正文没有」读的就是
     //   store 里这条消息的 text。只 emit 不落库，那边永远看到空字符串，
     //   于是“已写半截”会被误判成“空占位”，FD-0 直接破。
@@ -488,7 +488,7 @@ async function runWithLease(
           }
           responseFailure = null;
           const finalText = textOf(event.message) || buffer;
-          claimOrderOnFirstText(finalText);
+          if (finalText.trim()) claimOrder();
           if (finalText.trim()) committed.push(finalText.trim());
           buffer = '';
           pushDelta.flush();
@@ -760,6 +760,10 @@ async function runWithLease(
     // 它们确实交付了，只是不该在聊天里再出现一次。
     collectedArtifacts = [...produced, ...(Array.isArray(entry?.sentMetas) ? entry.sentMetas : [])];
 
+    // ★ 没有正文、只产出了附件（例如只跑了一个工具就结束）：同样要落位。
+    //   否则这条"只有图/文件"的气泡会插在正在流式的 bot 上面（P2-2）。
+    if (!hasEmittedVisibleText && collectedArtifacts.length) claimOrder();
+
     // ★ 收尾兜底（D1 第 3 条）：走到这里还有 pendingReseat，说明插话之后
     //   这一轮**没有任何新的 assistant 轮**（纯工具 / 直接结束）。此时只能把旧气泡
     //   封口，**不能**再建一条 —— 否则下面把缓存的 finalText 写进新气泡就是复制一份。
@@ -914,10 +918,15 @@ async function runWithLease(
       error: message,
       msg,
     });
-    log(`模型本轮出错：${message}`);
-    // ★ 诊断记录：真正能排障的技术摘要（状态码 / 网络错误码 / 上游 error.type）。
-    //   以前只写一句"接口详情已隐藏"，用户照提示去看 server.log 还是同一句话 ——
-    //   死循环。这里落一条脱敏详情，App 的「查看日志」直接读它（Mac 实机 UX-4）。
+    // ★ 真实上游原因优先取 responseFailure 上的 detail。
+    //
+    //   `message_end` 报 `{ stopReason: 'error', errorMessage: '400 invalid_request_error:
+    //   thinking budget too low' }` 时，抛出来的只是 `new Error(给人看的那句话)` ——
+    //   里面没有上游原文。以前因此 detail 只剩「接口详情已隐藏」，server.log 也是同一句：
+    //   用户照提示去看日志，看到的还是「请看日志」。现在两条路都带上脱敏 detail。
+    const diagDetail = responseFailure?.detail || failure.detail || formatFailureDetail(err);
+    const diagCode = responseFailure?.code || err?.code || err?.cause?.code || '';
+    log(`模型本轮出错：${message}${diagDetail ? ` [${diagDetail}]` : ''}`);
     recordFailure(runner.diagnostics ?? null, {
       phase: 'turn',
       roomId,
@@ -926,9 +935,9 @@ async function runWithLease(
       botName: bot.name,
       model: runner.store.getBot(botId)?.model || runner.modelLabel?.() || '',
       status: failure.status ?? null,
-      code: err?.code ?? err?.cause?.code ?? '',
+      code: diagCode,
       summary: message,
-      detail: formatFailureDetail(err),
+      detail: diagDetail,
       ms: Date.now() - started,
     });
     runner.recordRun({

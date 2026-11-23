@@ -79,6 +79,31 @@ test('formatFailureDetail：状态码 / 网络错误码 / cause / 上游 error �
   assert.ok(detail.length <= 500, '单条要截断');
 });
 
+test('★ message_end 的上游原文要进 detail（不再是"接口详情已隐藏"）', async () => {
+  const { modelFailure } = await import(src('model-reply.js'));
+  // 真实形态：SDK 把上游 body 塞进 errorMessage，stopReason 是 'error'
+  const failure = modelFailure({
+    stopReason: 'error',
+    errorMessage: `400 invalid_request_error: thinking budget too low (Bearer ${SECRET})`,
+  });
+  assert.match(failure.detail, /thinking budget too low/, '上游原文必须进 detail');
+  assert.match(failure.detail, /400/, '状态码要在');
+  assert.equal(failure.detail.includes(SECRET), false, 'detail 里的密钥要打码');
+  assert.equal(failure.error.includes('thinking budget'), false, '给人看的那句话保持原样（不塞技术细节）');
+});
+
+test('★ 诊断记录里也带 code 与脱敏后的 detail', () => {
+  const log = createDiagnosticsLog({ memory: true });
+  const item = log.record({
+    phase: 'turn',
+    code: 'ECONNRESET',
+    detail: redactDiagnostic(`HTTP 502 · upstream error: ${SECRET}`),
+  });
+  assert.equal(item.code, 'ECONNRESET');
+  assert.match(item.detail, /HTTP 502/);
+  assert.equal(item.detail.includes(SECRET), false);
+});
+
 test('记录形状：时间/阶段/房间/Bot/模型/状态码/耗时齐了', () => {
   const log = createDiagnosticsLog({ dataDir, memory: true });
   const item = log.record({
@@ -157,6 +182,24 @@ test('serverLogTail：文件不存在时返回空数组（不抛）', () => {
   const tail = serverLogTail({ dataDir: path.join(root, 'nope', 'data'), lines: 5 });
   assert.deepEqual(tail.lines, []);
   assert.ok(tail.logPath.endsWith('server.log'));
+});
+
+test('★ memory 模式的 PiRunner 零写盘（P2-1）：diagnostics 跟着 store 走', async () => {
+  const { PiRunner } = await import(src('pi-runner.js'));
+  const { Store } = await import(src('store.js'));
+  const memDir = path.join(root, 'memory-runner');
+  const memStore = new Store({ memory: true, dataDir: memDir });
+  try {
+    const runner = new PiRunner({ store: memStore });
+    assert.equal(runner.diagnostics.writing, false, 'memory 模式不该写 model-errors.jsonl');
+    runner.diagnostics.record({ phase: 'turn', summary: '模拟一次模型报错' });
+    runner.diagnostics.record({ phase: 'talk', summary: '再一次' });
+    assert.equal(fs.existsSync(path.join(memDir, MODEL_ERROR_FILE)), false, '一个字节都不该写');
+    assert.equal(runner.diagnostics.recent(5).length, 2, '内存里仍然要看得到');
+    runner.dispose?.();
+  } finally {
+    memStore.dispose();
+  }
 });
 
 // ---------------------------------------------------------------- HTTP
