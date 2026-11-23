@@ -103,5 +103,15 @@ $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
 # Manifest format matches `sha256sum`: <hash>  <name>
 Set-Content -LiteralPath $sha -Value "$hash  orbis-sandbox.exe" -Encoding ASCII -NoNewline
 
+# Drop the 1.7 artifact names: pack-windows.ps1 copies this whole directory into
+# the release, so a stale launcher would ship and nobody would ever read it.
+foreach ($stale in @('pibot-sandbox.exe', 'pibot-sandbox.sha256')) {  # legacy-guard-ok: drop 1.7 artifact names (2.1)
+  $stalePath = Join-Path $Out $stale
+  if (Test-Path -LiteralPath $stalePath) {
+    Remove-Item -LiteralPath $stalePath -Force
+    Write-Host "removed stale $stale"
+  }
+}
+
 Write-Host "wrote $exe"
 Write-Host "wrote $sha ($hash)"

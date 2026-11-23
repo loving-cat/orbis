@@ -167,10 +167,14 @@ await test('CL-12 行内豁免 legacy-guard-ok：带理由不计债（也算不�
   fs.rmSync(path.join(root, 'server/src/notes.js'), { force: true });
 });
 
-await test('CL-13 legacy-guard-ok 必须带理由：空理由照旧算债', () => {
+await test('CL-13 legacy-guard-ok 必须带理由：空理由与 1 个字符照旧算债', () => {
   mk('server/src/blank.js', '// PI_BOT_HOME legacy-guard-ok:'+'\n');
-  const r = run();
+  let r = run();
   assert.equal(r.status, 1, '空理由不能豁免');
+  assert.match(r.stderr, /server\/src\/blank\.js/);
+  mk('server/src/blank.js', '// PI_BOT_HOME legacy-guard-ok: x'+'\n');
+  r = run();
+  assert.equal(r.status, 1, '1 个字符的理由也不能豁免（去空白后要 >= 2）');
   assert.match(r.stderr, /server\/src\/blank\.js/);
   fs.rmSync(path.join(root, 'server/src/blank.js'), { force: true });
 });

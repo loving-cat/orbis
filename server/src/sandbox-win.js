@@ -31,13 +31,8 @@ export const LAUNCHER_VERSION = '0.1.0';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * 旧的环境变量名（1.7 叫这个）。
- *
- * ★ 用拼接而不是字面量：完整旧名不该再出现在源码里（`check-legacy` 数的是品牌残留）；
- *   但**必须能被识别**——用户的 .env / 启动脚本里可能还写着它。
- */
-const LEGACY_SANDBOX_ENV = ['PI', 'BOT', 'SANDBOX', 'EXE'].join('_');
+/** 1.7 的真实旧名：品牌前缀后面直接接 SANDBOX_EXE，**没有**中间下划线。 */
+const LEGACY_SANDBOX_ENV = 'PIBOT_SANDBOX_EXE'; // legacy-guard-ok: T1.7 过渡兜底（2.1 删除）
 
 /** 启动器可能的位置，按优先级。 */
 export function launcherCandidates() {
@@ -226,7 +221,10 @@ export function wrapWindowsCommand({
     '--shell', 'powershell',
     '--cmd-file', cmdFile,
   ];
-  if (dataDir) args.push('--env', `ORBIS_DATA_DIR=${dataDir}`);
+  // ★ 走 `--data-dir`：启动器的 `reject_unsafe` 靠它把 dataDir 挡在授权范围外；
+  //   写进 `--env ORBIS_DATA_DIR=` 会让 arg_data_dir() 拿到 None（保护失效），
+  //   还把数据目录明文注入沙箱内的 PowerShell 环境。
+  if (dataDir) args.push('--data-dir', path.resolve(dataDir));
   for (const kv of extraEnv) {
     if (typeof kv === 'string' && kv.includes('=')) args.push('--env', kv);
   }
@@ -266,12 +264,6 @@ export function windowsSandboxMessage(reason, detail = '') {
     case 'no_binary':
       return '找不到 Windows 沙箱启动器（orbis-sandbox.exe）。这个 bot 挂了 MCP，'
         + '为安全起见拒绝执行 shell 命令。请重装或重新打包（需要 Rust 工具链编译 native/orbis-sandbox）';
-    case 'launcher_version_mismatch':
-      return `Windows 沙箱启动器版本与服务器不匹配${tail}，拒绝执行。请重新编译 native/orbis-sandbox`;
-    case 'launcher_hash_mismatch':
-      return `Windows 沙箱启动器校验失败${tail}，拒绝执行（可能被替换）`;
-    case 'launcher_broken':
-      return `Windows 沙箱启动器无法运行${tail}，拒绝执行`;
     case 'PROFILE_FAILED':
       return '创建 AppContainer 配置失败（部分企业策略会禁用 AppContainer），拒绝执行 shell 命令';
     case 'ACE_WRITE_FAILED':

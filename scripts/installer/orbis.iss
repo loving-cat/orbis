@@ -15,11 +15,13 @@
 ;   另外传一个纯数字的 /DAppFileVersion。
 ;
 ; 2026-11-19 品牌统一：安装目录改到 Programs\Orbis（AppId 不变，升级会替换旧安装）。
-; 用户数据目录仍是 %LOCALAPPDATA%\pi-bot（服务端优先用 orbis，老目录存在就继续沿用）， —— legacy-guard-ok: 安装器注释讲旧目录
-; 安装器不碰那里，所以升级后配对与聊天记录都在。
+; 用户数据目录 2.0 起只有 %LOCALAPPDATA%\orbis：旧目录**不再自动沿用**，装完首次启动会提示，
+; 按提示跑 `orbis migrate`（只复制不删除）把配对与聊天记录搬过来。安装器自己不碰用户数据。
+; 升级前可能还有 1.7 的服务端在跑，它的数据目录在 %LOCALAPPDATA%\pi-bot —— legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
+; StopBundledServer 因此也要按那个目录的 server.pid 停一次，否则 node.exe 锁着安装目录。
 ; Install target is per-user (%LOCALAPPDATA%\Programs\Orbis), so it never asks
-; for admin rights. Runtime state lives in %LOCALAPPDATA%\pi-bot (legacy) or \orbis, which this —— legacy-guard-ok: 安装器注释讲旧目录
-; installer does not touch, so upgrading keeps pairings and the data directory.
+; for admin rights. Runtime state lives in %LOCALAPPDATA%\orbis; 2.0 no longer
+; reuses the legacy directory, and the installer never touches user data.
 ;
 ; This file is UTF-8 with BOM: the [CustomMessages] block below is Chinese.
 
@@ -115,9 +117,11 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait 
 
 [Code]
 const
-  SERVER_PID_NAMES = 'orbis\server.pid;Orbis\server.pid';
+  SERVER_PID_NAMES = 'orbis\server.pid;pi-bot\server.pid'; // legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
 
-{ Stop the local server recorded in %LOCALAPPDATA%\Orbis\server.pid.
+{ Stop the local server recorded in %LOCALAPPDATA%\orbis\server.pid (2.0),
+  or the 1.7 one, which lives in %LOCALAPPDATA%\pi-bot\server.pid. legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
+  Both must be stopped before the upgrade overwrites the install dir.
 
   The GUI spawns node through a helper script and does not own the child
   process: quitting orbis.exe leaves node running, and node.exe sits inside
@@ -140,10 +144,10 @@ var
   Script: String;
   ResultCode: Integer;
 begin
-  { 2026-11-19 品牌统一后新用户的数据目录是 orbis，老用户还在 pi-bot；两个都看。 legacy-guard-ok: 安装器注释讲旧目录 }
+  { 2.0 只写 orbis 目录；1.7 的用户还在 pi-bot 目录，升级时那个服务端也要停。 legacy-guard-ok: 安装器要停掉 1.7 的 node.exe }
   PidPath := ExpandConstant('{localappdata}') + '\orbis\server.pid';
   if not FileExists(PidPath) then
-    PidPath := ExpandConstant('{localappdata}') + '\Orbis\server.pid';
+    PidPath := ExpandConstant('{localappdata}') + '\pi-bot\server.pid'; // legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
   if not FileExists(PidPath) then
     exit;
   if not LoadStringFromFile(PidPath, PidText) then

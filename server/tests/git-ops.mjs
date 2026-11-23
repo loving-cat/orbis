@@ -32,6 +32,8 @@ for (const d of [process.env.ORBIS_HOME, process.env.ORBIS_WORKSPACE, process.en
 }
 
 const m = await import('../src/git-ops.js');
+const { resetBrandDeprecations, brandDeprecations } = await import('../src/brand.js');
+
 const {
   locateGit, resolveRepoLayout, runGit, GIT_OPERATIONS, REFUSED_OPERATIONS,
   parseStatus, verifyCommitLanded, currentHead, listActiveHooks, describeGitError,
@@ -48,11 +50,31 @@ async function test(name, fn) {
   }
 }
 
+// 1.7 的真实旧名：品牌前缀后面直接接 GIT_PATH，**没有**中间下划线。
+// 写明文并用行内豁免：拆字面量曾在 review 里把名字拼错（多插了一个下划线），兜底整个失效。
+const LEGACY_GIT_PATH_ENV = 'PIBOT_GIT_PATH'; // legacy-guard-ok: T1.7 过渡兜底回归用例（2.1 删除）
+
 const git = locateGit();
 if (!git.ok) {
   console.log('✗ 找不到 Git，无法测 Git 适配器：' + git.error);
   process.exit(1);
 }
+
+await test(`★ 旧名 ${LEGACY_GIT_PATH_ENV} 仍能兜底读，并记一条弃用（2.1 删除）`, () => {
+  resetBrandDeprecations();
+  const res = locateGit({ env: { [LEGACY_GIT_PATH_ENV]: git.file } });
+  assert.equal(res.ok, true, '只给旧名时必须还是能找到 Git');
+  assert.equal(res.source, 'env:ORBIS_GIT_PATH', '来源要标成新名那条通道');
+  assert.deepEqual(brandDeprecations(), [`env:${LEGACY_GIT_PATH_ENV}`], '命中旧名要记一条 env 弃用');
+});
+
+await test('★ 新旧同时设：新名优先，且不记旧名弃用', () => {
+  resetBrandDeprecations();
+  const res = locateGit({ env: { ORBIS_GIT_PATH: git.file, [LEGACY_GIT_PATH_ENV]: path.join(root, 'nope-git') } });
+  assert.equal(res.ok, true);
+  assert.equal(res.file, git.file, '新名必须优先');
+  assert.deepEqual(brandDeprecations(), [], '新名命中时不该再提旧名');
+});
 
 const repo = path.join(root, 'repo');
 fs.mkdirSync(repo, { recursive: true });

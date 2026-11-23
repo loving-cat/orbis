@@ -228,8 +228,8 @@ function clampInt(value, min, max, fallback) {
  */
 export function locateGit({ env = process.env } = {}) {
   const candidates = [];
-  // 新名优先；1.7 的环境变量名兜底一个周期（运行时拼接：完整旧名不落盘）
-  const legacyGitPathEnv = ['PI', 'BOT', 'GIT', 'PATH'].join('_');
+  // 新名优先；1.7 的真实旧名兜底一个周期（品牌前缀后面直接接 GIT_PATH，没有中间下划线）
+  const legacyGitPathEnv = 'PIBOT_GIT_PATH'; // legacy-guard-ok: T1.7 过渡兜底（2.1 删除）
   const gitPathEnv = readBrandEnv(env, 'GIT_PATH')
     || (env[legacyGitPathEnv]
       ? (noticeBrandDeprecation({

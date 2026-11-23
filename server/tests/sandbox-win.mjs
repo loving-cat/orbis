@@ -24,6 +24,10 @@ const {
   defaultWindowsInstanceDir, revokeWindowsGrant, deleteWindowsProfile, teardownWindowsInstance,
 } = await import('../src/sandbox-win.js');
 const { probeSandbox, wrapCommand, SANDBOX_UNAVAILABLE } = await import('../src/sandbox.js');
+const { resetBrandDeprecations, brandDeprecations } = await import('../src/brand.js');
+// 1.7 的真实旧名：品牌前缀后面直接接 SANDBOX_EXE，**没有**中间下划线。
+// 写明文并用行内豁免：拆字面量曾在 review 里把名字拼错（多插了一个下划线），兜底整个失效。
+const LEGACY_SANDBOX_ENV = 'PIBOT_SANDBOX_EXE'; // legacy-guard-ok: T1.7 过渡兜底回归用例（2.1 删除）
 const { sandboxUnavailableMessage } = await import('../src/mcp-access.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-sbx-win-'));
@@ -47,6 +51,39 @@ await test('探测：启动器候选路径包含发行包与开发目录两种�
   assert.ok(list.length >= 2);
   assert.ok(list.some((p) => p.includes('resources')), '发行包布局');
   assert.ok(list.some((p) => p.includes(path.join('native', 'orbis-sandbox'))), '开发布局');
+});
+
+await test(`★ 旧名 ${LEGACY_SANDBOX_ENV} 仍能兜底读，并记一条弃用（2.1 删除）`, () => {
+  resetBrandDeprecations();
+  const saved = { new: process.env.ORBIS_SANDBOX_EXE, old: process.env[LEGACY_SANDBOX_ENV] };
+  try {
+    delete process.env.ORBIS_SANDBOX_EXE;
+    process.env[LEGACY_SANDBOX_ENV] = path.join(root, 'legacy-launcher.exe');
+    const list = launcherCandidates();
+    assert.equal(list[0], path.join(root, 'legacy-launcher.exe'), '只设旧名时必须读到旧名');
+    assert.deepEqual(
+      brandDeprecations(), [`env:${LEGACY_SANDBOX_ENV}`],
+      '命中旧名要记一条 env 弃用（from 旧名 → to 新名）',
+    );
+  } finally {
+    if (saved.new === undefined) delete process.env.ORBIS_SANDBOX_EXE; else process.env.ORBIS_SANDBOX_EXE = saved.new;
+    if (saved.old === undefined) delete process.env[LEGACY_SANDBOX_ENV]; else process.env[LEGACY_SANDBOX_ENV] = saved.old;
+  }
+});
+
+await test('★ 新旧同时设：新名优先，且不记旧名弃用', () => {
+  resetBrandDeprecations();
+  const saved = { new: process.env.ORBIS_SANDBOX_EXE, old: process.env[LEGACY_SANDBOX_ENV] };
+  try {
+    process.env.ORBIS_SANDBOX_EXE = path.join(root, 'new-launcher.exe');
+    process.env[LEGACY_SANDBOX_ENV] = path.join(root, 'legacy-launcher.exe');
+    const list = launcherCandidates();
+    assert.equal(list[0], path.join(root, 'new-launcher.exe'), '新名必须优先');
+    assert.deepEqual(brandDeprecations(), [], '新名命中时不该再提旧名');
+  } finally {
+    if (saved.new === undefined) delete process.env.ORBIS_SANDBOX_EXE; else process.env.ORBIS_SANDBOX_EXE = saved.new;
+    if (saved.old === undefined) delete process.env[LEGACY_SANDBOX_ENV]; else process.env[LEGACY_SANDBOX_ENV] = saved.old;
+  }
 });
 
 await test('★ 启动器不存在时 verifyLauncher 返回 no_binary（fail-closed，不猜）', () => {
@@ -212,13 +249,20 @@ await test('★ 没有 instanceDir 时明确失败（不默默用临时目录）
   assert.equal(w.reason, 'no_instance_dir');
 });
 
-await test('dataDir 通过 --data-dir 传给启动器（拒绝规则要用它）', () => {
+await test('★ dataDir 通过 --data-dir 传给启动器，且不注入 --env（拒绝规则要用它）', () => {
   if (process.platform !== 'win32') return;
   const w = wrapWindowsCommand({ command: 'x', workDir, instanceDir: instDir, dataDir: root });
   if (!w.ok) return;
   try {
-    assert.ok(w.args.includes('--env'));
-    assert.ok(w.args.some((a) => a.startsWith('ORBIS_DATA_DIR=')));
+    const at = w.args.indexOf('--data-dir');
+    assert.ok(at >= 0, '必须传 --data-dir（启动器的 reject_unsafe 靠它保护数据目录）');
+    assert.equal(w.args[at + 1], path.resolve(root), 'dataDir 要按绝对路径传');
+    // 走 --env 会让 Rust 的 arg_data_dir() 拿到 None（保护失效），还会把数据目录
+    // 明文注入沙箱内的 PowerShell 环境。
+    for (let i = 0; i < w.args.length; i++) {
+      if (w.args[i] !== '--env') continue;
+      assert.ok(!String(w.args[i + 1]).includes('ORBIS_DATA_DIR'), '--env 里不该有 ORBIS_DATA_DIR');
+    }
   } finally {
     w.cleanup?.();
   }

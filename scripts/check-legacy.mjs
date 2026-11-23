@@ -71,8 +71,17 @@ const BINARY_EXT = new Set([
 ]);
 /** `pi-bot` / `pi_bot` / `pibot`（大小写不敏感，含 PI_BOT_ 与 x-pi-bot-） */
 const LEGACY = /pi[-_]?bot|pibot/gi;
-/** 行内豁免：`legacy-guard-ok: <理由>`（理由至少 2 个字，空理由不算豁免） */
-const GUARD_OK = /legacy-guard-ok:\s*(\S.*)$/;
+/**
+ * 行内豁免：`legacy-guard-ok: <理由>`。
+ *
+ * 理由去掉首尾空白后必须 **≥ 2 个字符** —— 否则 `legacy-guard-ok:` 就成了一个
+ * 谁都能顺手写的静音开关，而「为什么这行可以留旧名字」正是它的全部价值。
+ */
+const GUARD_OK = /legacy-guard-ok:[ \t]*(\S.*)$/;
+function guardExcused(line) {
+  const m = GUARD_OK.exec(line);
+  return Boolean(m) && m[1].trim().length >= 2;
+}
 /**
  * 守卫自己与它的基线文件永远不参与扫描。
  * 否则：注释里写了旧名字 → 基线涨 → 再写基线 → 永远自己追自己。
@@ -139,7 +148,7 @@ function walk(dir, out = []) {
 
 /** 统计一行里「不被 permanent 模式覆盖」的旧品牌命中 */
 function countLine(line, patterns) {
-  const excused = GUARD_OK.test(line);
+  const excused = guardExcused(line);
   const ranges = [];
   for (const p of patterns) {
     let from = 0;
