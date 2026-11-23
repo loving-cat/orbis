@@ -3254,12 +3254,15 @@ class _MessageRow extends StatelessWidget {
                             builder: (_, __, ___) => ToolSteps(
                               steps: msg.steps,
                               quietWhenDone: true,
+                              isLive: msg.isLive,
                             ),
                           )
                         : ToolSteps(
                             steps: msg.steps,
                             // 消息跑完且无错时不渲染（组件自己返回 SizedBox.shrink）
                             quietWhenDone: true,
+                            // 已经结束的消息：残留的 running 步骤按「已中断」渲染，不再转圈
+                            isLive: msg.isLive,
                           ),
                   if (msg.changes != null)
                     ChangedFilesView(summary: msg.changes!),

@@ -10,6 +10,7 @@ import path from 'node:path';
 
 import { ARTIFACT_LIMITS, collectArtifacts } from '../src/artifact-watch.js';
 import { snapshotWorkspace } from '../src/change-watch.js';
+import { normalizeAttachmentPath } from '../src/attachments.js';
 
 let pass = 0;
 let fail = 0;
@@ -72,6 +73,20 @@ try {
 } catch {
   // Windows 句柄，忽略
 }
+
+test('★ excludePaths：这一轮已经 send_image 发过的文件不再自动带（防重复）', () => {
+  const file = write('out/dup.xlsx', 'x'.repeat(64));
+  const all = collectArtifacts(root, new Map()).map((a) => a.rel);
+  assert.ok(all.includes('out/dup.xlsx'), '不排除时应该收得到');
+  const excluded = collectArtifacts(root, new Map(), { excludePaths: new Set([normalizeAttachmentPath(file)]) })
+    .map((a) => a.rel);
+  assert.ok(!excluded.includes('out/dup.xlsx'), '★ 手动发过的不能再自动带一遍');
+  write('out/fresh.pdf', 'x'.repeat(64));
+  const got = collectArtifacts(root, new Map(), { excludePaths: new Set([normalizeAttachmentPath(file)]) })
+    .map((a) => a.rel);
+  assert.ok(got.includes('out/fresh.pdf'), '没手动发的仍要自动带');
+  assert.ok(!got.includes('out/dup.xlsx'));
+});
 
 console.log(`\n${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);

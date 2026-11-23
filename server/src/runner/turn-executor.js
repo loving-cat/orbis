@@ -702,16 +702,19 @@ async function runWithLease(
     }
     checkCancelled();
 
+    // ★ 这一轮已经用 send_image 手动发过的文件不再自动带（Mac 实机 UX-2）
+    const sentFiles = entry?.sentFiles instanceof Set ? entry.sentFiles : null;
     const produced = beforeImages
       ? collectNewImages(runner.config.workspace, beforeImages, {
           save: saveFromPath,
+          excludePaths: sentFiles,
           onError: (err) => log('自动附图失败：', err?.message || err),
         })
       : [];
 
     if (runner.config.autoAttachArtifacts !== false && beforeFiles) {
       try {
-        for (const item of collectArtifacts(runner.config.workspace, beforeFiles)) {
+        for (const item of collectArtifacts(runner.config.workspace, beforeFiles, { excludePaths: sentFiles })) {
           try {
             produced.push(saveFromPath(item.file));
           } catch (err) {
@@ -723,7 +726,9 @@ async function runWithLease(
       }
     }
 
-    collectedArtifacts = produced;
+    // 交付记录（任务回执 / SDK artifacts）要包含手动 send_image 的那几张：
+    // 它们确实交付了，只是不该在聊天里再出现一次。
+    collectedArtifacts = [...produced, ...(Array.isArray(entry?.sentMetas) ? entry.sentMetas : [])];
 
     // ★ 收尾兜底（D1 第 3 条）：走到这里还有 pendingReseat，说明插话之后
     //   这一轮**没有任何新的 assistant 轮**（纯工具 / 直接结束）。此时只能把旧气泡
@@ -731,6 +736,8 @@ async function runWithLease(
     reseatAtBoundary(false);
 
     if (!finalText && !stepCapHit) {
+      // 没有正文就结束：残留的 running 步骤必须收敛，否则气泡永远停在转圈
+      settleRunningSteps(steps, '模型没有返回内容，这一步没有结果');
       const digest = steps.length
         ? `（${bot.name} 执行了 ${steps.length} 步但没有给出说明）\n\n${steps
             .map((s) => `- \`${s.tool}\` ${s.detail ?? ''}`)
@@ -765,6 +772,8 @@ async function runWithLease(
 
     if (!finalText) finalText = '（在群里动手步数到上限，先收住）';
     if (emptyRecovered) finalText = `${finalText}\n\n_（原模型首次没出内容，已自动重试）_`;
+
+    settleRunningSteps(steps, '本轮结束，这一步没有返回结果');
 
     const changed = changes();
     const msg = runner.store.updateMessage(
@@ -810,6 +819,7 @@ async function runWithLease(
     const keepAborted = cancelled() && current?.status === 'aborted';
     const partial = render().trim();
     if (stepCapHit) {
+      settleRunningSteps(steps, '步数到上限，这一步没有返回结果');
       const msg = runner.store.updateMessage(
         roomId,
         botMsg.id,
@@ -842,6 +852,9 @@ async function runWithLease(
     const changedOnce = changes();
     const recoverable = retryManaged && !keepAborted && !cancelled()
       && isRecoverableFailure({ error: message, status: failure.status ?? null });
+    // ★ 报错 / 中止 / 待重试：最后一个工具不会有 tool_execution_end，
+    //   不收敛就会留下一条永远「正在干活…」的气泡（客户端 isLive 只是第二道闸）。
+    settleRunningSteps(steps, recoverable ? '本轮要在重试，这一步没有返回结果' : '本轮中断，这一步没有结果');
     const msg = runner.store.updateMessage(
       roomId,
       botMsg.id,
@@ -935,6 +948,9 @@ async function runWithLease(
     // ★ 必须清（D2）：本轮若挂着 pendingReseat 就超时/报错/被 abort，
     //   标志会残留在持久化的 entry 上，下一轮一吐字就被强行封口挪走。
     entry.pendingReseat = null;
+    // 本轮"已手动发过"的去重表只活在这一轮：清了下次才不会被上一轮的路径挡住
+    entry.sentFiles = null;
+    entry.sentMetas = null;
     entry.slotTicket?.release?.();
     entry.slotTicket = null;
     runner.bus.emit('event', { t: 'typing', roomId, botId: bot.id, active: false, lane: 'work', msgId: botMsg?.id ?? null });
@@ -977,6 +993,30 @@ async function runWithLease(
  *
  * @returns {object|null} 新建的那条消息；没有待换条任务时返回 null
  */
+/**
+ * 把残留的 `running` 步骤收敛成 `error`（Mac 实机 UX-1）。
+ *
+ * 模型报错 / 被中止 / 命中步数上限 / 换条封口时，最后一个工具可能**没有**
+ * `tool_execution_end`（SDK 抛错、进程被杀、用户中断）。这些步骤会以
+ * `status: 'running'` 落库，客户端就一直显示「正在干活…」—— 用户看到一条
+ * 永远不动的气泡，重开历史也还是转圈。
+ *
+ * @param {Array<object>} steps 就地修改（调用方拿到的就是要落库的那个数组）
+ * @param {string} reason 写进 `step.error`
+ * @returns {Array<object>}
+ */
+export function settleRunningSteps(steps, reason = '这一步没有返回结果（本轮已结束）') {
+  if (!Array.isArray(steps)) return steps;
+  const now = Date.now();
+  for (const step of steps) {
+    if (step?.status !== 'running') continue;
+    step.status = 'error';
+    step.error = reason;
+    step.durationMs = Math.max(0, now - Number(step.startedAt ?? now));
+  }
+  return steps;
+}
+
 export function applyPendingReseat({
   store, roomId, entry, botMsgId, render, meta = null, bot, bus = null, log: logFn = () => {},
   resetDraft = null,
@@ -990,6 +1030,8 @@ export function applyPendingReseat({
   entry.pendingReseat = null;
 
   const sealed = typeof render === 'function' ? render() : '';
+  // 封口旧气泡时，旧的 running 步骤归旧气泡 —— 一起收敛，别让它在历史里转圈
+  if (Array.isArray(steps)) settleRunningSteps(steps, '这条气泡已封口，这一步没有返回结果');
   const oldMsg = store.getMessage(roomId, botMsgId);
   try {
     store.updateMessage(roomId, botMsgId, {

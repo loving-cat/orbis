@@ -89,19 +89,36 @@ export function interruptRoundForUser(runner, roomId) {
   if (n) log(`已打断 ${n} 个正在跑的会话（用户插话，旧轮作废）`);
 }
 
-export function dispatchGroupRound(runner, roomId, text, files) {
-  if (runner.roundLocks.has(roomId) || runner.isRoomBusy(roomId)) {
-    log(
-      `【${runner.store.getRoom(roomId)?.name ?? roomId}】用户插话 → 打断进行中的一轮，按新要求重来`,
-    );
+export async function dispatchGroupRound(runner, roomId, text, files) {
+  const roomName = runner.store.getRoom(roomId)?.name ?? roomId;
+  // ★ 只有「已经有 drainGroupRounds 在跑」才允许入队。
+  //
+  //   以前条件是 `roundLocks.has || isRoomBusy`，而 `isRoomBusy` 可能是真的忙、
+  //   却没有 drain 循环在消费队列（受管 TaskRun 在跑、或上一轮 awaitPending 5s
+  //   超时放锁后残留的忙会话）。那种情况下把消息塞进 `roundQueue` 再返回，
+  //   等于扔进黑洞：用户 @ 完 bot 直接"断开"、连一条错误气泡都没有
+  //   （Mac 实机 UX-3 根因 1）。
+  if (runner.roundLocks.has(roomId)) {
+    log(`【${roomName}】用户插话 → 打断进行中的一轮，按新要求重来`);
     interruptRoundForUser(runner, roomId);
     runner.roundQueue.delete(roomId);
     runner.mergeQueue.drop(roomId);
     runner.roundQueue.set(roomId, { text, files: [...files] });
-    return Promise.resolve();
+    return;
   }
+
+  if (runner.isRoomBusy(roomId)) {
+    // 忙，但没有 drain 循环：打断旧会话后**自己持锁起一轮**，绝不入队。
+    log(`【${roomName}】房间里还有会话在忙（没有 drain 循环）→ 打断它并直接开新的一轮`);
+    interruptRoundForUser(runner, roomId);
+    runner.roundQueue.delete(roomId);
+    runner.mergeQueue.drop(roomId);
+    // 给被中断的会话一个 tick 退出：紧接着 runRound 会和它抢同一个 entry
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
   runner.roundLocks.add(roomId);
-  return drainGroupRounds(runner, roomId, { text, files });
+  await drainGroupRounds(runner, roomId, { text, files });
 }
 
 async function drainGroupRounds(runner, roomId, first) {
@@ -544,6 +561,9 @@ export async function executeGroupRound(
       members,
       leadId,
       order: { index: runs },
+      // 用户直接发起的一轮（不是同事派活）：提示词里不许诱导它 [PASS]
+      // 没有派活人 = 这条是用户自己发的（或在收首轮）；有人 fromId 才是同事 @
+      userAddressed: !item.fromId,
     });
     if (attachmentContext) prompt = `${attachmentContext}\n\n${prompt}`;
 
@@ -770,6 +790,31 @@ export async function executeGroupRound(
           }
           const text = res.text.trim();
           if (isPass) {
+            // ★ 用户直接点名它、它却回了 [PASS]：**不能静默删掉气泡**。
+            //
+            //   以前这里无条件把气泡删掉，用户看到的是"我 @ 了它，它原地消失"
+            //   （Mac 实机 UX-3 根因 3：直接断开思考且无气泡）。
+            //   现在留一条可见说明，并把"该怎么说清"教给他。
+            const userAddressed = !item.fromId;
+            if (userAddressed) {
+              const note = '这一轮是你在群里直接点名的，但它判断这条不需要它出手（[PASS]）。'
+                + '想把活交给谁，就在消息里 @ 它并说清「做什么 / 交回什么 / 怎么算完成」。';
+              try {
+                const msg = runner.store.updateMessage(roomId, res.messageId, {
+                  text: note,
+                  status: 'done',
+                  meta: {
+                    ...(runner.store.getMessage(roomId, res.messageId)?.meta ?? {}),
+                    pass: true,
+                  },
+                }, { silent: false });
+                runner.bus.emit('event', { t: 'msg.updated', roomId, msgId: res.messageId, msg });
+              } catch (err) {
+                log('PASS 占位更新失败：', err?.message || err);
+              }
+              log(`${bot.name} PASS（用户直接点名 → 保留可见说明，不删消息）`);
+              return;
+            }
             runner.store.deleteMessage(roomId, res.messageId);
             log(`${bot.name} PASS`);
             return;

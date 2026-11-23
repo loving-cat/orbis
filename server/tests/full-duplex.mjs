@@ -298,6 +298,9 @@ await test('★ P0-2 情形 B：已写出正文时封口旧气泡，并在插话
   assert.ok(ids.indexOf(live.id) < ids.indexOf(res.userMessage.id), '旧气泡不挪（用户读过的文字不能消失）');
 
   // 模拟 turn-executor 在下次输出前的换条
+  // 旧气泡里还有一个「跑了一半」的工具步骤：封口时必须收敛成 error，
+  // 否则历史消息重开会一直显示「正在干活…」（Mac 实机 UX-1）
+  const liveSteps = [{ tool: 'bash', detail: 'sleep 999', status: 'running', startedAt: Date.now() - 40 }];
   const next = applyPendingReseat({
     store,
     roomId: dm.id,
@@ -305,8 +308,14 @@ await test('★ P0-2 情形 B：已写出正文时封口旧气泡，并在插话
     botMsgId: live.id,
     render: () => '我先看一下这个报错……',
     bot,
+    steps: liveSteps,
   });
   assert.ok(next, '应当新建一条继续写');
+  const sealedSteps = store.getMessage(dm.id, live.id).steps ?? [];
+  assert.equal(sealedSteps.length, 1, '步骤要跟着封口写进旧气泡');
+  assert.equal(sealedSteps[0].status, 'error', '★ 封口时残留的 running 步骤必须收敛');
+  assert.ok(sealedSteps[0].error, '要写清为什么没结果');
+  assert.equal(typeof sealedSteps[0].durationMs, 'number');
   assert.equal(store.getMessage(dm.id, live.id).status, 'done', '旧气泡要封口定稿');
   assert.equal(store.getMessage(dm.id, live.id).text, '我先看一下这个报错……', '旧气泡内容保留');
   assert.equal(next.text, '', '新气泡从空开始（不能重复上一段）');

@@ -200,6 +200,8 @@ export function composeGroupPrompt(
     leadId = null,
     order = null,
     closing = false,
+    // 这一轮是不是**用户直接点名**（不是同事派活）。用户点名时不许诱导它回 [PASS]。
+    userAddressed = false,
     // 记录被裁掉了几条：由 transcriptFor 给出；没传就看数组上挂的属性
     droppedCount = null,
   } = {},
@@ -326,7 +328,12 @@ export function composeGroupPrompt(
         '1. 老大或同事 @ 你，就是要你干这件事：把它做完，**在群里直接给结果**。',
         '2. 需要别人配合，就 @对方名字，把那部分交给它。',
         '3. 不要复述别人的话，不要客套，不要总结全场。',
-        '4. 不需要你出手就只输出 [PASS]，不要输出其他任何字。',
+        userAddressed
+          // ★ 用户直接点名时不能诱导它 [PASS]：那份回复会被静默删掉，
+          //   用户看到的是"我 @ 了它，它原地消失"（Mac 实机 UX-3 根因 3）。
+          ? '4. 这条是**用户直接点名**你的：必须给出可见回应（哪怕只有一句话）。'
+            + '只有当你确实不该介入（例如用户 @ 了两个人、这件活明确是另一个人的）才输出 [PASS]。'
+          : '4. 不需要你出手就只输出 [PASS]，不要输出其他任何字。',
       ];
 
   parts.push(

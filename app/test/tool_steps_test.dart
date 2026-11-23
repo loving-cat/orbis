@@ -7,13 +7,18 @@ import 'package:pi_bot/widgets/tool_steps.dart';
 ///
 /// 默认模式仅在运行时显示提示，完成或失败均隐藏；调试模式可展开明细。
 void main() {
-  Widget host(List<ToolStep> steps, {bool quietWhenDone = true}) => MaterialApp(
-    home: Scaffold(
-      body: Center(
-        child: ToolSteps(steps: steps, quietWhenDone: quietWhenDone),
-      ),
-    ),
-  );
+  Widget host(List<ToolStep> steps, {bool quietWhenDone = true, bool isLive = true}) =>
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: ToolSteps(
+              steps: steps,
+              quietWhenDone: quietWhenDone,
+              isLive: isLive,
+            ),
+          ),
+        ),
+      );
 
   List<ToolStep> sample({String status = 'done'}) => [
     ToolStep(tool: 'bash', detail: 'npm test', status: status, durationMs: 1200),
@@ -150,4 +155,34 @@ void main() {
 
     expect(find.textContaining('×'), findsWidgets);
   });
+
+  testWidgets('★ 已经结束的消息：残留的 running 步骤不再转圈（Mac 实机 UX-1）', (tester) async {
+    // 历史脏数据：消息早就 error 了，但某个步骤还是 running。
+    await tester.pumpWidget(
+      host([ToolStep(tool: 'bash', detail: 'sleep 999', status: 'running')], isLive: false),
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing, reason: '结束了就不许再转圈');
+    expect(find.text('正在干活…'), findsNothing);
+    final size = tester.getSize(find.byType(ToolSteps));
+    expect(size.height, 0, reason: '默认模式下不该再占高度');
+  });
+
+  testWidgets('★ 展开态：非 live 的 running 步骤按「已中断」渲染（无 shimmer）', (tester) async {
+    await tester.pumpWidget(
+      host(
+        [
+          ToolStep(tool: 'bash', detail: 'sleep 999', status: 'running'),
+          ToolStep(tool: 'read', detail: 'ok.txt', status: 'done'),
+        ],
+        quietWhenDone: false,
+        isLive: false,
+      ),
+    );
+    await tester.tap(find.textContaining('工具调用'));
+    await tester.pump();
+    expect(find.textContaining('sleep 999'), findsOneWidget);
+    expect(find.textContaining('已中断'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
 }

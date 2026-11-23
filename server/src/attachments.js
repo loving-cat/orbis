@@ -13,7 +13,37 @@ import { readJson, writeJsonAtomic, log } from './util.js';
 const DIR = path.join(config.dataDir, 'uploads');
 const INDEX = path.join(config.dataDir, 'uploads.json');
 
-fs.mkdirSync(DIR, { recursive: true });
+// ★ 不在 import 时建目录（P2-3）：宿主只是 import SDK 时不该被写入磁盘。
+//   真正写附件前调 ensureDir()。
+let dirReady = false;
+function ensureDir() {
+  if (dirReady) return;
+  fs.mkdirSync(DIR, { recursive: true });
+  dirReady = true;
+}
+
+/**
+ * 附件路径的规范化（给"这一轮已经发过这个文件"的去重比较用）。
+ *
+ * Windows / macOS 的文件系统默认大小写不敏感：同一个文件用两种写法传进来
+ * 必须判成同一个 —— 否则去重失效，聊天里就会出现两份一样的图。
+ *
+ * @param {string} file
+ * @returns {string} 规范化后的路径；空输入返回空串
+ */
+export function normalizeAttachmentPath(file) {
+  const raw = String(file ?? '').trim();
+  if (!raw) return '';
+  let resolved;
+  try {
+    resolved = fs.realpathSync.native ? fs.realpathSync.native(raw) : fs.realpathSync(raw);
+  } catch {
+    resolved = path.resolve(raw);
+  }
+  return process.platform === 'win32' || process.platform === 'darwin'
+    ? resolved.toLowerCase()
+    : resolved;
+}
 
 const MIME_BY_EXT = {
   '.png': 'image/png',
@@ -77,6 +107,7 @@ function normalizeMime(name, mime) {
 
 /** 存一段二进制 */
 export function saveBuffer(buffer, { name = 'file', mime = null } = {}) {
+  ensureDir();
   const type = normalizeMime(name, mime);
   const id = crypto.randomBytes(9).toString('hex');
   const ext = EXT_BY_MIME[type] ?? path.extname(String(name || ''));
@@ -103,6 +134,7 @@ export function saveBuffer(buffer, { name = 'file', mime = null } = {}) {
  * 顶到峰值内存。这里先算 id/扩展名，再 rename（跨盘则 copy+unlink）。
  */
 export function saveMovedFile(sourcePath, { name = 'file', mime = null } = {}) {
+  ensureDir();
   if (!fs.existsSync(sourcePath)) throw new Error(`文件不存在：${sourcePath}`);
   const type = normalizeMime(name, mime);
   const id = crypto.randomBytes(9).toString('hex');
@@ -133,6 +165,7 @@ export function saveMovedFile(sourcePath, { name = 'file', mime = null } = {}) {
 
 /** 把工作目录里的文件收进来（bot 发图用） */
 export function saveFromPath(filePath, { name = null, mime = null } = {}) {
+  ensureDir();
   if (!fs.existsSync(filePath)) throw new Error(`文件不存在：${filePath}`);
   const buffer = fs.readFileSync(filePath);
   const base = name ?? path.basename(filePath);

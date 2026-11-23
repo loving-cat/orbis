@@ -342,6 +342,7 @@ const areaPanel2 = StringArea(
     // ---- 工具步骤 ----
     'tools.working': '正在干活…',
     'tools.calling': '正在调用工具…',
+    'tools.interrupted': '已中断',
     'tools.callsCount': '工具调用 · {n} 步',
     'tools.openHint': '点开看明细',
     'tools.failedMore': '还有 {n} 步失败（点开看）',
@@ -768,6 +769,7 @@ const areaPanel2 = StringArea(
     // ---- tool steps ----
     'tools.working': 'Working…',
     'tools.calling': 'Calling tools…',
+    'tools.interrupted': 'interrupted',
     'tools.callsCount': 'Tool calls · {n} steps',
     'tools.openHint': 'click for details',
     'tools.failedMore': '{n} more steps failed (expand to see)',

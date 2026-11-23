@@ -28,7 +28,8 @@ import { PRIORITY, RunSlots } from './run-slots.js';
 import { ModelHealth } from './model-health.js';
 import { defaultMenuSlug, logMenu, menuSlugs, resolveMenu } from './model-menu.js';
 import { attachmentBlock } from './extract.js';
-import { inboxPath, metaFor, saveFromPath } from './attachments.js';
+import { inboxPath, metaFor, normalizeAttachmentPath, saveFromPath } from './attachments.js';
+import { recordSentAttachment } from './runner/sent-attachments.js';
 import { RunStats } from './run-stats.js';
 import { log } from './util.js';
 import { readContext } from './context-budget.js';
@@ -594,6 +595,8 @@ export class PiRunner {
   sendImage({ roomId, botId, filePath, caption }) {
     const bot = this.store.getBot(botId);
     const meta = saveFromPath(filePath);
+    // ★ 记下这一轮手动发过的文件（收尾的自动附图要跳过，见 runner/sent-attachments.js）
+    recordSentAttachment(this.sessions.get(`${roomId}:${botId}`), filePath, meta, normalizeAttachmentPath);
     const attachment = { id: meta.id, name: meta.name, mime: meta.mime, kind: meta.kind, size: meta.size };
     const msg = this.store.appendMessage({
       roomId,

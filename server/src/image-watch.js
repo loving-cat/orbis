@@ -14,6 +14,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { normalizeAttachmentPath as normalizePath } from './attachments.js';
+
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
 
 /** 扫一遍工作目录，返回 文件绝对路径 → mtime 的 Map */
@@ -46,11 +48,17 @@ export function snapshotImages(root, { maxDepth = 4, maxFiles = 400 } = {}) {
   return out;
 }
 
-/** 和上一次快照比，多了哪些图（返回 [{file, mtime}]，新的在前） */
-export function diffImages(root, before, { toleranceMs = 5, limit = 4 } = {}) {
+/**
+ * 和上一次快照比，多了哪些图（返回 [{file, mtime}]，新的在前）。
+ *
+ * `excludePaths`：这一轮已经用 `send_image` 手动发过的文件（规范化路径）。
+ * 不排除的话，回合收尾的自动附图会把同一张图再发一遍（Mac 实机 UX-2）。
+ */
+export function diffImages(root, before, { toleranceMs = 5, limit = 4, excludePaths = null } = {}) {
   const after = snapshotImages(root);
   const fresh = [];
   for (const [file, mtime] of after) {
+    if (excludePaths && excludePaths.has(normalizePath(file))) continue;
     const prev = before?.get?.(file);
     // 新出现的，或者比上次新了超过容差 —— 后者是"同名覆盖"，也得算新
     if (prev === undefined || mtime > prev + toleranceMs) fresh.push({ file, mtime });
@@ -63,9 +71,9 @@ export function diffImages(root, before, { toleranceMs = 5, limit = 4 } = {}) {
  * 发现新图并保存成附件（保存动作由调用方注入）。
  * 单张保存失败不影响其它张 —— 报个错就跳过。
  */
-export function collectNewImages(root, before, { save, onError = () => {}, limit = 4 } = {}) {
+export function collectNewImages(root, before, { save, onError = () => {}, limit = 4, excludePaths = null } = {}) {
   const out = [];
-  for (const item of diffImages(root, before, { limit })) {
+  for (const item of diffImages(root, before, { limit, excludePaths })) {
     try {
       const meta = save(item.file);
       out.push({

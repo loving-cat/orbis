@@ -12,7 +12,7 @@ import { readForModel } from '../attachments.js';
 import { parseMentions } from '../mentions.js';
 import { RunUsage } from '../run-stats.js';
 import { providerLeaseScope } from '../provider-updates.js';
-import { assistantFailure, modelFailure } from '../model-reply.js';
+import { assistantFailure, modelFailure, withModelHint } from '../model-reply.js';
 import { deliverDirectInput } from '../direct-message-delivery.js';
 import { releaseEntry } from '../session-pool.js';
 import { createSessionBuilder } from '../session-factory.js';
@@ -406,9 +406,16 @@ async function executeTalkItem(runner, item, inflight) {
     recordSideContext(runner, roomId, botId, cleanText, finalText);
   } catch (err) {
     talkErr = err;
+    // ★ 只有「用户真的取消」才算 aborted。
+    //
+    //   以前把裸 `err.name === 'AbortError'` 也算取消：上游网络栈/SDK 自己抛的
+    //   AbortError（超时、连接被重置）会被标成 aborted，而客户端对 aborted
+    //   消息是**整条隐藏**的 —— 用户 @ 完 bot 只看到"什么都没发生"
+    //   （Mac 实机 UX-3 根因 2）。
+    const cancelled = inflight.aborted || runner.aborting.has(roomId);
+    const modelLabel = runner.store.getBot(botId)?.model || runner.modelLabel?.() || '';
     if (talkMsg) {
-      const cancelled = inflight.aborted || runner.aborting.has(roomId) || err?.name === 'AbortError';
-      const message = cancelled ? '已按你的要求终止' : modelFailure(err).error;
+      const message = cancelled ? '已按你的要求终止' : withModelHint(modelFailure(err).error, modelLabel);
       const msg = runner.store.updateMessage(
         roomId,
         talkMsg.id,
@@ -422,7 +429,32 @@ async function executeTalkItem(runner, item, inflight) {
         error: message,
         msg,
       });
+    } else if (!cancelled) {
+      // 连气泡都还没建就失败了（等运行槽位超时 / 会话建不起来）：
+      // 必须留一条**看得见**的错误，不能让用户以为 bot 断线（根因 2 的另一半）。
+      const message = withModelHint(modelFailure(err).error, modelLabel);
+      try {
+        const msg = runner.store.appendMessage({
+          roomId,
+          authorType: 'bot',
+          authorId: bot.id,
+          authorName: bot.name,
+          authorEmoji: bot.emoji,
+          text: '',
+          status: 'error',
+          error: message,
+          meta: {
+            duplex: DUPLEX_KIND.sideReply,
+            duringMsgId: duringMsgId ?? null,
+            re: userMessage?.id ?? null,
+          },
+        });
+        runner.bus.emit('event', { t: 'msg.error', roomId, msgId: msg.id, error: message, msg });
+      } catch (appendErr) {
+        log('旁路对话失败且错误气泡也发不出去：', appendErr?.message || appendErr);
+      }
     }
+    if (!cancelled) log(`旁路对话失败：${withModelHint(modelFailure(err).error, modelLabel)}`);
   } finally {
     try { unsubscribe?.(); } catch {}
     inflight.session = null;

@@ -344,6 +344,30 @@ for (const r of results) {
     console.log(`  ✗ ${r.name}\n      ${r.err}`);
   }
 }
+// ---------------------------------------------------------------------------
+// ⑤ 用户直接点名时，提示词不许诱导 [PASS]（Mac 实机 UX-3 根因 3）
+// ---------------------------------------------------------------------------
+await test('⑤ 用户直接点名 → 成员提示词要求给出可见回应，不再"只输出 PASS"', () => {
+  const { room, lead, a, members } = dept('P');
+  const fresh = transcriptFor(room.id, a.id);
+  const addressed = composeGroupPrompt(room, a, fresh, {
+    isLead: false, members, leadId: lead.id, userAddressed: true,
+  });
+  assert.match(addressed, /用户直接点名/, '要点明这一轮是用户点名');
+  assert.match(addressed, /必须给出可见回应/, '必须要求看得见的回应');
+  assert.equal(
+    /不需要你出手就只输出 \[PASS\]，不要输出其他任何字/.test(addressed),
+    false,
+    '点名时不能再说"不需要你就只输出 PASS"（那份回复会被静默删掉）',
+  );
+
+  // 同事派活仍然允许 PASS（那是正常调度）
+  const delegated = composeGroupPrompt(room, a, fresh, {
+    isLead: false, members, leadId: lead.id,
+  });
+  assert.match(delegated, /不需要你出手就只输出 \[PASS\]/);
+});
+
 console.log(`\n群聊游标与私信边界：${results.length - failed}/${results.length} 通过`);
 fs.rmSync(process.env.ORBIS_HOME, { recursive: true, force: true });
 process.exit(failed ? 1 : 0);

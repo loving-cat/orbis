@@ -171,6 +171,8 @@ const TESTS = [
   'migrate-home',
   'pending-migration',
   'config-no-dirs',
+  'turn-step-settle',
+  'group-round-dispatch',
   'user-dirs',
   'storage-retention',
   'storage-housekeeping',

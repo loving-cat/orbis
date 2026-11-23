@@ -16,6 +16,8 @@ import path from 'node:path';
 
 import { diffSnapshots, snapshotWorkspace } from './change-watch.js';
 
+import { normalizeAttachmentPath as normalizePath } from './attachments.js';
+
 /** 算"交付物"的扩展名。源码（.py/.js/.ts/.dart…）不算 —— 那是 changed_files 的事。 */
 export const ARTIFACT_EXT = /\.(pdf|docx?|xlsx?|pptx?|csv|tsv|md|txt|rtf|html?|json|zip|tar|gz|7z|rar)$/i;
 
@@ -47,10 +49,13 @@ export function collectArtifacts(root, before, opts = {}) {
     return [];
   }
 
+  const exclude = opts.excludePaths ?? null;
   const candidates = [...diff.added, ...diff.modified]
     .filter((f) => ARTIFACT_EXT.test(f.path))
     .filter((f) => !SKIP_PREFIX.some((prefix) => f.path.startsWith(prefix)))
-    .filter((f) => f.size > 0 && f.size <= maxFileBytes);
+    .filter((f) => f.size > 0 && f.size <= maxFileBytes)
+    // 这一轮已经用 send_image 手动发过的文件不再自动带一遍（Mac 实机 UX-2）
+    .filter((f) => !exclude || !exclude.has(normalizePath(path.join(root, ...f.path.split('/')))));
 
   // 新的在前：同一轮里最后写出来的通常才是最终版
   const withTime = [];

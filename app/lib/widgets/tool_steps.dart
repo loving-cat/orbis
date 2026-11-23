@@ -9,12 +9,24 @@ import 'thinking_shimmer.dart';
 
 /// 工具调用状态：默认只显示运行中提示；调试模式显示可展开的步骤明细。
 class ToolSteps extends StatefulWidget {
-  const ToolSteps({super.key, required this.steps, this.quietWhenDone = true});
+  const ToolSteps({
+    super.key,
+    required this.steps,
+    this.quietWhenDone = true,
+    this.isLive = true,
+  });
 
   final List<ToolStep> steps;
 
   /// true 时只显示运行中提示，完成或失败后不占高度；false 时显示步骤明细。
   final bool quietWhenDone;
+
+  /// 这条消息还在跑吗（`msg.isLive`）。
+  ///
+  /// ★ 实机 bug：报错 / 被中断 / 已结束的气泡左上角卡在「正在干活…」。
+  ///   历史脏数据里可能有 `status: 'running'` 的步骤（旧版本没有收尾），
+  ///   消息本身却早就不是 live 了 —— 那时不能再转圈、也不能开 shimmer（Ticker）。
+  final bool isLive;
 
   @override
   State<ToolSteps> createState() => _ToolStepsState();
@@ -45,7 +57,8 @@ class _ToolStepsState extends State<ToolSteps> {
     final steps = widget.steps;
     if (steps.isEmpty) return const SizedBox.shrink();
 
-    final running = steps.any((s) => s.status == 'running');
+    // 只有「消息还在跑」时才算运行中：历史脏数据里的 running 不该继续转
+    final running = widget.isLive && steps.any((s) => s.status == 'running');
     final failed = steps.where((s) => s.status == 'error').toList();
 
     // 默认模式下，全部成功完成时不占高度。
@@ -86,10 +99,9 @@ class _ToolStepsState extends State<ToolSteps> {
       );
     }
 
-    final current = steps.lastWhere(
-      (s) => s.status == 'running',
-      orElse: () => steps.last,
-    );
+    final current = widget.isLive
+        ? steps.lastWhere((s) => s.status == 'running', orElse: () => steps.last)
+        : steps.last;
     final merged = mergeSteps(steps);
 
     // 收起时最多露两条失败，剩下的用一句话带过 —— 失败必须看得见
@@ -170,7 +182,7 @@ class _ToolStepsState extends State<ToolSteps> {
             for (final step in shownFailed)
               Padding(
                 padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
-                child: _StepRow(step: step, count: 1, alwaysStrong: true),
+                child: _StepRow(step: step, count: 1, alwaysStrong: true, live: widget.isLive),
               ),
             if (!_open && failed.length > shownFailed.length)
               Padding(
@@ -198,6 +210,7 @@ class _ToolStepsState extends State<ToolSteps> {
                             child: _StepRow(
                               step: item.step,
                               count: item.count,
+                              live: widget.isLive,
                             ),
                           ),
                         const SizedBox(height: 3),
@@ -217,6 +230,7 @@ class _StepRow extends StatelessWidget {
     required this.step,
     required this.count,
     this.alwaysStrong = false,
+    this.live = true,
   });
 
   final ToolStep step;
@@ -227,10 +241,15 @@ class _StepRow extends StatelessWidget {
   /// 失败行即使收起也要用醒目颜色
   final bool alwaysStrong;
 
+  /// 消息还在跑吗。false 时 `running` 步骤按「已中断」渲染（不转圈、不开 Ticker）。
+  final bool live;
+
   @override
   Widget build(BuildContext context) {
     final isError = step.status == 'error';
-    final isRunning = step.status == 'running';
+    // ★ 消息已经不是 live，就不该再转圈：历史脏数据里的 running 一律按「已中断」
+    final interrupted = !live && step.status == 'running';
+    final isRunning = live && step.status == 'running';
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -243,11 +262,13 @@ class _StepRow extends StatelessWidget {
                   color: PB.colors(context).accentBright,
                 )
               : Icon(
-                  isError ? LucideIcons.x : LucideIcons.check,
+                  isError || interrupted ? LucideIcons.x : LucideIcons.check,
                   size: 12,
                   color: isError
                       ? PB.danger
-                      : (alwaysStrong ? PB.textTertiary : PB.textQuaternary),
+                      : (interrupted
+                            ? PB.textTertiary
+                            : (alwaysStrong ? PB.textTertiary : PB.textQuaternary)),
                 ),
         ),
         const SizedBox(width: 7),
@@ -261,7 +282,8 @@ class _StepRow extends StatelessWidget {
               child: Text(
                 '${step.tool}${step.detail.isNotEmpty ? '  ${shortText(step.detail, 62)}' : ''}'
                 '${count > 1 ? '  ×$count' : ''}'
-                '${step.durationMs != null ? '  ${step.durationMs}ms' : ''}',
+                '${step.durationMs != null ? '  ${step.durationMs}ms' : ''}'
+                '${interrupted ? '  · ${L10n.s(context).t('tools.interrupted')}' : ''}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
