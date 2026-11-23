@@ -263,12 +263,20 @@ run_ok --no-build
 preserved
 ok '重复执行且保留 dist 中其他文件与版本'
 
-mkdir -p "$BUILD/orbis.app"
-cp -R "$BUILD/Orbis.app/." "$BUILD/orbis.app/"
-printf 'preferred product\n' > "$BUILD/Orbis.app/Contents/product.txt"
-run_ok --no-build
-[[ "$(cat "$FIXTURE/dist/Orbis.app/Contents/product.txt")" == 'preferred product' ]] || die '未优先采用 Orbis.app'
-ok '两种构建名称并存时优先 Orbis.app'
+# 回退分支只有在**大小写敏感**的文件系统上才可能真的出现两个目录：
+# macOS 默认不敏感，`orbis.app` 与 `Orbis.app` 是同一个目录（cp 会直接报 identical）。
+: > "$TEST_ROOT/case-probe"
+if [[ -e "$TEST_ROOT/CASE-PROBE" ]]; then
+  ok '大小写不敏感的文件系统：跳过 orbis.app 与 Orbis.app 并存用例（同名目录）'
+else
+  mkdir -p "$BUILD/orbis.app"
+  cp -R "$BUILD/Orbis.app/." "$BUILD/orbis.app/"
+  printf 'preferred product\n' > "$BUILD/Orbis.app/Contents/product.txt"
+  run_ok --no-build
+  [[ "$(cat "$FIXTURE/dist/Orbis.app/Contents/product.txt")" == 'preferred product' ]] || die '未优先采用 Orbis.app'
+  ok '两种构建名称并存时优先 Orbis.app'
+fi
+rm -f "$TEST_ROOT/case-probe"
 run_ok --clear-quarantine --no-build
 [[ "$(grep -c '^xattr ' "$TRACE")" == 2 ]] || die '未显式清理 App 与 DMG 隔离属性'
 ok '参数可交换顺序，清隔离属性仅在显式开启时执行'
