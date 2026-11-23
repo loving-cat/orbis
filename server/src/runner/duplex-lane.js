@@ -12,7 +12,8 @@ import { readForModel } from '../attachments.js';
 import { parseMentions } from '../mentions.js';
 import { RunUsage } from '../run-stats.js';
 import { providerLeaseScope } from '../provider-updates.js';
-import { assistantFailure, modelFailure, withModelHint } from '../model-reply.js';
+import { assistantFailure, formatFailureDetail, modelFailure, withModelHint } from '../model-reply.js';
+import { recordFailure } from '../diagnostics-log.js';
 import { deliverDirectInput } from '../direct-message-delivery.js';
 import { releaseEntry } from '../session-pool.js';
 import { createSessionBuilder } from '../session-factory.js';
@@ -257,6 +258,7 @@ function ensureTalkBuilder(runner) {
 
 async function executeTalkItem(runner, item, inflight) {
   const { roomId, botId, userMessage, cleanText, snapshotPrompt, duringMsgId, scope } = item;
+  const startedAt = Date.now();
   const bot = runner.store.getBot(botId);
   if (!bot) {
     runner.requestLifecycle?.close?.(scope, new Error('找不到 bot'), null);
@@ -454,7 +456,22 @@ async function executeTalkItem(runner, item, inflight) {
         log('旁路对话失败且错误气泡也发不出去：', appendErr?.message || appendErr);
       }
     }
-    if (!cancelled) log(`旁路对话失败：${withModelHint(modelFailure(err).error, modelLabel)}`);
+    if (!cancelled) {
+      log(`旁路对话失败：${withModelHint(modelFailure(err).error, modelLabel)}`);
+      recordFailure(runner.diagnostics ?? null, {
+        phase: 'talk',
+        roomId,
+        roomName: runner.store.getRoom(roomId)?.name ?? '',
+        botId: bot.id,
+        botName: bot.name,
+        model: modelLabel,
+        status: modelFailure(err).status ?? null,
+        code: err?.code ?? err?.cause?.code ?? '',
+        summary: withModelHint(modelFailure(err).error, modelLabel),
+        detail: formatFailureDetail(err),
+        ms: Date.now() - startedAt,
+      });
+    }
   } finally {
     try { unsubscribe?.(); } catch {}
     inflight.session = null;

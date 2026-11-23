@@ -14,7 +14,10 @@ import { readBrandEnv } from '../brand.js';
 import { readForModel, saveFromPath } from '../attachments.js';
 import { RunUsage } from '../run-stats.js';
 import { providerLeaseScope } from '../provider-updates.js';
-import { assistantFailure, fallbackModels, modelFailure, recoverModelReply, withModelHint } from '../model-reply.js';
+import {
+  assistantFailure, fallbackModels, formatFailureDetail, modelFailure, recoverModelReply, withModelHint,
+} from '../model-reply.js';
+import { recordFailure } from '../diagnostics-log.js';
 import { isRecoverableFailure } from '../retry-policy.js';
 import { collectNewImages, snapshotImages } from '../image-watch.js';
 import { snapshotWorkspace, diffSnapshots, summarizeChanges } from '../change-watch.js';
@@ -885,6 +888,22 @@ async function runWithLease(
       msg,
     });
     log(`模型本轮出错：${message}`);
+    // ★ 诊断记录：真正能排障的技术摘要（状态码 / 网络错误码 / 上游 error.type）。
+    //   以前只写一句"接口详情已隐藏"，用户照提示去看 server.log 还是同一句话 ——
+    //   死循环。这里落一条脱敏详情，App 的「查看日志」直接读它（Mac 实机 UX-4）。
+    recordFailure(runner.diagnostics ?? null, {
+      phase: 'turn',
+      roomId,
+      roomName: runner.store.getRoom(roomId)?.name ?? '',
+      botId: bot.id,
+      botName: bot.name,
+      model: runner.store.getBot(botId)?.model || runner.modelLabel?.() || '',
+      status: failure.status ?? null,
+      code: err?.code ?? err?.cause?.code ?? '',
+      summary: message,
+      detail: formatFailureDetail(err),
+      ms: Date.now() - started,
+    });
     runner.recordRun({
       roomId, botId, startedAt: started, ok: false, usage: meter.snapshot(),
       taskRunId, attemptIndex, sdkRetries: meter.retries, kind: recoverable ? 'retrying' : 'error',

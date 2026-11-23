@@ -8,13 +8,29 @@ import 'open_file.dart';
 enum AttachmentOpenPhase { idle, opening, handedOff, failed }
 
 /// 一次附件打开的状态；进行中忽略重复请求，销毁后不再通知界面。
+///
+/// ★ 结果状态会自动复位（默认 `handedOff` 3s / `failed` 6s）：预览页顶栏曾把
+///   「已交给系统程序」当成常驻文本钉在那里，永远不消失，还把顶栏撑变形。
+///   现在这里自己收尾，界面只需要在 [message] 非空时提示一次。
 class AttachmentOpenController extends ChangeNotifier {
-  AttachmentOpenController({required this.operation});
+  AttachmentOpenController({
+    required this.operation,
+    this.handedOffDelay = const Duration(seconds: 3),
+    this.failedDelay = const Duration(seconds: 6),
+  });
 
   final Future<String?> Function() operation;
+
+  /// `handedOff` 之后多久回到 idle。
+  final Duration handedOffDelay;
+
+  /// `failed` 之后多久回到 idle。
+  final Duration failedDelay;
+
   AttachmentOpenPhase phase = AttachmentOpenPhase.idle;
   String? error;
   bool _disposed = false;
+  Timer? _resetTimer;
 
   bool get opening => phase == AttachmentOpenPhase.opening;
 
@@ -27,6 +43,9 @@ class AttachmentOpenController extends ChangeNotifier {
 
   Future<void> open() async {
     if (_disposed || opening) return;
+    // 再点一次：上一次的复位计时器作废，否则它会在新一轮里把状态打回 idle
+    _resetTimer?.cancel();
+    _resetTimer = null;
     phase = AttachmentOpenPhase.opening;
     error = null;
     notifyListeners();
@@ -42,11 +61,28 @@ class AttachmentOpenController extends ChangeNotifier {
         ? AttachmentOpenPhase.handedOff
         : AttachmentOpenPhase.failed;
     notifyListeners();
+    // 提示自己会走：定时回到 idle，界面不用记"什么时候该清掉这句话"
+    _scheduleReset(phase == AttachmentOpenPhase.handedOff ? handedOffDelay : failedDelay);
+  }
+
+  void _scheduleReset(Duration delay) {
+    _resetTimer?.cancel();
+    _resetTimer = Timer(delay, () {
+      _resetTimer = null;
+      if (_disposed || phase == AttachmentOpenPhase.opening) return;
+      phase = AttachmentOpenPhase.idle;
+      error = null;
+      notifyListeners();
+    });
   }
 
   @override
   void dispose() {
     _disposed = true;
+    // ★ 必须取消：悬空 Timer 会在测试里报 "A Timer is still pending"，
+    //   在真机上则是一次无意义的 notifyListeners。
+    _resetTimer?.cancel();
+    _resetTimer = null;
     super.dispose();
   }
 }

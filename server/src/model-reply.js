@@ -37,6 +37,74 @@ export function modelFailure(error) {
  * 还在老模型组上被限流；用户看到几条一模一样的红字「模型请求失败」，
  * 根本不知道是哪个模型、哪条链路出的问题，于是只会反复"再切一次模型"。
  */
+
+/**
+ * 把错误对象整理成**能排障**的一行技术摘要（Mac 实机 UX-4）。
+ *
+ * 要的是这四样，别的都别写进来：
+ *   · HTTP 状态（`status` / `statusCode`）；
+ *   · 网络/链路错误码（`ECONNRESET` / `UND_ERR_HEADERS_TIMEOUT` / `ENOTFOUND`…）；
+ *   · `cause` 链上的一层（`fetch failed` 的真实原因常在这里）；
+ *   · 上游响应体里的 `error.type` / `error.message`（中转站 502、模型名错、
+ *     思考参数不支持这些都在这里）。
+ *
+ * 输出前统一过 [redactDiagnostic]：Bearer / sk-… / api_key=… / token 一律打码。
+ *
+ * @param {any} error
+ * @returns {string} ≤500 字符；没有可用信息时返回空串
+ */
+export function formatFailureDetail(error) {
+  const parts = [];
+  const status = Number(error?.status ?? error?.statusCode) || null;
+  if (status) parts.push(`HTTP ${status}`);
+
+  const code = String(error?.code ?? error?.errno ?? '').trim();
+  if (code) parts.push(`code=${code}`);
+
+  const cause = error?.cause;
+  if (cause && typeof cause === 'object') {
+    const causeCode = String(cause.code ?? '').trim();
+    if (causeCode && causeCode !== code) parts.push(`cause=${causeCode}`);
+    const causeMsg = String(cause.message ?? '').trim();
+    if (causeMsg && causeMsg !== String(error?.message ?? '').trim()) parts.push(causeMsg);
+  }
+
+  // 上游返回体：不同 SDK 包法不一样，能取到哪种算哪种
+  const upstream = error?.response?.data?.error
+    ?? error?.response?.error
+    ?? error?.body?.error
+    ?? error?.data?.error
+    ?? error?.errorPayload;
+  if (upstream && typeof upstream === 'object') {
+    const type = String(upstream.type ?? upstream.code ?? '').trim();
+    const msg = String(upstream.message ?? upstream.msg ?? '').trim();
+    if (type) parts.push(`upstream=${type}`);
+    if (msg) parts.push(msg);
+  } else if (typeof upstream === 'string' && upstream.trim()) {
+    parts.push(upstream.trim());
+  }
+
+  const message = String(error?.message ?? error?.errorMessage ?? (typeof error === 'string' ? error : '') ?? '').trim();
+  if (message && !parts.some((p) => p.includes(message))) parts.push(message);
+
+  return redactDiagnostic(parts.join(' · ')).slice(0, 500);
+}
+
+/**
+ * 诊断文本的脱敏。宁可多打码：这段文本会进 App、进日志、可能被用户贴到公开 issue。
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function redactDiagnostic(value) {
+  return String(value ?? '')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{4,}/gi, 'Bearer [REDACTED]')
+    .replace(/\bsk-[A-Za-z0-9._-]{4,}/g, 'sk-[REDACTED]')
+    // api_key=xxx / api-key: xxx / token":"xxx"
+    .replace(/((?:api[_-]?key|x-api-key|access[_-]?token|token|secret|password|password)\s*["']?\s*[:=]\s*["']?)([^\s"',;}]{3,})/gi, '$1[REDACTED]')
+    .replace(/\b(?:authorization)\b\s*[:=]\s*\S+/gi, 'authorization: [REDACTED]')
+    .slice(0, 1000);
+}
 export function withModelHint(message, model) {
   const text = String(message ?? '').trim();
   const slug = String(model ?? '').trim();

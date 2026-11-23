@@ -173,6 +173,7 @@ const TESTS = [
   'config-no-dirs',
   'turn-step-settle',
   'group-round-dispatch',
+  'diagnostics-log',
   'user-dirs',
   'storage-retention',
   'storage-housekeeping',

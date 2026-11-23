@@ -7,6 +7,7 @@
 import { modelGroups as defaultModelGroups, testModelGroup, maskKey } from '../model-groups.js';
 import { jevProbe } from '../jev-client.js';
 import { endpointTarget } from '../model-endpoints.js';
+import { recordFailure } from '../diagnostics-log.js';
 
 export function publicDecision(d = {}) {
   const { apiKey, ...rest } = d;
@@ -90,12 +91,31 @@ export function createModelService({ store, runner = null, modelGroups = default
       const sameTarget = !askedBaseUrl
         || (Boolean(savedBaseUrl) && askedTarget !== null
           && askedTarget === endpointTarget(savedBaseUrl));
-      return testModelGroup({
-        baseUrl: askedBaseUrl || savedBaseUrl,
+      const baseUrl = askedBaseUrl || savedBaseUrl;
+      const model = input.model || saved?.models?.[0]?.id;
+      const result = await testModelGroup({
+        baseUrl,
         apiKey: input.apiKey || (sameTarget ? saved?.apiKey : ''),
         api: input.api || saved?.api,
-        model: input.model || saved?.models?.[0]?.id,
+        model,
       });
+      // 「测试连接」失败也要进诊断日志：用户看到的那句话通常只有"HTTP 502"，
+      // 真正的原因（中转站挂了 / 模型名错）在 detail 里（Mac 实机 UX-4）。
+      if (result && result.ok === false) {
+        recordFailure(null, {
+          phase: 'test',
+          roomId: '',
+          botId: '',
+          botName: '',
+          model: `${model ?? ''} · ${baseUrl}`,
+          status: result.status ?? null,
+          code: result.code ?? '',
+          summary: result.error ?? '模型组测试失败',
+          detail: result.detail ?? result.error ?? '',
+          ms: result.ms ?? null,
+        });
+      }
+      return result;
     },
 
     async setDefaultModel(slug = '') {

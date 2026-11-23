@@ -4,6 +4,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../app_log.dart';
 import '../l10n/l10n.dart';
 import '../theme.dart';
+import 'diagnostics_sheet.dart';
 
 /// 设置里的「日志」：告诉用户日志在哪、一键打开目录。
 ///
@@ -31,6 +32,11 @@ class LogSection extends StatelessWidget {
               ),
             ),
             const Spacer(),
+            TextButton.icon(
+              onPressed: () => showDiagnosticsSheet(context),
+              icon: const Icon(LucideIcons.scrollText, size: 15),
+              label: Text(strings.t('diag.open')),
+            ),
             TextButton.icon(
               onPressed: openLogFolder,
               icon: const Icon(LucideIcons.folderOpen, size: 15),

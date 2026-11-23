@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import '../widgets/chief_summary_card.dart';
+import '../widgets/diagnostics_sheet.dart';
 import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
@@ -3362,9 +3363,33 @@ class _MessageRow extends StatelessWidget {
                   if (msg.error != null && msg.error!.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 5, left: 2),
-                      child: Text(
-                        msg.error!,
-                        style: TextStyle(fontSize: PB.fsXs, color: PB.danger),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            msg.error!,
+                            style: TextStyle(fontSize: PB.fsXs, color: PB.danger),
+                          ),
+                          // 气泡上写着"请看服务端日志"，那就得让人点得到（Mac 实机 UX-4）
+                          if (!msg.isLive)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: InkWell(
+                                onTap: () => showDiagnosticsSheet(context),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 2),
+                                  child: Text(
+                                    L10n.s(context).t('diag.viewFromBubble'),
+                                    style: TextStyle(
+                                      fontSize: PB.fsXxs,
+                                      color: PB.textTertiary,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                   // ★ 每条消息都带时间戳（同用户侧：重排后时间是唯一可信的顺序）

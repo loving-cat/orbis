@@ -38,6 +38,7 @@ import { describeConfirmation } from './confirm.js';
 import { SECOND_FACTOR_TOOLS } from './capabilities.js';
 import { shells } from './shells.js';
 import { VERSION } from './version.js';
+import { diagnosticsLog, serverLogTail } from './diagnostics-log.js';
 import { checkForUpdate } from './update-checker.js';
 import {
   selectLessonsFor,
@@ -444,6 +445,23 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
           ...(config.trustLocal
             ? { stats: store.stats(), model: runner.modelLabel(), note: runner.initNote }
             : {}),
+        });
+      }
+
+      // 诊断日志（只读）：模型请求异常 + server.log 尾部。
+      //
+      // ★ 为什么要有它：气泡上写着"请看服务端日志"，而手机用户根本打不开那个文件；
+      //   桌面端打开也只会看到"接口详情已隐藏"。这里把脱敏后的技术摘要直接给 App
+      //   （模型请求异常面板 + 服务端日志面板），排障才有闭环（Mac 实机 UX-4）。
+      if (pathname === '/api/diagnostics/logs' && req.method === 'GET') {
+        if (!authenticate(req, url)) return fail(res, 401, 'UNAUTHORIZED', '需要有效身份');
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? '100') || 100));
+        const diag = runner.diagnostics ?? diagnosticsLog();
+        const tail = serverLogTail({ dataDir: config.dataDir, lines: limit });
+        return send(res, 200, {
+          modelErrors: diag.recent?.(limit) ?? [],
+          serverLogTail: tail.lines,
+          logPath: tail.logPath,
         });
       }
 

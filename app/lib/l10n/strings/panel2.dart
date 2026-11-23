@@ -322,6 +322,7 @@ const areaPanel2 = StringArea(
     // ---- 附件操作 ----
     'attach.opening': '正在打开 {name}…',
     'attach.openedSystem': '已交给系统程序',
+    'attach.openFailed': '打开失败，请重试。',
     'attach.downloading': '正在下载 {name}…',
     'attach.savedTo': '已保存到 {path}',
     'attach.downloadError': '下载失败，请检查连接或保存位置后重试。',
@@ -361,6 +362,18 @@ const areaPanel2 = StringArea(
     'copy.failed': '复制失败，请重试',
 
     // ---- 日志 ----
+    // ---- 诊断日志面板（UX-4）----
+    'diag.title': '诊断日志',
+    'diag.open': '查看诊断日志',
+    'diag.refresh': '刷新',
+    'diag.close': '关闭',
+    'diag.copied': '已把脱敏诊断文本复制到剪贴板',
+    'diag.tabModel': '模型请求异常',
+    'diag.tabServer': '服务端日志',
+    'diag.emptyModel': '还没有记录到模型请求异常',
+    'diag.emptyServer': '没有读到这里能看的 server.log（独立运行时日志在终端里）',
+    'diag.showDetail': '展开脱敏上游详情',
+    'diag.viewFromBubble': '查看日志',
     'log.title': '日志',
     'log.openFolder': '打开目录',
     'log.note': '服务端日志 server.log 与界面日志 app.log。排查问题时请提供这些文件。',
@@ -750,6 +763,7 @@ const areaPanel2 = StringArea(
     // ---- attachment actions ----
     'attach.opening': 'Opening {name}…',
     'attach.openedSystem': 'Handed to the system app',
+    'attach.openFailed': 'Could not open the file. Please try again.',
     'attach.downloading': 'Downloading {name}…',
     'attach.savedTo': 'Saved to {path}',
     'attach.downloadError': 'Download failed. Check your connection or the save location and try again.',
@@ -788,6 +802,18 @@ const areaPanel2 = StringArea(
     'copy.failed': 'Copy failed, try again',
 
     // ---- logs ----
+    // ---- diagnostics panel (UX-4) ----
+    'diag.title': 'Diagnostics',
+    'diag.open': 'View diagnostics',
+    'diag.refresh': 'Refresh',
+    'diag.close': 'Close',
+    'diag.copied': 'Redacted diagnostics copied to clipboard',
+    'diag.tabModel': 'Model errors',
+    'diag.tabServer': 'Server log',
+    'diag.emptyModel': 'No model errors recorded yet',
+    'diag.emptyServer': 'No readable server.log here (standalone runs log to the terminal)',
+    'diag.showDetail': 'Show redacted upstream detail',
+    'diag.viewFromBubble': 'View log',
     'log.title': 'Logs',
     'log.openFolder': 'Open folder',
     'log.note': 'Server log (server.log) and app log (app.log). These help when troubleshooting.',

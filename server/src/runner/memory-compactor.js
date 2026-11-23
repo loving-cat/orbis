@@ -8,7 +8,8 @@
  */
 import { log } from '../util.js';
 import { providerLeaseScope } from '../provider-updates.js';
-import { modelFailure } from '../model-reply.js';
+import { formatFailureDetail, modelFailure } from '../model-reply.js';
+import { recordFailure } from '../diagnostics-log.js';
 import { isRecoverableFailure, transientBackoffMs } from '../retry-policy.js';
 import {
   capRecentTokens,
@@ -347,6 +348,20 @@ export async function compactIfNeeded(runner, entry, bot, roomId = null, { signa
     botId: bot.id,
     attempts,
     error: modelFailure(msg).error,
+  });
+  // 压缩失败是"看起来在跑、其实没上下文了"的典型来源 —— 记进诊断日志（UX-4）
+  recordFailure(runner.diagnostics ?? null, {
+    phase: 'compact',
+    roomId: roomId ?? '',
+    roomName: roomId ? (runner.store.getRoom(roomId)?.name ?? '') : '',
+    botId: bot.id,
+    botName: bot.name,
+    model: bot.model || runner.modelLabel?.() || '',
+    status: modelFailure(msg).status ?? null,
+    code: lastError?.code ?? lastError?.cause?.code ?? '',
+    summary: modelFailure(msg).error,
+    detail: formatFailureDetail(lastError ?? msg),
+    ms: null,
   });
   return { compacted: false, failed: true, attempts, why: msg };
 }
