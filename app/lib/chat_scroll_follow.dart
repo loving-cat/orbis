@@ -32,6 +32,8 @@ class ChatScrollFollow {
   bool _jumping = false;
   bool _resumeAfterDrag = false;
   bool _externalDragging = false;
+  /// 这一帧已经排了一次补跳（多路流式同时长高时只跳一次）。
+  bool _frameQueued = false;
   int _generation = 0;
   int? _animatedGeneration;
   ScrollPosition? _lastPosition;
@@ -44,8 +46,30 @@ class ChatScrollFollow {
     if (active) pause();
   }
 
-  /// 同一轮最多安排 maxFrames 帧；重复请求不重置预算或叠加回调。
-  void request() => _start(animate: false);
+  /// 追底请求：**每帧最多一次** `jumpTo(maxScrollExtent)`。
+  ///
+  /// ★ 并发流式时两路（或多路）气泡交替长高，会连续触发 ScrollMetricsNotification。
+  ///   以前每一路都排一轮 10 帧补跳，两路互相把偏移抢来抢去 —— 表现就是上下抽搐。
+  ///   现在同一帧内的所有请求合批成一次跳转，下一帧再按新的 maxScrollExtent 收敛。
+  void request() {
+    if (_disposed || !_following || _frameQueued) return;
+    _frameQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _frameQueued = false;
+      if (_disposed || !_following) return;
+      if (!controller.hasClients) return;
+      final position = controller.position;
+      if (!position.hasContentDimensions) return;
+      if ((position.maxScrollExtent - position.pixels).abs() <= 1) return;
+      _jumping = true;
+      try {
+        position.jumpTo(position.maxScrollExtent);
+      } finally {
+        _jumping = false;
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
 
   /// 显式发送或回到底部时恢复跟随，动画完成后继续校准懒列表高度。
   void resume({bool animate = false}) {

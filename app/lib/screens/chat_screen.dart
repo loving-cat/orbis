@@ -57,17 +57,18 @@ import '../widgets/teach_dialog.dart';
 
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-/// 列表显示顺序：把「还在思考」的流式占位（还没有一个字）挪到最底部。
+/// 「还在思考」的纯空占位：活着、没正文、没附件、没报错。
 ///
-/// 并发群里，先开始、后完成的 bot 的占位本来排在前面；后完成的 bot 内容一长，
-/// 就会把还空着的占位顶到上面 —— 用户看起来像"它还在想，但被压上去了/卡住了"。
-/// 只影响显示顺序，不影响消息本身的时间顺序。
-List<Msg> displayOrderMsgs(List<Msg> msgs) => [
-  // 还在进行中（流式 / 重试）且暂时没内容的，排到最后 ——
-  // 否则它会插在历史消息中间，看起来像一条空记录。
-  ...msgs.where((m) => !(m.isLive && m.text.trim().isEmpty)),
-  ...msgs.where((m) => m.isLive && m.text.trim().isEmpty),
-];
+/// 这类消息**不该进可见列表**：它没有 `ValueKey`、渲染成 `SizedBox.shrink()`，
+/// 却仍然占着 display / keyIndex / prev-next 里的一个位置 —— 并发流式时顺序一变，
+/// 整块就会重排 + 重播入场动画（用户说的"抽搐"）。
+/// 思考状态本身已经有左下角的 ActivityMonitor 胶囊在显示。
+bool isGhostThinkingPlaceholder(Msg m) =>
+    m.isLive && m.text.trim().isEmpty && m.attachments.isEmpty && (m.error ?? '').isEmpty;
+
+/// 列表显示顺序：过滤掉纯思考空占位（见 [isGhostThinkingPlaceholder]），其余保持原序。
+List<Msg> displayOrderMsgs(List<Msg> msgs) =>
+    msgs.where((m) => !isGhostThinkingPlaceholder(m)).toList(growable: false);
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -124,6 +125,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// 上一次触发追底时的"内容指纹"（条数 + 末条 id + 末条长度）。
   /// 内容没变就不重复追底，避免流式输出期间每帧都排一轮。
   String? _lastFollowKey;
+
+  /// 已经上屏过的消息 id：同一条消息**只播一次**入场动画。
+  ///
+  /// 顺序变化 / 列表重建会重新挂载 widget；不记住的话 `_Appear` 会再播一遍
+  /// 240ms、8px 的位移动画 —— 群聊并发时整屏就是"一块一块地跳"。
+  final Set<String> _appearedMsgIds = <String>{};
+
+  /// 让消息只在第一次出现时播入场动画（之后原样返回，key 保持一致）。
+  Widget _appearOnce(String id, Widget child) {
+    if (_appearedMsgIds.contains(id)) {
+      return KeyedSubtree(key: ValueKey(id), child: child);
+    }
+    _appearedMsgIds.add(id);
+    return _Appear(key: ValueKey(id), child: child);
+  }
   final _input = TextEditingController();
   final _focus = FocusNode();
   AppState? _state;
@@ -1072,6 +1088,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     //
     //   有了回调，delegate 会先解开 _SaltedValueKey、拿着 item 原来的 key 来问
     //   「它现在在第几个」，元素就能跟着挪而不是重建。
+    // display 里每一项都要有与之 1:1 的 key（过滤掉鬼影占位后天然成立；
+    // 这里仍然只在能渲染的项上登记，避免 shrink 项占 index）。
     final keyIndex = <Key, int>{
       for (var i = 0; i < display.length; i++)
         if (!display[i].isProgress)
@@ -1190,9 +1208,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     //   chat_scroll_follow 的每一轮是"最多 10 帧 jumpTo"，
     //   于是 pixels 每帧都在变，右侧滑块跟着反复重算 = 抽搐。
     //   这里按消息条数+末条长度做键，内容真的变了才请求。
-    if (_stick && msgs.isNotEmpty) {
-      final last = msgs.last;
-      final key = '${msgs.length}:${last.id}:${last.text.length}';
+    if (_stick && display.isNotEmpty) {
+      // ★ 不能只盯 msgs.last：并发时它可能是个纯思考占位（而且现在会被过滤掉），
+      //   也不是真正在吐字的那条。用「display 末尾 + 所有在流式的总字数」做键，
+      //   任何一路长高都会触发一次追底。
+      final tail = display.last;
+      final liveChars = msgs.fold<int>(
+        0,
+        (sum, m) => sum + (m.isLive ? m.text.length : 0),
+      );
+      final key = '${display.length}:${tail.id}:$liveChars';
       if (key != _lastFollowKey) {
         _lastFollowKey = key;
         _scrollFollow.request();
@@ -1535,11 +1560,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                               if (run == null) {
                                                 return const SizedBox.shrink();
                                               }
-                                              return _Appear(
-                                                key: ValueKey(
-                                                  'progress-${msg.id}',
-                                                ),
-                                                child: _HeightRecorder(
+                                              return _appearOnce(
+                                                'progress-${msg.id}',
+                                                _HeightRecorder(
                                                   id: 'progress-${msg.id}',
                                                   store: _measuredMsgHeights,
                                                   child: ProgressNotice(
@@ -1611,9 +1634,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                                       )
                                                       .firstOrNull;
                                             // 不居中：整行铺满，bot 贴左、我贴右
-                                            return _Appear(
-                                              key: ValueKey(msg.id),
-                                              child: _HeightRecorder(
+                                            return _appearOnce(msg.id,
+                                              _HeightRecorder(
                                                 id: msg.id,
                                                 store: _measuredMsgHeights,
                                                 child: _MsgAnchor(

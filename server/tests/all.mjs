@@ -174,6 +174,7 @@ const TESTS = [
   'turn-step-settle',
   'group-round-dispatch',
   'diagnostics-log',
+  'group-stream-order',
   'user-dirs',
   'storage-retention',
   'storage-housekeeping',

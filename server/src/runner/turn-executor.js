@@ -18,6 +18,7 @@ import {
   assistantFailure, fallbackModels, formatFailureDetail, modelFailure, recoverModelReply, withModelHint,
 } from '../model-reply.js';
 import { recordFailure } from '../diagnostics-log.js';
+import { claimOrderTarget } from './stream-order.js';
 import { isRecoverableFailure } from '../retry-policy.js';
 import { collectNewImages, snapshotImages } from '../image-watch.js';
 import { snapshotWorkspace, diffSnapshots, summarizeChanges } from '../change-watch.js';
@@ -356,9 +357,34 @@ async function runWithLease(
     if (next) botMsg = next;
   };
 
+  /**
+   * 本轮是否已经出过可见正文。
+   *
+   * ★ 并发群聊的顺序问题：bot 在思考/跑工具阶段就提前建了空 `botMsg`，它会占住
+   *   更早的数组位置。如果另一个 bot 先开口、而这个 bot 后来才吐首字，它就会
+   *   插到别人头上 —— 用户看到上面在长高、下面也在流式，整屏上下抽搐。
+   *   所以首字落位时把它挪到**当前并发波次的末尾**（谁先开口谁在上）。
+   */
+  let hasEmittedVisibleText = false;
+
+  const claimOrderOnFirstText = (text) => {
+    if (hasEmittedVisibleText) return;
+    if (!String(text ?? '').trim()) return;
+    hasEmittedVisibleText = true;
+    // 换条（插话）自己管顺序：pendingReseat 存在时绝不能在这里抢位置
+    if (entry?.pendingReseat) return;
+    try {
+      const target = claimOrderTarget(runner.store.listMessages(roomId, { limit: 200 }), botMsg.id);
+      if (target) runner.store.moveMessageAfter(roomId, botMsg.id, target, { touch: true });
+    } catch (err) {
+      log('并发流式落位失败（不影响本轮）：', err?.message || err);
+    }
+  };
+
   const pushDelta = throttle(() => {
     beat();
     const text = render();
+    claimOrderOnFirstText(text);
     // ★ 同步落库（静默）：duplex-lane 判「这一轮到底写出正文没有」读的就是
     //   store 里这条消息的 text。只 emit 不落库，那边永远看到空字符串，
     //   于是“已写半截”会被误判成“空占位”，FD-0 直接破。
@@ -462,6 +488,7 @@ async function runWithLease(
           }
           responseFailure = null;
           const finalText = textOf(event.message) || buffer;
+          claimOrderOnFirstText(finalText);
           if (finalText.trim()) committed.push(finalText.trim());
           buffer = '';
           pushDelta.flush();
