@@ -934,7 +934,7 @@ class AppState extends ChangeNotifier {
     //
     //   ★ 先问服务端"要不要 token"，再决定去哪拿 —— 顺序很重要。
     //
-    //   服务器模式（设了 PI_BOT_TOKEN）下，客户端要的是**用户填的**那个 token，
+    //   服务器模式（设了 ORBIS_TOKEN）下，客户端要的是**用户填的**那个 token，
     //   不是服务端写的 local-token。两者是不同凭据：local-token 只在
     //   "本机信任"模式下有效，拿它去撞服务器模式会被 401。
     //   所以服务器模式下不读文件，直接走"请用户填"的提示。
@@ -985,11 +985,11 @@ class AppState extends ChangeNotifier {
   /// ★ 必须和 server/src/config.js 的 `userDataDir()` **逐字对齐**，
   ///   否则桌面端读不到 local-token，卡在「正在连接本机服务端…」。
   ///
-  ///   Windows 上这两者曾经写歪了：服务端写 `%LOCALAPPDATA%/pi-bot/data`
-  ///   （= C:/Users/X/AppData/**Local**/pi-bot/data），桌面端找
-  ///   `%APPDATA%/pi-bot/data`（= C:/Users/X/AppData/**Roaming**/pi-bot/data）。
+  ///   Windows 上这两者曾经写歪了：服务端写 `%LOCALAPPDATA%/pi-bot/data` —— legacy-guard-ok: 讲数据目录历史
+  ///   （= C:/Users/X/AppData/**Local**/Orbis/data），桌面端找
+  ///   `%APPDATA%/Orbis/data`（= C:/Users/X/AppData/**Roaming**/Orbis/data）。
   ///   Windows 上同一个产品名在 Local 与 Roaming 下各有一个惯用位置，
-  ///   看代码都是"AppData 下的 pi-bot"，实测才知道是两个不同的目录。
+  ///   看代码都是"AppData 下的 Orbis"，实测才知道是两个不同的目录。
   ///   现象：服务端起来了、/health 200、token 文件也确实在，
   ///   但桌面端永远拿不到 token，UI 一直转圈。
   ///
@@ -997,7 +997,7 @@ class AppState extends ChangeNotifier {
   /// 由 401 兜底引导用户去填 token。
   /// 在 base 下选数据目录。
   ///
-  /// 2.0 起**只有** `orbis/data`：旧 `pi-bot/data` 不再自动沿用
+  /// 2.0 起**只有** `orbis/data`：旧 `pi-bot/data` 不再自动沿用 —— legacy-guard-ok: 讲数据目录历史
   /// （与服务端 `config.js` 的 `resolveHomeDir` 同一条规则）。
   /// 老用户必须先跑 `orbis migrate` —— 服务端启动时会在日志里给出完整指引，
   /// `/health` 的 `needsMigration` 也会是 true。

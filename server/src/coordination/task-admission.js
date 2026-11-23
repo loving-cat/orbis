@@ -53,7 +53,7 @@ export function createRequestScope({
  *   · 停滞与重复检测：连续多轮没有新进展会明确停下并说明原因。
  *
  * 需要硬上限时由用户显式配置：
- *   · `ORBIS_TASK_MAX_RUNS`（正整数，兼容老名 `PI_BOT_TASK_MAX_RUNS`）→ 所有新任务的根上限；
+ *   · `ORBIS_TASK_MAX_RUNS`（正整数）→ 所有新任务的根上限；
  *   · 部门预算里的 `maxRuns` → 该部门的根上限（只收紧不放大）。
  */
 export function admissionBudget(env = process.env, groupLimits = null) {

@@ -1,5 +1,5 @@
 name: pi_bot
-description: "pi-bot 手机端：连自己的 pi agent，群聊、多 Bot、流式输出。"
+description: "Orbis 手机端：连自己的 pi agent，群聊、多 Bot、流式输出。"
 publish_to: 'none'
 version: 2.0.0-beta.1+25
 

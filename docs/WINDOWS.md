@@ -33,8 +33,8 @@ flutter config --enable-windows-desktop
 和常见安装位置找 `ISCC.exe`，也可以用 `-Iscc` 指定）。
 
 安装包是**按用户安装**（无需管理员，不弹 UAC），装到
-`%LOCALAPPDATA%\Programs\pi-bot`，自带桌面/开始菜单快捷方式，在「应用和功能」里卸载。
-装前它读 `%LOCALAPPDATA%\pi-bot\server.pid`，先用 `tasklist` 确认为 `node.exe` 再
+`%LOCALAPPDATA%\Programs\Orbis`，自带桌面/开始菜单快捷方式，在「应用和功能」里卸载。
+装前它读 `%LOCALAPPDATA%\Orbis\server.pid`，先用 `tasklist` 确认为 `node.exe` 再
 `taskkill /T /F` —— 既不留下锁住 `node.exe` 的孤儿进程导致覆盖失败，也不会因 pid 被回收而
 误杀无关进程。`%LOCALAPPDATA%\pi-bot` 里的数据、配对、历史一律不动，所以升级就重跑安装包。
 
@@ -50,7 +50,7 @@ flutter config --enable-windows-desktop
 （含分离出的 Dart 符号，以及从构建结果复制的 `.pdb`）。构建副本无论成功还是失败都会删掉，
 原源码和上一份 Release 不会被半截构建改坏。
 
-**构建根目录**：默认是源码所在盘符根下的 `.pi-bot-build`（例如源码在 `E:` 盘就是 `E:\.pi-bot-build`），
+**构建根目录**：默认是源码所在盘符根下的 `.Orbis-build`（例如源码在 `E:` 盘就是 `E:\.Orbis-build`），
 可用 `-BuildRoot <绝对路径>` 改。系统临时目录在用户目录里，构建产物会带上本机用户路径，发布扫描会拦下，
 所以不再用它。规则：
 
@@ -64,7 +64,7 @@ flutter config --enable-windows-desktop
 打包脚本不允许这种隐式下载：非 `-NoBuild` 构建开始前会检查 PATH 上是否有 `nuget.exe`，没有就停止并提示，
 不会替你下载或安装。请自行安装 NuGet CLI 并把它所在目录加入 PATH；`-NoBuild` 不需要它。
 
-`-NoBuild` 不检查 Flutter、不复制源码，只要求上述 Release 目录里已经有 `pi_bot.exe`。
+`-NoBuild` 不检查 Flutter、不复制源码，只要求上述 Release 目录里已经有 `orbis.exe`。
 此选项不验证重用产物的依赖锁版本。
 只改了服务端时可以复用；改了 Flutter 或 `app/windows` 之后要重新构建。
 
@@ -79,7 +79,7 @@ PE 的 CodeView 绝对路径收成文件名，并删掉发行目录里的前端 
 
 ```
 orbis-windows/
-  pi_bot.exe
+  orbis.exe
   <flutter_windows.dll / *_plugin.dll / data/>
   node.exe          （仅 -WithNode）
   server/
@@ -121,11 +121,11 @@ Linux 上可以跑 `node scripts/tests/all.mjs`。Windows CI 会跑
 两种装法各走各的路：
 
 - **setup.exe 装的**：直接跑新版安装包覆盖，不需要先卸载。安装程序自己停服务端，
-  `%LOCALAPPDATA%\pi-bot` 原封不动。应用内的「检查更新」会优先拿到 setup.exe。
-- **zip 免安装的**：用同一次构建的完整客户端换掉整个程序目录：`pi_bot.exe`、Flutter 运行库、
+  `%LOCALAPPDATA%\Orbis` 原封不动。应用内的「检查更新」会优先拿到 setup.exe。
+- **zip 免安装的**：用同一次构建的完整客户端换掉整个程序目录：`orbis.exe`、Flutter 运行库、
   `data/` 和清单里的原生 DLL 必须来自同一次构建，不要只替换单个 exe 或 DLL。
 
-两种情况下用户数据目录（`%LOCALAPPDATA%\pi-bot`）都保持不动。要沿用已经配对、装好依赖的服务端时，
+两种情况下用户数据目录（`%LOCALAPPDATA%\Orbis`）都保持不动。要沿用已经配对、装好依赖的服务端时，
 原来的 `server` 目录也原样留下，只替换其余客户端文件。换完后确认 `NativeAssetsManifest.json`
 列出的每个 DLL 都在，再从正式入口启动。源码和需要分发的 zip 另外保留。
 
@@ -149,7 +149,7 @@ POSIX 走 `spawn_posix.dart` 的独立进程组，两边在 `supervisor.dart` �
 
 ### 端口与防火墙（v1.4.1 起多了两条腿）
 
-Windows 上的服务端现在监听三样东西，第一次启动时系统会问"是否允许 pi-bot 访问网络"，
+Windows 上的服务端现在监听三样东西，第一次启动时系统会问"是否允许 Orbis 访问网络"，
 **三个都要放行**（同一个程序一次确认通常就够）：
 
 | 端口 | 协议 | 给谁 |
@@ -294,11 +294,11 @@ idle 与光标位置，分成三类说出来：
 | `GET /health` | `ok=true version=1.3.14` |
 | `pack-windows-setup.ps1` | 成功；setup.exe 71.8MB，编译 57s |
 | setup.exe 升级安装 | 1.3.12 → 1.3.14 覆盖装成功，卸载项版本随之更新，数据目录 57 房间 / 424 消息未动 |
-| 安装后启动 | 从 `%LOCALAPPDATA%\Programs\pi-bot` 启动，`/health` 返回 `version=1.3.14` |
-| **端口自动顺延（1.3.14 新功能）** | 先让一个非 pi-bot 的 HTTP 服务占住 8787，再启动客户端：服务端自动改听 **8788**，`/health` 正常，界面没有失败页 |
+| 安装后启动 | 从 `%LOCALAPPDATA%\Programs\Orbis` 启动，`/health` 返回 `version=1.3.14` |
+| **端口自动顺延（1.3.14 新功能）** | 先让一个非 Orbis 的 HTTP 服务占住 8787，再启动客户端：服务端自动改听 **8788**，`/health` 正常，界面没有失败页 |
 | 端口空着时 | 仍用偏好端口 8787，不顺延（顺延只在被占 / 没权限时发生） |
-| `pickAssetFor`（v1.3.14 真实资产） | 同时挂 dmg + setup.exe + zip → win32 选 `pi-bot-windows-v1.3.14-setup.exe`，darwin 选 `pi-bot-1.3.14.dmg` |
-| 发布 | `pi-bot-windows-v1.3.14-setup.exe` + `.zip` 已补挂到 v1.3.14 |
+| `pickAssetFor`（v1.3.14 真实资产） | 同时挂 dmg + setup.exe + zip → win32 选 `Orbis-windows-v1.3.14-setup.exe`，darwin 选 `Orbis-1.3.14.dmg` |
+| 发布 | `Orbis-windows-v1.3.14-setup.exe` + `.zip` 已补挂到 v1.3.14 |
 
 本次是纯代码同步（main `7889222` → `b7bf613`，28 文件 / +1662 / −92）：
 `app/windows`、`scripts/`、`.github/` 全程零改动，新增的客户端代码里没有一处
@@ -354,7 +354,7 @@ $env:PUB_HOSTED_URL = 'https://pub.dev'; flutter analyze --no-pub
    预编译的官方 `node.exe` 一般只含构建机自己的路径，不包含打包者的用户目录。
 7. **真实的 `flutter build windows` 只能在装了 Visual Studio 的 Windows 上验证**。
    当前自动化测试使用假的 `flutter` / `npm` 和合成 PE，证明分支、回滚和扫描，不证明链接器产物。
-8. **沙箱启动器需要 Rust 工具链单独构建**：`server/resources/pibot-sandbox.exe`
+8. **沙箱启动器需要 Rust 工具链单独构建**：`server/resources/orbis-sandbox.exe`
    不在仓库里（`scripts/build-sandbox-win.ps1` 生成）。打包机没装 Rust 时
    仍能出包，但**挂了 MCP 的 bot 在那些机器上会 fail-closed 拒绝 shell**。
    细节、实测坑与验收见 [WINDOWS-SANDBOX.md](WINDOWS-SANDBOX.md)。

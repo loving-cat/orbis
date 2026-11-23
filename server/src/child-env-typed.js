@@ -50,7 +50,7 @@ export const CHILD_KIND = {
  * 变成一个外部可控的输入。这里只列系统目录。
  */
 function computeSafePath() {
-  // ★ 两个平台都要追加 pi-bot 自己运行时所在的目录。
+  // ★ 两个平台都要追加 Orbis 自己运行时所在的目录。
   //
   //   Windows 上 CI runner / 用户机器上的 node 通常在
   //   C:\Program Files\nodejs 或 nvm 的版本目录下，**不在** System32 里。
@@ -78,7 +78,7 @@ function computeSafePath() {
   //
   // 这个目录是**我们自己进程的可执行文件所在处**，不是任意可变的
   // PATH 环境变量，所以相对可信：攻击者要利用它，得先能替换掉
-  // 正在运行的 pi-bot 所用的 node 二进制本身（那已经等同于完全控制）。
+  // 正在运行的 Orbis 所用的 node 二进制本身（那已经等同于完全控制）。
   if (selfDir && !parts.includes(selfDir)) parts.unshift(selfDir);
   return parts.join(':');
 }

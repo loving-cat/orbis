@@ -77,8 +77,8 @@ const okRelease = {
   html_url: 'https://example.com/release',
   published_at: '2026-10-17T00:00:00Z',
   assets: [
-    { name: 'pi-bot-windows.exe', browser_download_url: 'https://x/win.exe', size: 12345 },
-    { name: 'pi-bot.dmg', browser_download_url: 'https://x/mac.dmg', size: 999 },
+    { name: 'Orbis-windows.exe', browser_download_url: 'https://x/win.exe', size: 12345 },
+    { name: 'Orbis.dmg', browser_download_url: 'https://x/mac.dmg', size: 999 },
   ],
 };
 

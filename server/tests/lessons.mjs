@@ -153,7 +153,7 @@ test('渲染：没有命中就返回空数组（不注入任何东西）', () =>
 // ---------------------------------------------------------------------------
 // store 往返（放在最后：要先设好环境变量再 import 单例）
 // ---------------------------------------------------------------------------
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-lessons-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-lessons-'));
 process.env.HOME = path.join(root, 'home');
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
 process.env.ORBIS_HOME = root;

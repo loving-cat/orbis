@@ -6,7 +6,7 @@
 # Measured 2026-11-16 on Windows 11: Win11 Notepad -> 1.000 (all black) from in here,
 # 0.025 (fine) from the user's desktop. WinForms/WordPad look the same from both.
 param(
-  [string]$Out = "$env:TEMP\pibot-island-probe\island-capture-check.txt",
+  [string]$Out = "$env:TEMP\orbis-island-probe\island-capture-check.txt",
   [string]$Png = ""
 )
 

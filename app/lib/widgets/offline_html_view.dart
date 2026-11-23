@@ -387,7 +387,7 @@ class _PreviewSession {
   Future<void>? _release;
 
   Future<void> createDirectory() async {
-    final created = await Directory.systemTemp.createTemp('pi-bot-html-');
+    final created = await Directory.systemTemp.createTemp('Orbis-html-');
     directory = created;
     if (closed) await removeHtmlPreviewDirectory(created);
   }

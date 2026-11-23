@@ -4,7 +4,7 @@
  *   node scripts/tests/check-legacy-test.mjs
  *
  * 一个「只会在文件里数词」的守卫最容易写成永远绿 —— 所以这里造一个临时仓库，
- * 把「新债 / 旧债变大 / 旧债变小 / strict 收门」四种场景各跑一遍。
+ * 把「新债 / 旧债变大 / 旧债变小 / strict 收门 / 行内豁免」各跑一遍。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -153,6 +153,26 @@ await test('CL-11 --write 保留手写的 permanent 区（不会被冲掉）', (
     after.permanent.some((p) => p.pattern === 'custom-legacy-name'),
     '--write 不能把人工登记的永久项丢掉',
   );
+});
+
+await test('CL-12 行内豁免 legacy-guard-ok：带理由不计债（也算不进基线）', () => {
+  run(['--write']);
+  mk('server/src/notes.js', '// 1.7 时代这个变量叫 PI_BOT_HOME —— legacy-guard-ok: 讲历史'+'\n');
+  const r = run();
+  assert.equal(r.status, 0, `带理由的历史行应豁免：\n${r.stderr}`);
+  const w = run(['--write']);
+  assert.equal(w.status, 0, w.stderr);
+  const allow = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'legacy-allowlist.json'), 'utf8'));
+  assert.ok(!allow.entries.some((e) => e.path === 'server/src/notes.js'), '豁免的行不该进基线');
+  fs.rmSync(path.join(root, 'server/src/notes.js'), { force: true });
+});
+
+await test('CL-13 legacy-guard-ok 必须带理由：空理由照旧算债', () => {
+  mk('server/src/blank.js', '// PI_BOT_HOME legacy-guard-ok:'+'\n');
+  const r = run();
+  assert.equal(r.status, 1, '空理由不能豁免');
+  assert.match(r.stderr, /server\/src\/blank\.js/);
+  fs.rmSync(path.join(root, 'server/src/blank.js'), { force: true });
 });
 
 fs.rmSync(root, { recursive: true, force: true });

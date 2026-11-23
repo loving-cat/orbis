@@ -213,7 +213,7 @@ await test('摘要能区分本地与远端', () => {
 });
 
 // ---- 存储层：bot 选中逻辑 ----
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-mcp-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-mcp-'));
 const inherited = new Set(['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT']);
 for (const name of Object.keys(process.env)) {
   if (!inherited.has(name)) delete process.env[name];

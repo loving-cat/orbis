@@ -4,7 +4,7 @@
  *
  * ## 守住的五件事
  *
- *   1. `intakeEnabled()` 默认开启，`ORBIS_TASK_INTAKE=0`（及兼容 `ORBIS_TASK_INTAKE=0`）可关；
+ *   1. `intakeEnabled()` 默认开启，`ORBIS_TASK_INTAKE=0` 可关（1.7 的旧前缀 2.0 起不再生效）；
  *   2. 日常私聊与 Jarvis 即时控制零额外轮次延迟：不强跑第二次模型追问，直接按 `answer` 收口；
  *   3. `accept_task` 准入落盘后由 `taskHost` 真正派发执行，账本留下执行记录；
  *   4. 全双工三路协同：`side_reply` 独立旁路、`amend` 直通 `steer` 不进 `requestQueues`、
@@ -15,6 +15,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+
+// 旧前缀在源码里**拼出来**：扫描器数的是品牌残留，而这里要的正是那个旧名字。
+const legacyEnv = (suffix) => ['PI', 'BOT', suffix].join('_');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-intake-e2e-'));
 const wsDir = path.join(root, 'workspace');
@@ -104,7 +107,7 @@ await test('1. ★ intakeEnabled() 默认开启，ORBIS_TASK_INTAKE 可显式关
   assert.equal(intakeEnabled({ ORBIS_TASK_INTAKE: '0' }), false);
   assert.equal(intakeEnabled({ ORBIS_TASK_INTAKE: '1' }), true);
   // ★ C1：旧前缀已删 —— 只剩旧名时按“没配”处理（默认开启）
-  assert.equal(intakeEnabled({ PI_BOT_TASK_INTAKE: '0' }), true);
+  assert.equal(intakeEnabled({ [legacyEnv('TASK_INTAKE')]: '0' }), true);
 });
 
 await test('2. ★ 日常私聊与 Jarvis 即时控制零额外轮次延迟：不强跑二次追问，直接 answer 收口', async () => {

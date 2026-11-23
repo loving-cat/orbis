@@ -5,7 +5,7 @@
  * 这些用例**不需要**真的跑起沙箱（非 Windows 也全过）：
  * 它们验证的是参数构造、错误码映射、拒绝规则、profile 派生。
  * 真机 12 项验收见 docs/WINDOWS-SANDBOX.md 的「验收」一节，
- * 需要 Windows + 编译好的 pibot-sandbox.exe。
+ * 需要 Windows + 编译好的 orbis-sandbox.exe。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -46,7 +46,7 @@ await test('探测：启动器候选路径包含发行包与开发目录两种�
   const list = launcherCandidates();
   assert.ok(list.length >= 2);
   assert.ok(list.some((p) => p.includes('resources')), '发行包布局');
-  assert.ok(list.some((p) => p.includes(path.join('native', 'pibot-sandbox'))), '开发布局');
+  assert.ok(list.some((p) => p.includes(path.join('native', 'orbis-sandbox'))), '开发布局');
 });
 
 await test('★ 启动器不存在时 verifyLauncher 返回 no_binary（fail-closed，不猜）', () => {
@@ -56,17 +56,17 @@ await test('★ 启动器不存在时 verifyLauncher 返回 no_binary（fail-clo
 });
 
 await test('★ 已装的启动器与 native 源码同步（防止改 Rust 忘重装，测试假过）', async () => {
-  // review 踩过：改了 native/pibot-sandbox/src/main.rs 却没重新跑
+  // review 踩过：改了 native/orbis-sandbox/src/main.rs 却没重新跑
   // scripts/build-sandbox-win.ps1，server/resources 里还是旧 exe，
   // 于是新加的拒绝规则测不出来、测试"通过"但实际是旧的。
   if (process.platform !== 'win32') return;
-  const crateExe = path.join(import.meta.dirname, '..', '..', 'native', 'pibot-sandbox', 'target', 'release', 'pibot-sandbox.exe');
-  const shippedExe = path.join(import.meta.dirname, '..', 'resources', 'pibot-sandbox.exe');
+  const crateExe = path.join(import.meta.dirname, '..', '..', 'native', 'orbis-sandbox', 'target', 'release', 'orbis-sandbox.exe');
+  const shippedExe = path.join(import.meta.dirname, '..', 'resources', 'orbis-sandbox.exe');
   if (!fs.existsSync(crateExe) || !fs.existsSync(shippedExe)) return; // 没编译过就跳过
   const a = fs.statSync(crateExe);
   const b = fs.statSync(shippedExe);
   assert.equal(a.size, b.size,
-    `server/resources/pibot-sandbox.exe 与编译产物大小不同（${b.size} vs ${a.size}）——`
+    `server/resources/orbis-sandbox.exe 与编译产物大小不同（${b.size} vs ${a.size}）——`
     + ' 改了 Rust 就重跑 scripts/build-sandbox-win.ps1');
   // 内容哈希也要一致（大小相同但内容不同同样是旧件）
   const crypto = await import('node:crypto');
@@ -75,7 +75,7 @@ await test('★ 已装的启动器与 native 源码同步（防止改 Rust 忘�
 });
 
 await test('★ 默认工作目录（<dataDir>/workspace）必须能授权', () => {
-  // 这条是打开发行包时抓到的：review 时把 `%LOCALAPPDATA%\pi-bot` 列进敏感
+  // 这条是打开发行包时抓到的：review 时把 `%LOCALAPPDATA%\Orbis` 列进敏感
   // 目录，结果每一个默认配置的 bot 都是 WORKDIR_IS_SENSITIVE —— 而
   // config.js 的默认 workspace 就是 <dataDir>/workspace。
   if (process.platform !== 'win32') return;
@@ -84,14 +84,14 @@ await test('★ 默认工作目录（<dataDir>/workspace）必须能授权', () 
   const dataDir = path.join(root, 'data');
   const ws = path.join(dataDir, 'workspace');
   fs.mkdirSync(ws, { recursive: true });
-  const ok = spawnSync(exe, ['grant', '--profile', 'pi-bot.sbx.test.default-ws',
+  const ok = spawnSync(exe, ['grant', '--profile', 'Orbis.sbx.test.default-ws',
     '--path', ws, '--mode', 'rw', '--data-dir', dataDir],
   { encoding: 'utf8', windowsHide: true, timeout: 20000 });
   assert.equal(ok.status, 0, `默认工作目录被拒了：${(ok.stderr || '').slice(0, 160)}`);
 
   // dataDir 本身仍然必须拒（用混写分隔符验证归一化）
   const mixed = dataDir.replace(/\\/g, '/');
-  const bad = spawnSync(exe, ['grant', '--profile', 'pi-bot.sbx.test.default-ws',
+  const bad = spawnSync(exe, ['grant', '--profile', 'Orbis.sbx.test.default-ws',
     '--path', mixed, '--mode', 'rw', '--data-dir', mixed],
   { encoding: 'utf8', windowsHide: true, timeout: 20000 });
   assert.notEqual(bad.status, 0, 'dataDir 本身不该被授权');
@@ -102,7 +102,7 @@ await test('★ 默认工作目录（<dataDir>/workspace）必须能授权', () 
 await test('★ 版本号常量与启动器 Cargo.toml 一致', () => {
   // 版本不一致会让 Node 与 exe 的约束悄悄漂移，所以两边必须同一个值。
   const cargo = fs.readFileSync(
-    path.join(import.meta.dirname, '..', '..', 'native', 'pibot-sandbox', 'Cargo.toml'), 'utf8',
+    path.join(import.meta.dirname, '..', '..', 'native', 'orbis-sandbox', 'Cargo.toml'), 'utf8',
   );
   const m = /^version\s*=\s*"([^"]+)"/m.exec(cargo);
   assert.ok(m, 'Cargo.toml 里应有 version');
@@ -111,9 +111,9 @@ await test('★ 版本号常量与启动器 Cargo.toml 一致', () => {
 
 await test('探测：Windows 上没有 exe 时 available=false + no_binary', () => {
   if (process.platform !== 'win32') return;
-  const saved = process.env.PIBOT_SANDBOX_EXE;
+  const saved = process.env.ORBIS_SANDBOX_EXE;
   // 指向不存在的路径，模拟"发行包里缺启动器"
-  process.env.PIBOT_SANDBOX_EXE = path.join(root, 'missing.exe');
+  process.env.ORBIS_SANDBOX_EXE = path.join(root, 'missing.exe');
   try {
     // 注意：launcherCandidates 里还有开发/发行两条兜底，机器上真装了
     // 启动器时这条会拿到真路径 —— 这里只要求"结果自洽"。
@@ -121,8 +121,8 @@ await test('探测：Windows 上没有 exe 时 available=false + no_binary', () 
     assert.equal(typeof p.available, 'boolean');
     if (!p.available) assert.ok(p.reason);
   } finally {
-    if (saved === undefined) delete process.env.PIBOT_SANDBOX_EXE;
-    else process.env.PIBOT_SANDBOX_EXE = saved;
+    if (saved === undefined) delete process.env.ORBIS_SANDBOX_EXE;
+    else process.env.ORBIS_SANDBOX_EXE = saved;
   }
 });
 
@@ -142,10 +142,10 @@ await test('★ profile 名稳定（同一实例重启后不变，否则 ACE 会
 await test('profile 名只含安全字符，带 12 位哈希后缀', () => {
   const weird = 'C:\\data\\instances\\房 间/bot#1';
   const p = profileNameFor(weird);
-  assert.match(p, /^pi-bot\.sbx\.[A-Za-z0-9_-]+\.[0-9a-f]{12}$/);
+  assert.match(p, /^Orbis\.sbx\.[A-Za-z0-9_-]+\.[0-9a-f]{12}$/);
   // 实测：CreateAppContainerProfile 对 56 字符的名字也能成功，
   // 但为了留余量还是把 key 部分限到 40 字符（见 profileNameFor）。
-  assert.ok(p.length <= 'pi-bot.sbx.'.length + 40 + 13, `AppContainer 名太长：${p.length}`);
+  assert.ok(p.length <= 'Orbis.sbx.'.length + 40 + 13, `AppContainer 名太长：${p.length}`);
 });
 
 await test('实例目录落在 dataDir/instances/<key>', () => {
@@ -218,7 +218,7 @@ await test('dataDir 通过 --data-dir 传给启动器（拒绝规则要用它）
   if (!w.ok) return;
   try {
     assert.ok(w.args.includes('--env'));
-    assert.ok(w.args.some((a) => a.startsWith('PIBOT_DATA_DIR=')));
+    assert.ok(w.args.some((a) => a.startsWith('ORBIS_DATA_DIR=')));
   } finally {
     w.cleanup?.();
   }
@@ -252,7 +252,7 @@ await test('★ mcp-access 的文案：Windows 码走 Windows 文案', () => {
   assert.match(sandboxUnavailableMessage('PROFILE_FAILED'), /AppContainer/);
   // 非 Windows 的老码仍然能翻
   assert.match(sandboxUnavailableMessage('unsupported_platform'), /拒绝执行/);
-  assert.match(sandboxUnavailableMessage('no_binary'), /bubblewrap|sandbox-exec|pibot-sandbox/);
+  assert.match(sandboxUnavailableMessage('no_binary'), /bubblewrap|sandbox-exec|orbis-sandbox/);
 });
 
 // ────────────────── sandbox.js 的接线 ──────────────────
@@ -274,7 +274,7 @@ await test('★ wrapCommand 在 Windows 上走 AppContainer 分支（不再返�
     return;
   }
   try {
-    assert.ok(w.args.includes('run'), '应转到 pibot-sandbox run');
+    assert.ok(w.args.includes('run'), '应转到 orbis-sandbox run');
     assert.equal(typeof w.cleanup, 'function');
   } finally {
     w.cleanup?.();
@@ -365,7 +365,7 @@ await test('★ 敏感目录连子目录一起拒（~/.ssh 不能当工作目录
   if (!exe) return; // 机器上没编译启动器，跳过
   const sshSub = path.join(os.homedir(), '.ssh', 'nested');
   try { fs.mkdirSync(sshSub, { recursive: true }); } catch { /* 可能无权 */ }
-  const res = spawnSync(exe, ['grant', '--profile', 'pi-bot.sbx.test.sensitive', '--path', sshSub, '--mode', 'rw'],
+  const res = spawnSync(exe, ['grant', '--profile', 'Orbis.sbx.test.sensitive', '--path', sshSub, '--mode', 'rw'],
     { encoding: 'utf8', windowsHide: true, timeout: 20000 });
   assert.notEqual(res.status, 0, '~/.ssh 的子目录不该被授权');
   assert.match(res.stderr || '', /SENSITIVE|PROTECTED/,
@@ -376,10 +376,10 @@ await test('★ 正常子目录仍放行（~/xxx 不该被敏感规则误伤）'
   if (process.platform !== 'win32') return;
   const exe = launcherPath();
   if (!exe) return;
-  const ok = path.join(os.homedir(), '.pi-bot-test-workdir');
+  const ok = path.join(os.homedir(), '.Orbis-test-workdir');
   fs.mkdirSync(ok, { recursive: true });
   try {
-    const res = spawnSync(exe, ['grant', '--profile', 'pi-bot.sbx.test.normal', '--path', ok, '--mode', 'rw'],
+    const res = spawnSync(exe, ['grant', '--profile', 'Orbis.sbx.test.normal', '--path', ok, '--mode', 'rw'],
       { encoding: 'utf8', windowsHide: true, timeout: 20000 });
     // 成功，或者失败原因**不是**敏感目录（可能是权限等其它原因）
     if (res.status !== 0) {
@@ -417,7 +417,7 @@ await test('★ worktree 的 .git 是文件时不能崩（这是 bot 隔离要�
     "Set-Content -LiteralPath 'a.txt' -Value 'changed' -ErrorAction Stop",
     "Write-Output 'WT_OK'",
   ].join(String.fromCharCode(10)));
-  const r = run(exe, ['run', '--profile', 'pi-bot.sbx.wt-test', '--workdir', wt, '--instance', inst,
+  const r = run(exe, ['run', '--profile', 'Orbis.sbx.wt-test', '--workdir', wt, '--instance', inst,
     '--shell', 'powershell', '--cmd-file', script], { encoding: 'utf8', windowsHide: true, timeout: 90000 });
   const out = (r.stdout || '') + (r.stderr || '');
   assert.doesNotMatch(out, /GIT_HOOKS_MKDIR_FAILED/, 'worktree 的 .git 文件被当目录了');

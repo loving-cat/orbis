@@ -8,7 +8,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { decideCommand } from '../src/shell-policy.js';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-shell-bypass-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-shell-bypass-'));
 process.env.ORBIS_HOME = path.join(root, 'data');
 process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 process.env.ORBIS_MODEL = '';

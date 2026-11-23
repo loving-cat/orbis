@@ -14,7 +14,7 @@
 # docs/WINDOWS-HIDDEN-DESKTOP.md.
 param(
   [string]$Exe = "",
-  [string]$OutDir = "$env:TEMP\pibot-island-probe",
+  [string]$OutDir = "$env:TEMP\orbis-island-probe",
   [int]$WaitSeconds = 3,
   [int]$HoldSeconds = 0
 )
@@ -105,7 +105,7 @@ $userCursorBefore = "$($p.X),$($p.Y)"
 Line "user_cursor_before" $userCursorBefore
 
 # ---------------------------------------------------------------- island + app
-$deskName = "pibot_island_" + [guid]::NewGuid().ToString("N").Substring(0, 6)
+$deskName = "orbis_island_" + [guid]::NewGuid().ToString("N").Substring(0, 6)
 $hDesk = [Island]::CreateDesktop($deskName, [IntPtr]::Zero, [IntPtr]::Zero, 0, 0x10000000, [IntPtr]::Zero)
 if ($hDesk -eq [IntPtr]::Zero) {
   Line "create_desktop" ("FAILED err=" + [Runtime.InteropServices.Marshal]::GetLastWin32Error())

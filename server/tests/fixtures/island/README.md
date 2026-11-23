@@ -22,7 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File probe-island.ps1 -HoldSecond
 | `island-input-check.ps1` | 岛上 | 问 OS：没有输入桌面的线程能不能发 `SendInput` / `SetCursorPos` |
 | `island-capture-check.ps1` | 岛上 | 同样的取帧，但调用者住在岛上 —— 用来对照"谁调 `PrintWindow`"的差别 |
 
-输出全是 `key=value`，图片落在 `%TEMP%\pibot-island-probe\`。实测数字与结论见
+输出全是 `key=value`，图片落在 `%TEMP%\orbis-island-probe\`。实测数字与结论见
 `docs/WINDOWS-HIDDEN-DESKTOP.md`。
 
 ## 三个踩过的坑（都会静默失败）

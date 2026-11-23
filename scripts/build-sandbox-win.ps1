@@ -1,4 +1,4 @@
-# Build and install the Windows sandbox launcher (native/pibot-sandbox).
+# Build and install the Windows sandbox launcher (native/orbis-sandbox).
 #
 # Why a separate script: pack-windows.ps1 stays pure ASCII, offline, and
 # toolchain-free. Compiling Rust needs cargo + MSVC build tools. Keeping the
@@ -33,13 +33,13 @@ if ($Help) {
 if ($args.Count -gt 0) { Fail "unknown parameter" }
 
 $root = Split-Path -Parent $PSScriptRoot
-$crate = Join-Path $root "native\pibot-sandbox"
+$crate = Join-Path $root "native\orbis-sandbox"
 $cargoToml = Join-Path $crate "Cargo.toml"
-if (-not (Test-Path -LiteralPath $cargoToml)) { Fail "missing native/pibot-sandbox/Cargo.toml" }
+if (-not (Test-Path -LiteralPath $cargoToml)) { Fail "missing native/orbis-sandbox/Cargo.toml" }
 
 if (-not $Out) { $Out = Join-Path $root "server\resources" }
-$exe = Join-Path $Out "pibot-sandbox.exe"
-$sha = Join-Path $Out "pibot-sandbox.sha256"
+$exe = Join-Path $Out "orbis-sandbox.exe"
+$sha = Join-Path $Out "orbis-sandbox.sha256"
 
 function Get-ExpectedVersion {
   $line = Select-String -LiteralPath $cargoToml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
@@ -87,21 +87,21 @@ try {
   & cargo build --release
   if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
   Write-Host "== version self check =="
-  $reported = (& (Join-Path $crate "target\release\pibot-sandbox.exe") version 2>&1) -join " "
+  $reported = (& (Join-Path $crate "target\release\orbis-sandbox.exe") version 2>&1) -join " "
   if ($reported -notmatch [regex]::Escape($version)) { throw "version mismatch: $reported" }
   # Keep the Node side in sync: it refuses to use a launcher whose version
   # differs from LAUNCHER_VERSION.
-  & node (Join-Path $root "server\tools\check-launcher-version.mjs") (Join-Path $crate "target\release\pibot-sandbox.exe")
+  & node (Join-Path $root "server\tools\check-launcher-version.mjs") (Join-Path $crate "target\release\orbis-sandbox.exe")
   if ($LASTEXITCODE -ne 0) { throw "launcher version does not match server/src/sandbox-win.js" }
 } finally {
   Pop-Location
 }
 
 New-Item -ItemType Directory -Path $Out -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $crate "target\release\pibot-sandbox.exe") -Destination $exe -Force
+Copy-Item -LiteralPath (Join-Path $crate "target\release\orbis-sandbox.exe") -Destination $exe -Force
 $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
 # Manifest format matches `sha256sum`: <hash>  <name>
-Set-Content -LiteralPath $sha -Value "$hash  pibot-sandbox.exe" -Encoding ASCII -NoNewline
+Set-Content -LiteralPath $sha -Value "$hash  orbis-sandbox.exe" -Encoding ASCII -NoNewline
 
 Write-Host "wrote $exe"
 Write-Host "wrote $sha ($hash)"

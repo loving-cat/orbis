@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 /// 调用 Android 原生能力：常驻前台服务 + 电池优化白名单。
 /// 桌面/iOS 上是 no-op。
 class Native {
-  static const _channel = MethodChannel('pibot/native');
+  static const _channel = MethodChannel('orbis/native');
 
   static bool get _isAndroid => !kIsWeb && Platform.isAndroid;
 

@@ -8,7 +8,7 @@
  *   await rt.dispose();
  *
  * 特点：
- *   · 仅 import 本模块不会读写默认全局 `~/.local/share/pi-bot` 或 `state.json`；
+ *   · 仅 import 本模块不会读写默认全局 `~/.local/share/Orbis` 或 `state.json`；
  *   · 同一 Node 进程可并行创建多个互不串状态、互不抢总线的独立 runtime；
  *   · 底层仍复用唯一一条骨架：`Config + Store + Bus + GrantGate + PiRunner + Services`。
  */

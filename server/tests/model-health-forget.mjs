@@ -7,7 +7,7 @@ import path from 'node:path';
 // 健康结论是针对某份凭证的：换 key / 改 baseUrl 之后，
 // 旧凭证的失败记录必须作废，否则菜单上那个组会一直标"实测不可用"，
 // 主控绕开它、用户以为换了稳定 key 也没用。
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-health-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-health-'));
 process.env.ORBIS_HOME = tmp;
 
 const { ModelHealth } = await import('../src/model-health.js');

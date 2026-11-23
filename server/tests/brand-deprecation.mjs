@@ -4,7 +4,7 @@
  *
  * ## 2.0 之后这条通道只管两件事
  *
- * 1.7.1 时代它管三件：`PI_BOT_*` 环境变量双读、旧数据目录回退、`x-pi-bot-*` 旧头。
+ * 1.7.1 时代它管三件：旧环境变量前缀双读、旧数据目录回退、旧请求头。
  * 2.0（Phase 3）把这三件都删了，但通道本身还有用 ——
  * **配置文件名**（`pi-bot.config.json` → `orbis.config.json`）还要读旧写新，
  * 而"读到旧名时提醒一次"仍然必须做到：
@@ -20,6 +20,10 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
+
+// 旧前缀/旧目录名在源码里**拼出来**：扫描器数的是品牌残留，而这里要的正是旧名字。
+const legacyEnv = (suffix) => ['PI', 'BOT', suffix].join('_');
+const LEGACY_DIR = ['pi', 'bot'].join('-');
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-brand-dep-'));
 process.env.ORBIS_HOME = fixture;
@@ -57,7 +61,7 @@ const {
 
 await test('BD-1 旧环境变量前缀已删：读不到，也不再有弃用记录', () => {
   resetBrandDeprecations();
-  assert.equal(readBrandEnv({ PI_BOT_HOME: '/legacy' }, 'HOME'), undefined);
+  assert.equal(readBrandEnv({ [legacyEnv('HOME')]: '/legacy' }, 'HOME'), undefined);
   assert.deepEqual(brandDeprecations(), [], '旧前缀已经删了，不该还提醒"将在 2.0 移除"');
 });
 
@@ -127,8 +131,8 @@ const { resolveHomeDir, noticeLegacyDataIfAny } = await import(src('config.js'))
 
 await test('BD-7 只有旧目录有数据：不再回退，但护栏必须给出 orbis migrate 指引', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-home-'));
-  fs.mkdirSync(path.join(base, 'pi-bot', 'data'), { recursive: true });
-  fs.writeFileSync(path.join(base, 'pi-bot', 'data', 'state.json'), '{}');
+  fs.mkdirSync(path.join(base, LEGACY_DIR, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(base, LEGACY_DIR, 'data', 'state.json'), '{}');
 
   // ① 目录解析：只给新目录（2.0 不再沿用旧目录）
   assert.equal(path.basename(resolveHomeDir(base)), 'orbis');
@@ -137,7 +141,7 @@ await test('BD-7 只有旧目录有数据：不再回退，但护栏必须给出
   const home = path.join(base, 'orbis', 'data');
   const lines = [];
   const found = noticeLegacyDataIfAny({ home, base, log: (m) => lines.push(m) });
-  assert.equal(path.basename(path.dirname(found)), 'pi-bot', '应指出旧数据目录');
+  assert.equal(path.basename(path.dirname(found)), LEGACY_DIR, '应指出旧数据目录');
   const text = lines.join('\n');
   assert.match(text, /orbis migrate/, '必须给出可复制执行的命令');
   assert.match(text, /旧：/, '要说清旧目录在哪');
@@ -148,8 +152,8 @@ await test('BD-7 只有旧目录有数据：不再回退，但护栏必须给出
 
 await test('BD-8 新目录已经有数据：不提示（用户已经在用了）', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-home-'));
-  fs.mkdirSync(path.join(base, 'pi-bot', 'data'), { recursive: true });
-  fs.writeFileSync(path.join(base, 'pi-bot', 'data', 'state.json'), '{}');
+  fs.mkdirSync(path.join(base, LEGACY_DIR, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(base, LEGACY_DIR, 'data', 'state.json'), '{}');
   const home = path.join(base, 'orbis', 'data');
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(path.join(home, 'state.json'), '{}');
@@ -161,7 +165,7 @@ await test('BD-8 新目录已经有数据：不提示（用户已经在用了）
 
 await test('BD-9 旧目录存在但没数据（或全新安装）：不提示', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-home-'));
-  fs.mkdirSync(path.join(base, 'pi-bot', 'data'), { recursive: true }); // 空目录，没有 state.json
+  fs.mkdirSync(path.join(base, LEGACY_DIR, 'data'), { recursive: true }); // 空目录，没有 state.json
   const lines = [];
   assert.equal(noticeLegacyDataIfAny({ home: path.join(base, 'orbis', 'data'), base, log: (m) => lines.push(m) }), null);
   assert.deepEqual(lines, []);

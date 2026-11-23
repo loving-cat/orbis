@@ -44,7 +44,7 @@ import { windowsSandboxMessage } from './sandbox-win.js';
  * @param {object} o
  * @param {string} o.workDir    bot 的工作目录
  * @param {string} o.instanceDir 实例私有目录（HOME / TMPDIR / profile 落点）
- * @param {string} o.dataDir    pi-bot 数据目录（含 token，必须拒绝）
+ * @param {string} o.dataDir    Orbis 数据目录（含 token，必须拒绝）
  * @returns {{exec: Function}}
  */
 export function createSandboxedOperations({ workDir, instanceDir, dataDir }) {

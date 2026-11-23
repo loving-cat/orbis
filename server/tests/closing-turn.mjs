@@ -16,7 +16,7 @@ import path from 'node:path';
 
 // 需要一个真实 store 来验证「按 id 比较先后」那段 ——
 // planClosing 本身是纯函数，但 isStrictlyAfter 要读房间消息。
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-closing-'));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-closing-'));
 process.env.ORBIS_HOME = dataDir;
 process.env.PI_AGENT_DIR = path.join(dataDir, 'agent');
 process.env.ORBIS_WORKSPACE = path.join(dataDir, 'workspace');

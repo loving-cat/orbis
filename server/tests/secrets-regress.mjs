@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 delete process.env.ORBIS_SECRET_KEY;
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-secrets-regress-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-secrets-regress-'));
 process.env.ORBIS_HOME = root;
 process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 

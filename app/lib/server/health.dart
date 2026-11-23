@@ -15,7 +15,7 @@ Future<String?> readHealthResponseBody(Stream<List<int>> chunks) async {
 }
 
 /// 校验本机服务端健康响应：成功标记与非空的服务名称、版本缺一不可。
-bool isPiBotHealthResponse(String body) {
+bool isOrbisHealthResponse(String body) {
   try {
     final value = jsonDecode(body);
     if (value is! Map<String, dynamic>) return false;
@@ -33,7 +33,7 @@ bool isPiBotHealthResponse(String body) {
 
 /// 服务端要不要本机请求也带 token（`/health` 的 `auth` 字段）。
 ///
-/// 服务器模式（服务端设了 `ORBIS_TOKEN`，旧名 `PI_BOT_TOKEN` 也认）回 `token`；本机部署回 `local`。
+/// 服务器模式（服务端设了 `ORBIS_TOKEN`，旧名 `ORBIS_TOKEN` 也认）回 `token`；本机部署回 `local`。
 /// 旧版服务端没有这个字段，按 `local` 处理。
 bool healthRequiresToken(String body) {
   try {

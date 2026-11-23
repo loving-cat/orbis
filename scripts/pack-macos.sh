@@ -154,8 +154,8 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
   cmp -s "$ROOT/app/pubspec.lock" "$BUILD_WORK/app/pubspec.lock" \
     || fail "构建改动了 pubspec.lock，已停止打包"
   NEUTRAL_APP="$BUILD_WORK/app/build/macos/Build/Products/Release/${APP_NAME}.app"
-  if [[ ! -d "$NEUTRAL_APP" && -d "$BUILD_WORK/app/build/macos/Build/Products/Release/pi_bot.app" ]]; then
-    NEUTRAL_APP="$BUILD_WORK/app/build/macos/Build/Products/Release/pi_bot.app"
+  if [[ ! -d "$NEUTRAL_APP" && -d "$BUILD_WORK/app/build/macos/Build/Products/Release/orbis.app" ]]; then
+    NEUTRAL_APP="$BUILD_WORK/app/build/macos/Build/Products/Release/orbis.app"
   fi
   [[ -f "$NEUTRAL_APP/Contents/Info.plist" && -d "$NEUTRAL_APP/Contents/MacOS" ]] \
     || fail "中性目录构建没有生成完整 App"
@@ -176,10 +176,10 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
 fi
 
 SOURCE_APP="$BUILD/${APP_NAME}.app"
-if [[ ! -d "$SOURCE_APP" && -d "$BUILD/pi_bot.app" ]]; then
-  SOURCE_APP="$BUILD/pi_bot.app"
+if [[ ! -d "$SOURCE_APP" && -d "$BUILD/orbis.app" ]]; then
+  SOURCE_APP="$BUILD/orbis.app"
 fi
-[[ -d "$SOURCE_APP" ]] || fail "找不到构建产物：$BUILD/${APP_NAME}.app（或 pi_bot.app）"
+[[ -d "$SOURCE_APP" ]] || fail "找不到构建产物：$BUILD/${APP_NAME}.app（或 orbis.app）"
 [[ -f "$SOURCE_APP/Contents/Info.plist" && -d "$SOURCE_APP/Contents/MacOS" ]] \
   || fail "构建产物不是完整的 macOS App：$SOURCE_APP"
 

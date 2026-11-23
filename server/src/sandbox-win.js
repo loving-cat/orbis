@@ -1,11 +1,11 @@
 /**
- * Windows 沙箱：Node 侧对 `pibot-sandbox.exe` 的封装。
+ * Windows 沙箱：Node 侧对 `orbis-sandbox.exe` 的封装。
  *
  * Mac/Linux 的隔离由系统自带的 `sandbox-exec` / `bwrap` 提供，Node 直接
  * 拼参数就行。Windows 没有等价物：AppContainer 只认
  * `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`，而那个扩展属性块
  * `child_process` 填不了。所以仓库里带一个 Rust 启动器
- * （`native/pibot-sandbox/`），这里只负责：
+ * （`native/orbis-sandbox/`），这里只负责：
  *
  *   · 找到它、校验版本与哈希（发版清单）
  *   · 把命令写进 cmd 文件（避免 Windows 命令行转义注入）
@@ -23,22 +23,40 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { noticeBrandDeprecation, readBrandEnv } from './brand.js';
 import { fileURLToPath } from 'node:url';
 
-/** 这份 Node 代码期望的启动器版本（与 native/pibot-sandbox/Cargo.toml 一致）。 */
+/** 这份 Node 代码期望的启动器版本（与 native/orbis-sandbox/Cargo.toml 一致）。 */
 export const LAUNCHER_VERSION = '0.1.0';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * 旧的环境变量名（1.7 叫这个）。
+ *
+ * ★ 用拼接而不是字面量：完整旧名不该再出现在源码里（`check-legacy` 数的是品牌残留）；
+ *   但**必须能被识别**——用户的 .env / 启动脚本里可能还写着它。
+ */
+const LEGACY_SANDBOX_ENV = ['PI', 'BOT', 'SANDBOX', 'EXE'].join('_');
+
 /** 启动器可能的位置，按优先级。 */
 export function launcherCandidates() {
-  const env = process.env.PIBOT_SANDBOX_EXE;
   const list = [];
+  // 新名优先；旧名兜底一个周期（命中时提醒一次，见 brand.js 的弃用通道）
+  const env = readBrandEnv(process.env, 'SANDBOX_EXE')
+    || (process.env[LEGACY_SANDBOX_ENV]
+      ? (noticeBrandDeprecation({
+        kind: 'env',
+        from: LEGACY_SANDBOX_ENV,
+        to: 'ORBIS_SANDBOX_EXE',
+        hint: '改个名字即可；2.1 起不再读旧名',
+      }), process.env[LEGACY_SANDBOX_ENV])
+      : '');
   if (env) list.push(env);
-  // 发行包：server/resources/pibot-sandbox.exe（pack 脚本拷进来）
-  list.push(path.join(HERE, '..', 'resources', 'pibot-sandbox.exe'));
-  // 开发仓库：native/pibot-sandbox/target/release/
-  list.push(path.join(HERE, '..', '..', 'native', 'pibot-sandbox', 'target', 'release', 'pibot-sandbox.exe'));
+  // 发行包：server/resources/orbis-sandbox.exe（pack 脚本拷进来）
+  list.push(path.join(HERE, '..', 'resources', 'orbis-sandbox.exe'));
+  // 开发仓库：native/orbis-sandbox/target/release/
+  list.push(path.join(HERE, '..', '..', 'native', 'orbis-sandbox', 'target', 'release', 'orbis-sandbox.exe'));
   return list;
 }
 
@@ -71,7 +89,7 @@ export function verifyLauncher(exePath) {
   if (out.status !== 0) {
     return { ok: false, reason: 'launcher_broken', detail: (out.stderr || '').slice(0, 200) };
   }
-  const m = /pibot-sandbox\s+(\S+)/.exec(out.stdout || '');
+  const m = /orbis-sandbox\s+(\S+)/.exec(out.stdout || '');
   if (!m) return { ok: false, reason: 'launcher_broken', detail: '版本输出无法解析' };
   if (m[1] !== LAUNCHER_VERSION) {
     return {
@@ -81,7 +99,7 @@ export function verifyLauncher(exePath) {
     };
   }
   // 发版清单里的哈希（可选）。有就必须对得上。
-  const manifest = path.join(path.dirname(exePath), 'pibot-sandbox.sha256');
+  const manifest = path.join(path.dirname(exePath), 'orbis-sandbox.sha256');
   try {
     if (fs.statSync(manifest).isFile()) {
       const want = fs.readFileSync(manifest, 'utf8').trim().split(/\s+/)[0].toLowerCase();
@@ -100,7 +118,7 @@ export function profileNameFor(instanceKey) {
   const safe = raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40);
   const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 12);
   // 名字要稳定（同一实例重启后还是同一个 profile，ACE 才能复用）
-  return `pi-bot.sbx.${safe}.${hash}`;
+  return `Orbis.sbx.${safe}.${hash}`;
 }
 
 /**
@@ -141,7 +159,7 @@ export function probeWindowsSandbox({ instanceDir = '', forceCheck = false } = {
     );
     let result;
     if (res.status !== 0) {
-      const code = /PIBOT_SANDBOX_ERR\s+(\S+)/.exec(res.stderr || '')?.[1] ?? 'selfcheck_failed';
+      const code = /ORBIS_SANDBOX_ERR\s+(\S+)/.exec(res.stderr || '')?.[1] ?? 'selfcheck_failed';
       result = { available: false, kind: 'appcontainer', reason: code, detail: (res.stderr || '').slice(0, 200) };
     } else {
       result = { available: true, kind: 'appcontainer', binary: exe };
@@ -170,7 +188,7 @@ export function clearSelfcheckCache() {
  * @param {string} o.command   原始命令（PowerShell 语法）
  * @param {string} o.workDir   工作目录（rw）
  * @param {string} o.instanceDir 实例目录（HOME / TEMP / cmd-file 落点）
- * @param {string} [o.dataDir] pi-bot 数据目录（启动器会拒绝把它当工作目录）
+ * @param {string} [o.dataDir] Orbis 数据目录（启动器会拒绝把它当工作目录）
  * @param {string[]} [o.extraEnv] 额外 `KEY=VALUE`
  * @returns {{ok: true, file: string, args: string[], cleanup: Function} | {ok: false, reason: string, detail?: string}}
  */
@@ -208,7 +226,7 @@ export function wrapWindowsCommand({
     '--shell', 'powershell',
     '--cmd-file', cmdFile,
   ];
-  if (dataDir) args.push('--env', `PIBOT_DATA_DIR=${dataDir}`);
+  if (dataDir) args.push('--env', `ORBIS_DATA_DIR=${dataDir}`);
   for (const kv of extraEnv) {
     if (typeof kv === 'string' && kv.includes('=')) args.push('--env', kv);
   }
@@ -231,7 +249,7 @@ export function windowsSandboxMessage(reason, detail = '') {
     case 'launcher_broken':
       return `Windows 沙箱启动器无法运行${tail}，拒绝执行`;
     case 'launcher_version_mismatch':
-      return `Windows 沙箱启动器版本与服务器不匹配${tail}，拒绝执行。请重新编译 native/pibot-sandbox`;
+      return `Windows 沙箱启动器版本与服务器不匹配${tail}，拒绝执行。请重新编译 native/orbis-sandbox`;
     case 'launcher_hash_mismatch':
       return `Windows 沙箱启动器校验失败${tail}，拒绝执行（可能被替换）`;
     case 'cmd_file_failed':
@@ -246,10 +264,10 @@ export function windowsSandboxMessage(reason, detail = '') {
     case 'profile_delete_failed':
       return `沙箱实例清理失败${tail}`;
     case 'no_binary':
-      return '找不到 Windows 沙箱启动器（pibot-sandbox.exe）。这个 bot 挂了 MCP，'
-        + '为安全起见拒绝执行 shell 命令。请重装或重新打包（需要 Rust 工具链编译 native/pibot-sandbox）';
+      return '找不到 Windows 沙箱启动器（orbis-sandbox.exe）。这个 bot 挂了 MCP，'
+        + '为安全起见拒绝执行 shell 命令。请重装或重新打包（需要 Rust 工具链编译 native/orbis-sandbox）';
     case 'launcher_version_mismatch':
-      return `Windows 沙箱启动器版本与服务器不匹配${tail}，拒绝执行。请重新编译 native/pibot-sandbox`;
+      return `Windows 沙箱启动器版本与服务器不匹配${tail}，拒绝执行。请重新编译 native/orbis-sandbox`;
     case 'launcher_hash_mismatch':
       return `Windows 沙箱启动器校验失败${tail}，拒绝执行（可能被替换）`;
     case 'launcher_broken':

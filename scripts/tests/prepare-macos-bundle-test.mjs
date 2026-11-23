@@ -10,7 +10,7 @@ import {
   parseRpathGroups, prepareMacosBundle, removableRpaths,
 } from '../prepare-macos-bundle.mjs';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-bundle-test-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-bundle-test-'));
 const home = path.join(root, 'fixture-home');
 // rpath entries from otool are always POSIX-style, even when this test runs on Windows.
 const toolchain = path.posix.join(home.split(path.sep).join('/'), 'SDK.app/Contents/Developer/Toolchains/Default.xctoolchain/usr/lib/swift/macosx');

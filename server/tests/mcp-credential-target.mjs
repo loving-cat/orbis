@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 delete process.env.ORBIS_SECRET_KEY;
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-mcp-target-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-mcp-target-'));
 process.env.HOME = path.join(root, 'home');
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
 process.env.ORBIS_HOME = root;

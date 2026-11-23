@@ -100,14 +100,14 @@ void main() {
       }
     });
 
-    test('★ 监听中的端口 → occupied 或 piBot，绝不是 free', () async {
+    test('★ 监听中的端口 → occupied 或 orbis，绝不是 free', () async {
       final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = server.port;
       try {
         final kind = await probePort(port);
         expect(
           kind,
-          anyOf(PortProbeKind.occupied, PortProbeKind.piBot),
+          anyOf(PortProbeKind.occupied, PortProbeKind.orbis),
           reason: '有人在听的端口只能是这两个之一',
         );
       } finally {

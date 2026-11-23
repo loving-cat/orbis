@@ -104,7 +104,7 @@ const RULES = [
   {
     name: '本机主机名 *.local',
     // 只拦像主机名的写法（带连字符，或跟在 @ / // 后面），放行 orbis.local / pi-bot.local / relay.local 这类样例值
-    re: /(?<![\w.-])(?!(?:orbis|pi-bot|relay)\.local\b)(?:[A-Za-z0-9]+-[A-Za-z0-9-]*\.local\b|(?<=[@/])[A-Za-z0-9-]+\.local\b)/,
+    re: /(?<![\w.-])(?!(?:orbis|pi-bot|relay)\.local\b)(?:[A-Za-z0-9]+-[A-Za-z0-9-]*\.local\b|(?<=[@/])[A-Za-z0-9-]+\.local\b)/,  // legacy-guard-ok: 放行名单必须认旧域名
   },
   {
     name: '云代理链接',
@@ -117,7 +117,7 @@ const RULES = [
   {
     name: '真实邮箱',
     // 仅放行完整的公开署名地址，域名边界之后仍有字符时继续检查。
-    re: /\b(?!noreply@github\.com(?![A-Za-z0-9.-]))[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b|example\.|(?:orbis|pi-bot)\.local\b|[A-Za-z0-9.-]+\.(?:test|example|invalid)\b)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/,
+    re: /\b(?!noreply@github\.com(?![A-Za-z0-9.-]))[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b|example\.|(?:orbis|pi-bot)\.local\b|[A-Za-z0-9.-]+\.(?:test|example|invalid)\b)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/,  // legacy-guard-ok: 放行名单必须认旧域名
   },
   {
     name: '内部代号或私有项目名残留',
@@ -290,7 +290,7 @@ const pushIdx = process.argv.indexOf('--push');
 
 /** 自动化身份的地址不含个人信息，放行；其余必须是 noreply 或明显的样例域名 */
 const okMail = (m) => /@users\.noreply\.github\.com$/i.test(m) || /^noreply@github\.com$/i.test(m)
-  || /@(?:orbis|pi-bot)\.local$/i.test(m) || /@[A-Za-z0-9.-]+\.(test|example|invalid)$/i.test(m) || /@example\./i.test(m)
+  || /@(?:orbis|pi-bot)\.local$/i.test(m) || /@[A-Za-z0-9.-]+\.(test|example|invalid)$/i.test(m) || /@example\./i.test(m)  // legacy-guard-ok: 放行名单必须认旧域名
   || /^codex@localhost$/i.test(m) || /^pi@bot$/i.test(m) || /^cursoragent@cursor\.com$/i.test(m);
 
 function scanCommitMeta(range) {

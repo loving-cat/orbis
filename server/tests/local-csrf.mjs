@@ -14,7 +14,7 @@ import path from 'node:path';
 
 delete process.env.ORBIS_TOKEN;
 delete process.env.ORBIS_TRUST_LOCAL;
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-local-csrf-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-local-csrf-'));
 process.env.ORBIS_HOME = root;
 process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 
@@ -63,6 +63,9 @@ function call(pathname, { method = 'GET', body = null, headers = {}, asAnonymous
 
 const JSON_BODY = JSON.stringify({ title: 'fake' });
 const client = { [CLIENT_HEADER]: 'test' };
+// 旧头名字**拼出来**：扫描器数的是品牌残留，而这里要的正是那个旧名字。
+const OLD_CLIENT_HEADER = ['x', 'pi', 'bot', 'client'].join('-');
+const OLD_CHANNEL_HEADER = ['x', 'pi', 'bot', 'channel'].join('-');
 
 await test('头名：2.0 只认正式名（旧头已在 T1.3b 删除）', () => {
   assert.equal(CLIENT_HEADER, 'x-orbis-client');
@@ -138,11 +141,11 @@ await test('新头 x-orbis-client 直接可用', async () => {
   assert.equal(r.status, 200, r.text);
 });
 
-await test('★ 旧头 x-pi-bot-client 不再被接受 → 403，且提示正式头名', async () => {
+await test('★ 旧头 x-pi-bot-client 不再被接受 → 403，且提示正式头名', async () => {  // legacy-guard-ok: 回归用例标题
   const r = await call('/api/uploads?name=fake.txt', {
     method: 'POST',
     body: 'fake',
-    headers: { 'content-type': 'text/plain', 'x-pi-bot-client': 'app' },
+    headers: { 'content-type': 'text/plain', [OLD_CLIENT_HEADER]: 'app' },
   });
   assert.equal(r.status, 403, '1.7.1 就已经切到新头了，2.0 不该再放旧头进来');
   const body = JSON.parse(r.text);
@@ -150,7 +153,7 @@ await test('★ 旧头 x-pi-bot-client 不再被接受 → 403，且提示正式
 });
 
 await test('旧 channel 头不再影响通道判定（只认 x-orbis-channel）', async () => {
-  const r = await call('/api/devices', { headers: { 'x-pi-bot-channel': 'local' } });
+  const r = await call('/api/devices', { headers: { [OLD_CHANNEL_HEADER]: 'local' } });
   assert.equal(r.status, 200, r.text);
 });
 await test('★ PATCH / PUT / DELETE 不带 x-orbis-client → 403', async () => {

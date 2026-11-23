@@ -20,7 +20,7 @@ async function test(name, fn) {
   }
 }
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-uploads-'));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-uploads-'));
 
 await test('顺序分片 + 合并，内容一致', async () => {
   const up = new UploadSessions({ dir });

@@ -7,7 +7,7 @@
 
 ---
 
-## 为什么要有 `pibot-sandbox.exe`
+## 为什么要有 `orbis-sandbox.exe`
 
 macOS 用系统自带 `sandbox-exec`，Linux 用 `bwrap`，Node 拼个命令行就完事。
 Windows 没有等价物：
@@ -17,16 +17,16 @@ Windows 没有等价物：
 - 那个块 `child_process.spawn` 填不了（`windowsVerbatimArguments` 也不行，
   它不是命令行参数，是进程创建属性）。
 
-所以仓库里带一个 Rust 启动器：`native/pibot-sandbox/`，产出
-`server/resources/pibot-sandbox.exe`。Node 侧只负责找它、校验版本/哈希、
+所以仓库里带一个 Rust 启动器：`native/orbis-sandbox/`，产出
+`server/resources/orbis-sandbox.exe`。Node 侧只负责找它、校验版本/哈希、
 把命令写成文件、拼参数（`server/src/sandbox-win.js`）。
 
 依赖只有 `windows-sys`（MIT OR Apache-2.0），不引入任何第三方运行时。
 
 ```
-pi-bot server (Node)
+Orbis server (Node)
   └─ sandbox.js  win32 → probeWindowsSandbox() / wrapWindowsCommand()
-        └─ pibot-sandbox.exe run --profile <名> --workdir <目录> --instance <目录>
+        └─ orbis-sandbox.exe run --profile <名> --workdir <目录> --instance <目录>
               --shell powershell --cmd-file <utf8 文件> [--env K=V]...
               ├─ 确保 AppContainer profile（每实例一个，名字由 instanceDir 派生）
               ├─ 给 workdir / instance 加 AppContainer ACE
@@ -80,11 +80,11 @@ icacls C:\ /grant *S-1-15-2-...:(X)   →  C:\: Access is denied.（非管理员
   `%LOCALAPPDATA%\Packages\<profile>\AC\Temp`（系统给 AppContainer 分的私有区，
   天然带 AC SID 的 `(OI)(CI)(M)` 和 Low 标签）。
 - 用户命令前注入一小段引导（`powershell_prologue`）：
-  `New-PSDrive -Name pibot -Root $env:PIBOT_SANDBOX_WORKDIR` + `Set-Location pibot:\`。
+  `New-PSDrive -Name orbis -Root $env:PIBOT_SANDBOX_WORKDIR` + `Set-Location orbis:\`。
   新盘符的根就是工作目录，`Set-Location` 不需要走祖先遍历。
 - 工作目录靠 `PIBOT_SANDBOX_WORKDIR` 交给引导脚本，不靠进程 cwd。
 
-这样之后：`pwd` 是 `pibot:\`，相对路径落在工作目录，`git` / `cmd` / `bash.exe`
+这样之后：`pwd` 是 `orbis:\`，相对路径落在工作目录，`git` / `cmd` / `bash.exe`
 都能起来。**代价**：`[Environment]::CurrentDirectory` 仍是 AC 目录
 （.NET 的 process cwd 变不了），有两套 cwd 概念，写进了
 `sandboxed-shell.js` 的注释里。
@@ -230,7 +230,7 @@ Access denied；补上 `FILE_DELETE_CHILD` 后正常）。
 | `server/src/shells.js` | `run_background` 也走沙箱（原来完全绕过，实测能读到 token）；启动器自己管 cwd/env；cmd 文件收尾清理 |
 | `server/src/store.js` | `deleteBot` 调 `teardownWindowsInstance` 删 profile |
 | `server/src/mcp-access.js` | `sandboxUnavailableMessage` 支持 Windows 机读错误码 |
-| `native/pibot-sandbox/` | 新增 Rust 启动器 |
+| `native/orbis-sandbox/` | 新增 Rust 启动器 |
 | `scripts/build-sandbox-win.ps1` | 新增。编译 + 写 sha256 清单 |
 | `scripts/pack-windows.ps1` | 拷贝 `server/resources/`，缺失时黄字警告 |
 | `server/tests/sandbox-win.mjs` | 新增 21 项单测（跨平台，不需要真沙箱） |
@@ -252,7 +252,7 @@ Access denied；补上 `FILE_DELETE_CHILD` 后正常）。
 - Job 创建、限制设置、关联失败
 - `CreateProcessW` 失败
 
-注意：**工作目录在 `%USERPROFILE%` 下面**是允许的（`~\pi-bot-work` 就是正常用法）。
+注意：**工作目录在 `%USERPROFILE%` 下面**是允许的（`~\Orbis-work` 就是正常用法）。
 只拒「就是保护目录本身」和「是保护目录的祖先」两种 —— 第一版把子目录也拒了，
 结果沙箱在任何真实布局下都开不起来。
 
@@ -261,7 +261,7 @@ Access denied；补上 `FILE_DELETE_CHILD` 后正常）。
 `.config`、`.git-credentials`、`.netrc`、`.npmrc`、`.pypirc`、`.pi`、`.agents`、
 `%APPDATA%\Microsoft\Credentials`、`%APPDATA%\Microsoft\Crypto`、
 `%LOCALAPPDATA%\Google\Chrome\User Data`、`...\Microsoft\Edge\User Data`、
-`...\Mozilla\Firefox`、`...\BraveSoftware`、`...\pi-bot`。
+`...\Mozilla\Firefox`、`...\BraveSoftware`、`...\Orbis`。
 
 > 这条是 review 时补的：第一版只按"整体路径"判，实测 `workDir=~/.ssh`
 > 能通过并成功列出 `config` / `config.bak`。
@@ -285,7 +285,7 @@ Windows 11 22000.2713 真机，`tools/win-sandbox-e2e.mjs` + 手工脚本：
 | 9 | `git --version` / `git init` / `git commit` | ⛔ 失败（AppContainer 无法打开 NUL，见第 7 条） |
 | 9b | `node -v` | ⛔ 未授予（node 在 `D:\NodeJs`，非系统目录） |
 | 10 | 工作目录 = 用户主目录 | ✅ 启动器拒绝（`WORKDIR_IS_PROTECTED`） |
-| 11 | 杀掉 pi-bot / 启动器 | ✅ 沙箱内子进程全部退出（3 秒内） |
+| 11 | 杀掉 Orbis / 启动器 | ✅ 沙箱内子进程全部退出（3 秒内） |
 | 12 | 删除 bot → ACE 被撤销 | ✅ `revokeWindowsGrant()`（调启动器 `revoke`） |
 
 `.git` 防持久化（spec §16）：`.git/hooks` 与 `.git/config` 写 → Access denied；
@@ -391,4 +391,4 @@ worktree 场景下 hooks / config 都在**主仓**里，不在 bot 的工作目�
 7. **每个实例一个 AppContainer profile**，但 profile 的
    `%LOCALAPPDATA%\Packages\<profile>` 目录只在删 bot 时清理。
    开发期反复跑 e2e 会攒下若干 profile（本机实测见过 20 多个），
-   可用 `pibot-sandbox.exe delete-profile --profile <名>` 手工清。
+   可用 `orbis-sandbox.exe delete-profile --profile <名>` 手工清。

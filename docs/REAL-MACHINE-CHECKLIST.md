@@ -19,7 +19,7 @@
 ## 0. 前置
 
 ```bash
-cd D:/pi-bot/server
+cd D:/Orbis/server
 node tests/all.mjs | tail -2        # 期望 157/157
 ```
 

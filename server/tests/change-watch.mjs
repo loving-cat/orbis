@@ -19,7 +19,7 @@ async function test(name, fn) {
   }
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-changes-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-changes-'));
 const write = (rel, body) => {
   const full = path.join(root, rel);
   fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -63,7 +63,7 @@ await test('跳过依赖与构建目录', () => {
 });
 
 await test('大量改动时按上限截断并标记', () => {
-  const many = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-many-'));
+  const many = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-many-'));
   const before = snapshotWorkspace(many);
   for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(many, `f${i}.txt`), 'x');
   const diff = diffSnapshots(before, snapshotWorkspace(many), { limit: 10 });

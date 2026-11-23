@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_bot/server/launcher.dart';
 
-/// 品牌改名（pi-bot → orbis）后，状态目录名怎么选。
+/// 品牌改名（pi-bot → orbis）后，状态目录名怎么选。 —— legacy-guard-ok: 回归用例说明
 ///
 /// 和服务端 `server/src/config.js` 的 `resolveHomeDir` 必须同一套策略：
 /// 新版优先，旧版只在「新版不存在、旧版存在」时沿用。
@@ -18,7 +18,7 @@ void main() {
       expect(name, 'orbis');
     });
 
-    test('★ 只有旧目录存在 → 沿用 pi-bot（老用户零迁移）', () {
+    test('★ 只有旧目录存在 → 沿用 pi-bot（老用户零迁移）', () {  // legacy-guard-ok: 回归用例标题
       final name = resolveStateDirName(
         '/base',
         exists: (p) => p.endsWith('pi-bot'),
@@ -58,7 +58,7 @@ void main() {
         },
       );
       expect(name, 'orbis');
-      // 先问 orbis、再问 pi-bot；两个都以 base 开头（没漏拼接）
+      // 先问 orbis、再问 pi-bot；两个都以 base 开头（没漏拼接） —— legacy-guard-ok: 回归用例说明
       expect(seen.length, 2);
       for (final p in seen) {
         expect(p.startsWith('/base'), isTrue, reason: '拼错了：$p');

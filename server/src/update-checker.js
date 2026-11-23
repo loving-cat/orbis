@@ -7,7 +7,7 @@
  *   · 任何失败都返回 `{ok:false, reason}` 而不是抛错：检查更新失败不该影响主功能；
  *   · 只读不写，不下载、不安装（下载由 App 侧按用户确认后自己去做）。
  *
- * 环境变量（优先 `ORBIS_*`，兼容 `PI_BOT_*`）：
+ * 环境变量（只认 `ORBIS_*`）：
  *   ORBIS_UPDATE_URL    完整 URL（默认 GitHub API 的 latest release）
  *   ORBIS_UPDATE_REPO   仓库 `owner/name`（拼默认 API 地址用）
  */
@@ -253,7 +253,7 @@ export async function checkForUpdate({
   //   "检查更新失败：HTTP 403" —— 用户看到的"经常报错"就是这个。
   //   atom 走网页缓存，不会被打光。
   //
-  //   只有自定义了 PI_BOT_UPDATE_URL 才跳过 atom（那时用户指定了确切地址）。
+  //   只有自定义了 `ORBIS_UPDATE_URL` 才跳过 atom（那时用户指定了确切地址）。
   const atomUrl = atomEndpoint(env);
   if (atomUrl) {
     const atom = await fetchAtom(atomUrl, fetchImpl);

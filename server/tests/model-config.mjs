@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-model-config-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-model-config-'));
 const inherited = new Set(['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT']);
 for (const name of Object.keys(process.env)) {
   if (!inherited.has(name)) delete process.env[name];

@@ -8,10 +8,10 @@
 ///
 /// ## 三条规则
 ///
-/// 1. 偏好端口上已经是**健康的本机 pi-bot** → 直接复用，不新起进程；
-/// 2. 偏好端口被别的程序占着 / 连得上但不是 pi-bot / 没权限 → 从它的**下一个**
+/// 1. 偏好端口上已经是**健康的本机 Orbis** → 直接复用，不新起进程；
+/// 2. 偏好端口被别的程序占着 / 连得上但不是 Orbis / 没权限 → 从它的**下一个**
 ///    开始往后找，最多 20 个（如 8787–8806）；
-/// 3. 只复用「偏好端口上的」那一个。邻口就算也是 pi-bot 也当占用跳过 ——
+/// 3. 只复用「偏好端口上的」那一个。邻口就算也是 Orbis 也当占用跳过 ——
 ///    连到别人的实例比多开一个更糟（数据目录不同，用户会看到「消息丢了」）。
 ///
 /// 不做「锁定端口」开关，也不用端口 0（系统随机分配）：配对地址必须是
@@ -49,7 +49,7 @@ class PortChoice {
   /// 最终要用的端口。复用已有服务端时它就是那个实例的端口。
   final int port;
 
-  /// 该端口上已经有一个健康的本机 pi-bot，不需要新起进程。
+  /// 该端口上已经有一个健康的本机 Orbis，不需要新起进程。
   final bool reused;
 
   /// 给人看的一句话提示（换端口时才有），例如「8787 被占用，已改用 8788」。
@@ -64,10 +64,10 @@ enum PortProbeKind {
   /// 空着，可以起服务端。
   free,
 
-  /// 已经是健康的本机 pi-bot，可以复用。
-  piBot,
+  /// 已经是健康的本机 Orbis，可以复用。
+  orbis,
 
-  /// 能连上，但不是 pi-bot（别的程序）。
+  /// 能连上，但不是 Orbis（别的程序）。
   occupied,
 
   /// 连不上也没有权限（EACCES 之类的预兆）。
@@ -76,7 +76,7 @@ enum PortProbeKind {
 
 /// 判断一个端口当前的情况。
 ///
-/// 「健康的本机 pi-bot」判定复用 /health（与整个应用一致）：
+/// 「健康的本机 Orbis」判定复用 /health（与整个应用一致）：
 /// 必须 ok + serverName + version 齐全，避免把别的服务认成自己。
 ///
 /// ★ 判定 free 必须**试绑一次**，不能只看「连不上」。
@@ -98,7 +98,7 @@ Future<PortProbeKind> probePort(
       'http://127.0.0.1:$port',
       timeout: timeout,
     );
-    return alive ? PortProbeKind.piBot : PortProbeKind.occupied;
+    return alive ? PortProbeKind.orbis : PortProbeKind.occupied;
   }
 
   // 连不上：再确认一次是真的空着，还是没权限绑。
@@ -122,14 +122,14 @@ Future<PortProbeKind> probePort(
 
 /// 从 [preferred] 开始挑一个可用端口。
 ///
-/// - 偏好端口上是健康 pi-bot → 复用（reused: true）；
+/// - 偏好端口上是健康 Orbis → 复用（reused: true）；
 /// - 否则从偏好端口的下一个起往后找最多 [kMaxPortProbeAttempts] 个空端口；
 /// - 全都不可用 → 返回带 problem 的结果（调用方据此给出可读失败原因）。
 ///
-/// 注意：**邻口上的 pi-bot 不复用**，继续往后找 —— 只信任偏好端口那一个实例。
-/// 从 [preferred] 起挑一个**空闲**端口（不复用邻口的 pi-bot）。
+/// 注意：**邻口上的 Orbis 不复用**，继续往后找 —— 只信任偏好端口那一个实例。
+/// 从 [preferred] 起挑一个**空闲**端口（不复用邻口的 Orbis）。
 ///
-/// 给"加密监听"用：那条腿没有复用语义 —— 邻口上就算有别的 pi-bot，
+/// 给"加密监听"用：那条腿没有复用语义 —— 邻口上就算有别的 Orbis，
 /// 我们也必须自己绑一个新的，不能把手机的加密连接指到别的实例上。
 ///
 /// @returns 空闲端口；一个都没找到时返回 null（调用方让服务端用默认值即可，
@@ -143,7 +143,7 @@ Future<int?> chooseFreePort(
   for (var i = 0; i <= maxAttempts; i++) {
     final candidate = preferred + i;
     if (candidate > 65535) break;
-    // 只认 free：piBot / occupied / blocked 全跳过
+    // 只认 free：orbis / occupied / blocked 全跳过
     if (await check(candidate) == PortProbeKind.free) return candidate;
   }
   return null;
@@ -157,7 +157,7 @@ Future<PortChoice> choosePort(
   final check = probe ?? probePort;
 
   final first = await check(preferred);
-  if (first == PortProbeKind.piBot) {
+  if (first == PortProbeKind.orbis) {
     return PortChoice(port: preferred, reused: true);
   }
   // 偏好端口本来就空着 → 直接用它，没必要往后扫
@@ -182,9 +182,9 @@ Future<PortChoice> choosePort(
         notice: '$preferred $firstWhy，已改用 $candidate',
       );
     }
-    // 邻口上的 pi-bot 也不复用（见文件头第 3 条），当作占用记下
-    if (kind == PortProbeKind.piBot) {
-      tried.add('$candidate（也是另一个 pi-bot 实例）');
+    // 邻口上的 Orbis 也不复用（见文件头第 3 条），当作占用记下
+    if (kind == PortProbeKind.orbis) {
+      tried.add('$candidate（也是另一个 Orbis 实例）');
     } else if (kind == PortProbeKind.occupied) {
       tried.add('$candidate（被占用）');
     } else {

@@ -42,7 +42,7 @@ const String _windowsReadScript =
     "Add-Type -AssemblyName System.Drawing;"
     r'$img=[System.Windows.Forms.Clipboard]::GetImage();'
     r'if($img -ne $null){'
-    r'$p=Join-Path $env:TEMP ("pi-bot-paste-"+[guid]::NewGuid().ToString("N")+".png");'
+    r'$p=Join-Path $env:TEMP ("orbis-paste-"+[guid]::NewGuid().ToString("N")+".png");'
     r'$img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png);'
     r'$img.Dispose();'
     r'Write-Output $p'

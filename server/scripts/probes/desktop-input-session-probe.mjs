@@ -21,7 +21,7 @@ const fg = m.foregroundTitle();
 console.log('foreground:', JSON.stringify(fg));
 
 // 3. 输入一段带中文与特殊字符的文字（测剪贴板路径 + 转义）
-const text = 'pi-bot 输入测试 ✅ $HOME `backtick` "quoted" 结束';
+const text = 'Orbis 输入测试 ✅ $HOME `backtick` "quoted" 结束';
 const typed = m.performAction({ action: 'type_text', text });
 console.log('type_text:', JSON.stringify(typed).slice(0, 200));
 await new Promise(r => setTimeout(r, 500));

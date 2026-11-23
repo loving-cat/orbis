@@ -6,13 +6,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_bot/server/health.dart';
 import 'package:pi_bot/server/launcher.dart';
 
-const _healthy = '{"ok":true,"serverName":"pi-bot","version":"1.1.0"}';
+const _healthy = '{"ok":true,"serverName":"Orbis","version":"1.1.0"}';
 
 void main() {
   test('健康响应接受完整身份、自定义服务名称与额外字段', () {
-    expect(isPiBotHealthResponse(_healthy), isTrue);
+    expect(isOrbisHealthResponse(_healthy), isTrue);
     expect(
-      isPiBotHealthResponse(
+      isOrbisHealthResponse(
         jsonEncode({
           'ok': true,
           'serverName': '我的服务端',
@@ -28,21 +28,21 @@ void main() {
     '外部服务的 status ok': '{"status":"ok"}',
     '只有成功标记': '{"ok":true}',
     '缺少名称': '{"ok":true,"version":"1.1.0"}',
-    '缺少版本': '{"ok":true,"serverName":"pi-bot"}',
+    '缺少版本': '{"ok":true,"serverName":"Orbis"}',
     '损坏 JSON': '{"ok":',
     'JSON 数组': '[]',
     'JSON 字符串': '"ok"',
     'JSON null': 'null',
-    '失败标记': '{"ok":false,"serverName":"pi-bot","version":"1.1.0"}',
-    '字符串成功标记': '{"ok":"true","serverName":"pi-bot","version":"1.1.0"}',
+    '失败标记': '{"ok":false,"serverName":"Orbis","version":"1.1.0"}',
+    '字符串成功标记': '{"ok":"true","serverName":"Orbis","version":"1.1.0"}',
     '非字符串名称': '{"ok":true,"serverName":123,"version":"1.1.0"}',
     '空名称': '{"ok":true,"serverName":"  ","version":"1.1.0"}',
-    '非字符串版本': '{"ok":true,"serverName":"pi-bot","version":1}',
-    '空版本': '{"ok":true,"serverName":"pi-bot","version":"  "}',
+    '非字符串版本': '{"ok":true,"serverName":"Orbis","version":1}',
+    '空版本': '{"ok":true,"serverName":"Orbis","version":"  "}',
   };
   for (final entry in invalid.entries) {
     test('健康响应拒绝${entry.key}', () {
-      expect(isPiBotHealthResponse(entry.value), isFalse);
+      expect(isOrbisHealthResponse(entry.value), isFalse);
     });
   }
 
@@ -50,13 +50,13 @@ void main() {
     test('auth=token 才算要 token', () {
       expect(
         healthRequiresToken(
-          '{"ok":true,"serverName":"pi-bot","version":"1.3.0","auth":"token"}',
+          '{"ok":true,"serverName":"Orbis","version":"1.3.0","auth":"token"}',
         ),
         isTrue,
       );
       expect(
         healthRequiresToken(
-          '{"ok":true,"serverName":"pi-bot","version":"1.3.0","auth":"local"}',
+          '{"ok":true,"serverName":"Orbis","version":"1.3.0","auth":"local"}',
         ),
         isFalse,
       );
@@ -90,7 +90,7 @@ void main() {
         ]),
       );
       expect(body!.length, maxHealthResponseBytes);
-      expect(isPiBotHealthResponse(body), isTrue);
+      expect(isOrbisHealthResponse(body), isTrue);
     });
 
     test('超过原始字节上限立即停止消费后续块', () async {
@@ -160,7 +160,7 @@ void main() {
       server.listen((request) {
         request.response.headers.contentType = ContentType.json;
         request.response.write(
-          '{"ok":true,"serverName":"pi-bot","version":"1.3.0","auth":"token"}',
+          '{"ok":true,"serverName":"Orbis","version":"1.3.0","auth":"token"}',
         );
         unawaited(request.response.close());
       });
@@ -171,14 +171,14 @@ void main() {
       server.listen((request) {
         request.response.headers.contentType = ContentType.json;
         request.response.write(
-          '{"ok":true,"serverName":"pi-bot","version":"1.3.0","auth":"local"}',
+          '{"ok":true,"serverName":"Orbis","version":"1.3.0","auth":"local"}',
         );
         unawaited(request.response.close());
       });
       expect(await localServerRequiresToken(url()), isFalse);
     });
 
-    test('不是 pi-bot 的服务就算写了 auth=token 也不算', () async {
+    test('不是 Orbis 的服务就算写了 auth=token 也不算', () async {
       server.listen((request) {
         request.response.write('{"auth":"token"}');
         unawaited(request.response.close());

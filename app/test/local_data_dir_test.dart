@@ -1,7 +1,7 @@
 // 回归：桌面端与服务端必须用同一个默认数据目录。
 //
 // 这个 bug 只有在**真机**上才看得出来（Windows 上 Local 与 Roaming 是两个
-// 不同的目录，但代码里都写成「AppData 下的 pi-bot」），所以测试直接对着
+// 不同的目录，但代码里都写成「AppData 下的 Orbis」），所以测试直接对着
 // 服务端的 config.js 比一遍，而不是硬编码期望值。
 import 'dart:io';
 
@@ -13,7 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 Future<String?> _serverDefaultDataDir() async {
   final serverDir = Directory('../server').absolute.path;
   if (!File('$serverDir/src/config.js').existsSync()) return null;
-  final node = Platform.environment['PI_BOT_TEST_NODE'] ?? 'node';
+  final node = Platform.environment['ORBIS_TEST_NODE'] ?? 'node';
   try {
     final res = await Process.run(
       node,

@@ -15,10 +15,10 @@
 ;   另外传一个纯数字的 /DAppFileVersion。
 ;
 ; 2026-11-19 品牌统一：安装目录改到 Programs\Orbis（AppId 不变，升级会替换旧安装）。
-; 用户数据目录仍是 %LOCALAPPDATA%\pi-bot（服务端优先用 orbis，老目录存在就继续沿用），
+; 用户数据目录仍是 %LOCALAPPDATA%\pi-bot（服务端优先用 orbis，老目录存在就继续沿用）， —— legacy-guard-ok: 安装器注释讲旧目录
 ; 安装器不碰那里，所以升级后配对与聊天记录都在。
 ; Install target is per-user (%LOCALAPPDATA%\Programs\Orbis), so it never asks
-; for admin rights. Runtime state lives in %LOCALAPPDATA%\pi-bot (legacy) or \orbis, which this
+; for admin rights. Runtime state lives in %LOCALAPPDATA%\pi-bot (legacy) or \orbis, which this —— legacy-guard-ok: 安装器注释讲旧目录
 ; installer does not touch, so upgrading keeps pairings and the data directory.
 ;
 ; This file is UTF-8 with BOM: the [CustomMessages] block below is Chinese.
@@ -110,14 +110,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Nothing here belongs to the user's data: that lives in %LOCALAPPDATA%\orbis (or the legacy \pi-bot)
+; Nothing here belongs to the user's data: that lives in %LOCALAPPDATA%\orbis (or the legacy \pi-bot) —— legacy-guard-ok: 安装器注释讲旧目录
 ; and is intentionally left behind so a reinstall keeps pairings and history.
 
 [Code]
 const
-  SERVER_PID_NAMES = 'orbis\server.pid;pi-bot\server.pid';
+  SERVER_PID_NAMES = 'orbis\server.pid;Orbis\server.pid';
 
-{ Stop the local server recorded in %LOCALAPPDATA%\pi-bot\server.pid.
+{ Stop the local server recorded in %LOCALAPPDATA%\Orbis\server.pid.
 
   The GUI spawns node through a helper script and does not own the child
   process: quitting orbis.exe leaves node running, and node.exe sits inside
@@ -140,10 +140,10 @@ var
   Script: String;
   ResultCode: Integer;
 begin
-  { 2026-11-19 品牌统一后新用户的数据目录是 orbis，老用户还在 pi-bot；两个都看。 }
+  { 2026-11-19 品牌统一后新用户的数据目录是 orbis，老用户还在 pi-bot；两个都看。 legacy-guard-ok: 安装器注释讲旧目录 }
   PidPath := ExpandConstant('{localappdata}') + '\orbis\server.pid';
   if not FileExists(PidPath) then
-    PidPath := ExpandConstant('{localappdata}') + '\pi-bot\server.pid';
+    PidPath := ExpandConstant('{localappdata}') + '\Orbis\server.pid';
   if not FileExists(PidPath) then
     exit;
   if not LoadStringFromFile(PidPath, PidText) then
@@ -152,7 +152,7 @@ begin
   if Pid <= 0 then
     exit;
 
-  ScriptPath := ExpandConstant('{tmp}\pi-bot-stop-server.bat');
+  ScriptPath := ExpandConstant('{tmp}\Orbis-stop-server.bat');
   Script :=
     '@echo off' + #13#10 +
     'tasklist /FI "PID eq ' + IntToStr(Pid) + '" /NH | find /I "node.exe" >nul' + #13#10 +

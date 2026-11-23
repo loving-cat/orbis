@@ -21,7 +21,7 @@ $log = Join-Path $env:TEMP 'pib-drag-log.txt'
 Set-Content -Path $log -Value 'ready' -Encoding UTF8
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'pi-bot drag target'
+$form.Text = 'Orbis drag target'
 $form.StartPosition = 'Manual'
 # 固定位置 + 置顶：探针按死坐标算，不依赖窗口管理器
 $form.Location = New-Object System.Drawing.Point(200, 150)

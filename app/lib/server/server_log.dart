@@ -10,7 +10,7 @@ import 'package:flutter/foundation.dart';
 class ServerLog {
   ServerLog(this.file);
 
-  /// `%LOCALAPPDATA%\pi-bot\server.log`（或临时目录下的同名文件）
+  /// `%LOCALAPPDATA%\Orbis\server.log`（或临时目录下的同名文件）
   final File file;
 
   /// 只保留最近这么多行给界面

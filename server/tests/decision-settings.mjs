@@ -6,7 +6,7 @@ import path from 'node:path';
 
 // 决策设置存在 state.json 里，key 要加密。
 // 这个测试用临时目录，不碰真实的 ~/Library/... 数据。
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-decision-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-decision-'));
 process.env.ORBIS_HOME = tmp;
 
 const { Store, DECISION_DEFAULT, normalizeDecision } = await import('../src/store.js');

@@ -59,8 +59,8 @@ void main() {
     test('不是我们的包 / 不是 JSON 一律丢掉', () {
       expect(parseAnnouncement('hello'), isNull);
       expect(parseAnnouncement('{"t":"orbis.discover"}'), isNull);
-      expect(parseAnnouncement('{"t":"pibot.discover"}'), isNull);
-      expect(parseAnnouncement('{"t":"pibot.host"'), isNull);
+      expect(parseAnnouncement('{"t":"orbis.discover"}'), isNull);
+      expect(parseAnnouncement('{"t":"orbis.host"'), isNull);
     });
 
     test('没有地址也没有机器名 → 丢掉（点不了的条目不该出现在列表里）', () {

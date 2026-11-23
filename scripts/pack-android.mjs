@@ -46,7 +46,7 @@ export const APP_ID = 'com.pibot.pi_bot';
  *
  * v1.0.3 / v1.0.5 / v1.0.6 三版实测同一个 SHA-256，所以老用户能原地升级。
  * **换机器构建、或换 keystore，指纹就会变** —— 已装用户的 android 包只会报
- * INSTALL_FAILED_UPDATE_INCOMPATIBLE，装在手机上的 pi-bot 永远升不上来。
+ * INSTALL_FAILED_UPDATE_INCOMPATIBLE，装在手机上的 Orbis 永远升不上来。
  * 真要换签名（正式分发到应用市场那种），改这里，并在 docs/ANDROID.md 写清楚"
  * 老用户要先卸载"。
  */

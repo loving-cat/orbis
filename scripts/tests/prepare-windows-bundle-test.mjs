@@ -12,7 +12,7 @@ import {
 } from '../prepare-windows-bundle.mjs';
 import { fileContainsMarkers, markerVariants } from '../scan-release-tree.mjs';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-win-bundle-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-win-bundle-'));
 const home = 'C:\\Users\\example';
 const otherHome = 'D:\\Other\\home';
 let passed = 0;
@@ -348,10 +348,10 @@ try {
   });
 
   // ★ 构建根路径会以编译期字符串留在 app.so / 插件 dll 里，调试路径改写碰不到它们。
-  const BUILD_ROOT = 'D:\\.pi-bot-build\\orbis-windows-build-abc12345';
+  const BUILD_ROOT = 'D:\\.Orbis-build\\orbis-windows-build-abc12345';
   test('构建根占位串本身不含盘符目录与用户名', () => {
     assert.equal(BUILD_ROOT_PLACEHOLDER.includes('Users'), false);
-    assert.equal(BUILD_ROOT_PLACEHOLDER.includes('.pi-bot'), false);
+    assert.equal(BUILD_ROOT_PLACEHOLDER.includes('.Orbis'), false);
   });
   test('构建根的各种写法都收得到，长的先换', () => {
     const needles = buildRootNeedles(BUILD_ROOT);
@@ -369,26 +369,26 @@ try {
     // 基目录候选直接丢失，三条变六条的断言在 Linux 上红（3 !== 6）。
     const needles = buildRootNeedles(BUILD_ROOT);
     assert.ok(
-      needles.some((n) => n.endsWith('.pi-bot-build')),
+      needles.some((n) => n.endsWith('.Orbis-build')),
       `必须收得到基目录（不依赖宿主平台），实际：${JSON.stringify(needles)}`,
     );
     assert.ok(
-      needles.some((n) => n.includes('D:/.pi-bot-build')),
+      needles.some((n) => n.includes('D:/.Orbis-build')),
       '基目录的正斜杠写法也要在（app.so 里就是这种）',
     );
     // 盘符根不该被当成可用的父级
     assert.deepEqual(buildRootNeedles('D:\\x'), ['D:\\x', 'D:/x', 'D:\\\\x'].sort((a, b) => b.length - a.length));
   });
   test('★ 回归：app.so 里的 file:/// URI 用的是基目录，不带运行 id', () => {
-    // 真实踩到的形态：pack 传的是 …/.pi-bot-build/orbis-windows-build-<id>，
-    // 而 app.so 里是 file:///D:/.pi-bot-build/ —— 必须能换掉基目录那一层。
+    // 真实踩到的形态：pack 传的是 …/.Orbis-build/orbis-windows-build-<id>，
+    // 而 app.so 里是 file:///D:/.Orbis-build/ —— 必须能换掉基目录那一层。
     const sample = Buffer.from(
-      'x file:///D:/.pi-bot-build/orbis-windows-build-abc12345/app/.dart_tool/flutter y',
+      'x file:///D:/.Orbis-build/orbis-windows-build-abc12345/app/.dart_tool/flutter y',
       'utf8',
     );
     const { buffer, rewritten } = rewriteBuildRootPaths(sample, BUILD_ROOT);
     assert.equal(buffer.length, sample.length, '等长替换');
-    assert.equal(buffer.includes(Buffer.from('D:/.pi-bot-build')), false, '基目录必须被换掉');
+    assert.equal(buffer.includes(Buffer.from('D:/.Orbis-build')), false, '基目录必须被换掉');
     assert.equal(buffer.includes(Buffer.from('abc12345')), false, '运行 id 也必须被换掉');
     assert.ok(rewritten >= 1);
   });

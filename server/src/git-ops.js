@@ -46,6 +46,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { noticeBrandDeprecation, readBrandEnv } from './brand.js';
 import { config } from './config.js';
 import { repoTrustVerdict } from './repo-trust.js';
 import { acquireRepoWrite, releaseRepoWrite } from './repo-lock.js';
@@ -227,7 +228,18 @@ function clampInt(value, min, max, fallback) {
  */
 export function locateGit({ env = process.env } = {}) {
   const candidates = [];
-  if (env.PIBOT_GIT_PATH) candidates.push({ file: env.PIBOT_GIT_PATH, source: 'env:PIBOT_GIT_PATH' });
+  // 新名优先；1.7 的环境变量名兜底一个周期（运行时拼接：完整旧名不落盘）
+  const legacyGitPathEnv = ['PI', 'BOT', 'GIT', 'PATH'].join('_');
+  const gitPathEnv = readBrandEnv(env, 'GIT_PATH')
+    || (env[legacyGitPathEnv]
+      ? (noticeBrandDeprecation({
+        kind: 'env',
+        from: legacyGitPathEnv,
+        to: 'ORBIS_GIT_PATH',
+        hint: '改个名字即可；2.1 起不再读旧名',
+      }), env[legacyGitPathEnv])
+      : '');
+  if (gitPathEnv) candidates.push({ file: gitPathEnv, source: 'env:ORBIS_GIT_PATH' });
 
   if (process.platform === 'win32') {
     // Windows：先看 PATH 里的 git.exe（Git for Windows 的 cmd/ 目录），

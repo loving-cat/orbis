@@ -73,7 +73,7 @@ raw(['init', '-q', '-b', 'main']);
 // ★ CI runner 上没有全局 user.name/email，git commit 会以 128 失败。
 //   真实仓库里一定有这条配置，所以在临时仓库里配一份 ——
 //   否则测的不是"适配器能不能提交"，而是"这台机器有没有全局 git 身份"。
-raw(['config', 'user.name', 'pi-bot-test']);
+raw(['config', 'user.name', 'Orbis-test']);
 raw(['config', 'user.email', 'test@local']);
 // ★ 仓库级 hooksPath：隔离本机的全局 `core.hooksPath`。
 //

@@ -123,7 +123,7 @@ Future<void> main() async {
     windowManager.addListener(saver);
   }
 
-  runApp(const PiBotApp());
+  runApp(const OrbisApp());
 }
 
 const _kWindowBounds = 'window_bounds';
@@ -180,14 +180,14 @@ class _WindowSaver with WindowListener {
   }
 }
 
-class PiBotApp extends StatefulWidget {
-  const PiBotApp({super.key});
+class OrbisApp extends StatefulWidget {
+  const OrbisApp({super.key});
 
   @override
-  State<PiBotApp> createState() => _PiBotAppState();
+  State<OrbisApp> createState() => _OrbisAppState();
 }
 
-class _PiBotAppState extends State<PiBotApp> with WidgetsBindingObserver {
+class _OrbisAppState extends State<OrbisApp> with WidgetsBindingObserver {
   final AppState _state = AppState();
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
 
@@ -349,23 +349,23 @@ class _PiBotAppState extends State<PiBotApp> with WidgetsBindingObserver {
       controller: _locale,
       child: AppScope(
         state: _state,
-        child: PiBotThemedApplication(navigatorKey: _navKey),
+        child: OrbisThemedApplication(navigatorKey: _navKey),
       ),
     );
   }
 }
 
 /// 主控颜色变化时替换主题；流式通知继续复用应用和导航实例。
-class PiBotThemedApplication extends StatefulWidget {
-  const PiBotThemedApplication({super.key, required this.navigatorKey});
+class OrbisThemedApplication extends StatefulWidget {
+  const OrbisThemedApplication({super.key, required this.navigatorKey});
 
   final GlobalKey<NavigatorState> navigatorKey;
 
   @override
-  State<PiBotThemedApplication> createState() => _PiBotThemedApplicationState();
+  State<OrbisThemedApplication> createState() => _OrbisThemedApplicationState();
 }
 
-class _PiBotThemedApplicationState extends State<PiBotThemedApplication> {
+class _OrbisThemedApplicationState extends State<OrbisThemedApplication> {
   int? _seedValue;
   late ThemeData _theme;
   Widget? _application;
@@ -428,7 +428,7 @@ class _PiBotThemedApplicationState extends State<PiBotThemedApplication> {
   }
 
   @override
-  void didUpdateWidget(covariant PiBotThemedApplication oldWidget) {
+  void didUpdateWidget(covariant OrbisThemedApplication oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.navigatorKey != widget.navigatorKey) _application = null;
   }

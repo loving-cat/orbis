@@ -3,7 +3,7 @@
  *
  * 盯的是"用户明明装过却看不见"和"导入把用户配置改坏了"这两类问题：
  *   · frontmatter 的 YAML 多行写法（`description: >`）解析错 → 摘要变成 ">"
- *   · 扫描时写文件 → 用户终端里的 pi 配置被 pi-bot 改掉
+ *   · 扫描时写文件 → 用户终端里的 pi 配置被 Orbis 改掉
  *   · 导入时同名覆盖 → 用户自己调过的 skill 被冲掉
  */
 import assert from 'node:assert/strict';
@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-local-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-local-'));
 const agentDir = path.join(root, 'agent');
 const skillsDir = path.join(agentDir, 'skills');
 fs.mkdirSync(skillsDir, { recursive: true });

@@ -223,7 +223,7 @@ export const LOCAL_DEVICE = {
  * 浏览器跨站发自定义头必须先过 CORS 预检，而本服务从不放行预检，
  * 所以恶意网页伪造不了它（text/plain 表单、no-cors fetch 都带不上）。
  */
-// ★ 2.0（T1.3b）：旧头 `x-pi-bot-*` 已删，只认正式名。
+// ★ 2.0（T1.3b）：旧头 `x-pi-bot-*` 已删，只认正式名。 —— legacy-guard-ok: 讲 1.7 的历史
 //   1.7.1 的 App 早就切到 `x-orbis-*` 了（那时的过渡告警就是为了这次删除）。
 export const CLIENT_HEADER = 'x-orbis-client';
 /** nonce 与通道头（都在同一个删除批次里） */

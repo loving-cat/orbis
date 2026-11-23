@@ -60,7 +60,7 @@ await test('别把 "0" 当成开', () => {
 
 /** 造一个"像用户家目录"的 agentDir：一个扩展 + 一个 skill */
 function makeAgentDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-res-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-res-'));
   const extDir = path.join(dir, 'extensions', 'noisy');
   fs.mkdirSync(extDir, { recursive: true });
   fs.writeFileSync(
@@ -77,7 +77,7 @@ function makeAgentDir() {
 }
 
 const agentDir = makeAgentDir();
-const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-cwd-'));
+const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-cwd-'));
 
 async function loadWith(options) {
   const loader = new DefaultResourceLoader({ cwd, agentDir, ...options });

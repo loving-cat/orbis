@@ -92,12 +92,12 @@ HTML 附件在两种阅读位置都使用独立离线预览策略。客户端和
 
 | 位置 | 说明 |
 |---|---|
-| `server/src/config.js` | macOS 默认数据目录为 `~/Library/Application Support/pi-bot/data` |
+| `server/src/config.js` | macOS 默认数据目录为 `~/Library/Application Support/Orbis/data` |
 | `app/lib/server/locate.dart` | 查找 App Resources 中的服务端；Node 支持用户设置、环境变量、应用目录、PATH 与 macOS 常见安装目录 |
 | `app/lib/server/health.dart` | 限制健康响应大小，校验成功标记、服务名和版本 |
 | `app/lib/server/spawn_posix.dart` | 独立进程组启动服务端，标准输出直接写日志，释放辅助进程 |
 | `app/lib/server/supervisor.dart` | Windows 与 POSIX 分流启动、停止和 PID 管理 |
-| `app/lib/server/launcher.dart` | 启动编排；macOS 状态与日志保存在 `~/Library/Application Support/pi-bot` |
+| `app/lib/server/launcher.dart` | 启动编排；macOS 状态与日志保存在 `~/Library/Application Support/Orbis` |
 | `app/lib/clipboard_image_macos.dart` | 使用系统 `osascript` 与 AppKit 读取 PNG，支持 TIFF 转 PNG；读取完成或失败后清理私有临时目录 |
 | `app/lib/widgets/server_config_section.dart` | 正常设置页与启动失败页共用启动配置入口，可修改端口、数据目录、服务端入口和 Node 路径 |
 | 模型配置 | Windows/macOS 共用独立模型卡片，每个模型分别编辑 ID、显示名、上下文窗口与最大输出 |
@@ -214,7 +214,7 @@ GitHub 会重定向旧地址）。Mac 上的影响面只有三处，且都带兼
 
 | 项 | 变化 | 兼容策略 |
 |---|---|---|
-| App 名 | `pi-bot.app` → `Orbis.app` | `pack-macos.sh` 两种构建名都认 |
+| App 名 | `Orbis.app` → `Orbis.app` | `pack-macos.sh` 两种构建名都认 |
 | DMG | `pi-bot-<版本>.dmg` → `orbis-<版本>.dmg` | 旧产物留在 `dist/` 不自动删 |
 | 用户目录 | `~/Library/Application Support/pi-bot` → `.../orbis` | 新目录优先；`orbis` 不存在而 `pi-bot` 存在时**沿用旧的** |
 
@@ -245,7 +245,7 @@ pid 分叉尤其麻烦 —— 会出现「服务端在跑、App 以为自己没�
 curl -s http://127.0.0.1:18787/health | python3 -m json.tool | head -8
 # 期望：serverName 变成 "Orbis"，version 是新版本，
 #       rooms/bots/messages 数量与升级前一致（数据沿用了旧目录）
-ls -d ~/Library/Application\ Support/pi-bot ~/Library/Application\ Support/orbis 2>/dev/null
+ls -d ~/Library/Application\ Support/Orbis ~/Library/Application\ Support/orbis 2>/dev/null
 # 老用户：只有 pi-bot；新装用户：只有 orbis
 ```
 

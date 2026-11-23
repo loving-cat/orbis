@@ -255,7 +255,7 @@ Future<DownloadResult> downloadUpdate(
 
     final name = info.assetName.isNotEmpty
         ? info.assetName
-        : 'pi-bot-${info.latest}${_extOf(info.assetUrl)}';
+        : 'Orbis-${info.latest}${_extOf(info.assetUrl)}';
     final path = await saveAttachment(name: name, bytes: bytes);
     if (path == null)
       return DownloadResult(error: strings.t('update.cancelled'));
@@ -332,7 +332,7 @@ Future<List<int>> defaultUpdateFetcher(
     );
 
     final req = await client.getUrl(Uri.parse(url));
-    req.headers.set('user-agent', 'pi-bot-updater');
+    req.headers.set('user-agent', 'Orbis-updater');
     final res = await req.close();
     if (res.statusCode != 200) {
       throw _UpdateHttpStatus(res.statusCode);

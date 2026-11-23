@@ -8,7 +8,7 @@ class AppDelegate: FlutterAppDelegate {
   override func applicationDidFinishLaunching(_ notification: Notification) {
     activityToken = ProcessInfo.processInfo.beginActivity(
       options: .userInitiatedAllowingIdleSystemSleep,
-      reason: "Keep local pi-bot WebSocket and UI responsive while window is occluded"
+      reason: "Keep local Orbis WebSocket and UI responsive while window is occluded"
     )
     super.applicationDidFinishLaunching(notification)
   }

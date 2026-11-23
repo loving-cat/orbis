@@ -2,8 +2,8 @@
 ///
 /// 协议（和 `server/src/discovery.js` 一一对应，改一边必须改另一边）：
 ///
-///   App  → 广播 UDP :  {"t":"pibot.discover","v":1}
-///   主机 → 单播应答  :  {"t":"pibot.host","v":1,"name":…,"hostname":…,
+///   App  → 广播 UDP :  {"t":"orbis.discover","v":1}
+///   主机 → 单播应答  :  {"t":"orbis.host","v":1,"name":…,"hostname":…,
 ///                       "version":…,"port":8787,"urls":[…],"pairing":true}
 ///
 /// 为什么不用扫码/手抄 IP：扫码在真机上相机起不来（见 pair_screen 的注释），
@@ -16,7 +16,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-/// 服务端默认的发现端口（`PI_BOT_DISCOVERY_PORT`）。
+/// 服务端默认的发现端口（`ORBIS_DISCOVERY_PORT`）。
 const int kDiscoveryPort = 8788;
 
 /// 探针/应答的类型标记。
@@ -31,7 +31,7 @@ const String kLegacyAnnounceType = 'pibot.host';
 const List<String> kProbeTypes = [kProbeType, kLegacyProbeType];
 const List<String> kAnnounceTypes = [kAnnounceType, kLegacyAnnounceType];
 
-/// 局域网里应答的一台 pi-bot 主机。
+/// 局域网里应答的一台 Orbis 主机。
 class DiscoveredHost {
   const DiscoveredHost({
     required this.name,
@@ -45,10 +45,10 @@ class DiscoveredHost {
     this.fingerprint = '',
   });
 
-  /// 用户给这台主机起的名字（`PI_BOT_NAME`，默认 "pi-bot"）
+  /// 用户给这台主机起的名字（`ORBIS_NAME`，默认 "Orbis"）
   final String name;
 
-  /// 机器名：同一个 Wi-Fi 下有两台 pi-bot 时靠它区分
+  /// 机器名：同一个 Wi-Fi 下有两台 Orbis 时靠它区分
   final String hostname;
 
   final String version;
@@ -72,7 +72,7 @@ class DiscoveredHost {
   /// 是不是走加密链路
   bool get secure => tlsPort > 0 && fingerprint.isNotEmpty;
 
-  /// 列表里显示什么：机器名比 "pi-bot" 有用（两台都是 pi-bot 时只能靠它）
+  /// 列表里显示什么：机器名比 "Orbis" 有用（两台都是 Orbis 时只能靠它）
   String get label => hostname.trim().isNotEmpty ? hostname : name;
 
   /// 从哪个地址连。加密优先：服务端开了 TLS 就给 https，否则退回 http。

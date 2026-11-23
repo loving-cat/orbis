@@ -4,7 +4,7 @@
 #
 # Writes "<key>=<value>" lines to -Out. Expected on Windows 11: SendInput refused,
 # SetCursorPos refused, and this desktop's own cursor is separate from the user's.
-param([string]$Out = "$env:TEMP\pibot-island-probe\island-input-check.txt")
+param([string]$Out = "$env:TEMP\orbis-island-probe\island-input-check.txt")
 
 $ErrorActionPreference = 'Stop'
 Add-Type @'

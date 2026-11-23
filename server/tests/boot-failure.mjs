@@ -30,7 +30,7 @@ async function test(name, fn) {
   }
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-boot-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-boot-'));
 const serverDir = fileURLToPath(new URL('..', import.meta.url));
 
 /** 起一个占位服务，拿到端口 */
@@ -40,7 +40,7 @@ async function occupyPort() {
   return { server, port: server.address().port };
 }
 
-/** 跑一次 pi-bot 启动，返回 {code, output} */
+/** 跑一次 Orbis 启动，返回 {code, output} */
 function boot({ port, timeoutMs = 15000, env = {} }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['src/index.js'], {

@@ -6,7 +6,7 @@
 # a window-message click actually landed.
 param(
   [int]$Seconds = 40,
-  [string]$Marker = "$env:TEMP\pibot-island-probe\island-clicked.txt"
+  [string]$Marker = "$env:TEMP\orbis-island-probe\island-clicked.txt"
 )
 
 $ErrorActionPreference = 'Stop'

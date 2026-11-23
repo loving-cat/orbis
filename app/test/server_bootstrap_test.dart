@@ -9,7 +9,7 @@ void main() {
   late Directory tmp;
 
   setUp(() {
-    tmp = Directory.systemTemp.createTempSync('pi-bot-locate-');
+    tmp = Directory.systemTemp.createTempSync('Orbis-locate-');
   });
 
   tearDown(() {
@@ -20,7 +20,7 @@ void main() {
 
   group('找服务端入口', () {
     test('macOS 应用优先使用 Contents/Resources/server', () {
-      final contents = Directory('${tmp.path}/pi-bot.app/Contents');
+      final contents = Directory('${tmp.path}/Orbis.app/Contents');
       final executable = Directory('${contents.path}/MacOS')
         ..createSync(recursive: true);
       final bundled = File('${contents.path}/Resources/server/src/index.js');
@@ -87,13 +87,13 @@ void main() {
   group('找 node / npm', () {
     test('macOS 候选包含 Resources 与标准安装路径，不含 Windows 名称', () {
       final candidates = nodeCandidates(
-        '${tmp.path}/pi-bot.app/Contents/MacOS',
+        '${tmp.path}/Orbis.app/Contents/MacOS',
         environment: {},
         operatingSystem: 'macos',
       );
       expect(
         candidates,
-        contains('${tmp.path}/pi-bot.app/Contents/Resources/node'),
+        contains('${tmp.path}/Orbis.app/Contents/Resources/node'),
       );
       expect(candidates, contains('/opt/homebrew/bin/node'));
       expect(candidates, contains('/usr/local/bin/node'));

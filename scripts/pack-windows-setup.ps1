@@ -13,7 +13,7 @@
 # ISCC.exe is looked up in PATH, then in the usual install locations.
 #
 # The setup.exe is per-user (no admin prompt) and installs to
-# %LOCALAPPDATA%\Programs\pi-bot. User data in %LOCALAPPDATA%\pi-bot is never
+# %LOCALAPPDATA%\Programs\Orbis. User data in %LOCALAPPDATA%\Orbis is never
 # touched, so installing over an older version keeps pairings and history.
 #
 # Keep this file ASCII-only. PowerShell 5.1 decodes BOM-less scripts as ANSI.
@@ -60,7 +60,7 @@ if ($Help) {
 Build the Windows installer from the packed folder.
 
   .\scripts\pack-windows-setup.ps1
-  .\scripts\pack-windows-setup.ps1 -Bundle dist\pi-bot-windows -OutDir dist
+  .\scripts\pack-windows-setup.ps1 -Bundle dist\Orbis-windows -OutDir dist
   .\scripts\pack-windows-setup.ps1 -Iscc "C:\path\to\ISCC.exe"
 
 Requires Inno Setup 6 (winget install JRSoftware.InnoSetup).

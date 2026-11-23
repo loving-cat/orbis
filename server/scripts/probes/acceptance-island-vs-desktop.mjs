@@ -16,7 +16,7 @@
  *   3. **执行边界钩子**：`createPolicyExtension` 的 `tool_call` 回调把上面两件事
  *      接到真实调用链上 —— 这里用真实的 extension + 真实 grantGate 驱动一次。
  *
- * 全部在临时 dataDir 里跑（`PI_BOT_HOME` 指向 %TEMP%），不碰你正在用的配置。
+ * 全部在临时 dataDir 里跑（`ORBIS_HOME` 指向 %TEMP%），不碰你正在用的配置。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -24,10 +24,10 @@ import path from 'node:path';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-accept-island-'));
 Object.assign(process.env, {
-  PI_BOT_HOME: path.join(root, 'data'),
-  PI_BOT_WORKSPACE: path.join(root, 'ws'),
+  ORBIS_HOME: path.join(root, 'data'),
+  ORBIS_WORKSPACE: path.join(root, 'ws'),
   PI_CODING_AGENT_DIR: path.join(root, 'agent'),
-  PI_BOT_PROBE: '0',
+  ORBIS_PROBE: '0',
 });
 
 const src = (f) => new URL(`../../src/${f}`, import.meta.url);

@@ -28,7 +28,7 @@ async function test(name, fn) {
   }
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-migrate-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-migrate-'));
 let n = 0;
 function fresh() {
   const dir = path.join(root, `case-${++n}`);

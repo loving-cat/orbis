@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  允许明文 http/ws：pi-bot 服务端默认跑在局域网/自建服务器上，没有证书。
+  允许明文 http/ws：Orbis 服务端默认跑在局域网/自建服务器上，没有证书。
   公网部署建议套 nginx + https，那时可以把这个配置收窄。
 -->
 <network-security-config>

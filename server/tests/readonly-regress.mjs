@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-readonly-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-readonly-'));
 process.env.ORBIS_HOME = path.join(root, 'data');
 process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 process.env.ORBIS_MODEL = '';

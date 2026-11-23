@@ -11,7 +11,7 @@ Add-Type -AssemblyName System.Drawing
 $log = Join-Path $env:TEMP 'pib-click-log.txt'
 Set-Content -Path $log -Value '' -Encoding UTF8
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'pi-bot click target'
+$form.Text = 'Orbis click target'
 $form.StartPosition = 'Manual'
 $form.Location = New-Object System.Drawing.Point(200, 150)
 $form.Size = New-Object System.Drawing.Size(900, 700)

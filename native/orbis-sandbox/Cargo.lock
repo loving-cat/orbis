@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "pibot-sandbox"
+name = "orbis-sandbox"
 version = "0.1.0"
 dependencies = [
  "windows-sys",

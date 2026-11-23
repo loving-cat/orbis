@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-progress-flow-'));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-progress-flow-'));
 process.env.ORBIS_HOME = dataDir;
 process.env.PI_AGENT_DIR = path.join(dataDir, 'agent');
 process.env.ORBIS_WORKSPACE = path.join(dataDir, 'workspace');

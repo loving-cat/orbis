@@ -23,12 +23,12 @@ export function mcpAccessSignature(bot, library = []) {
 export function sandboxUnavailableMessage(reason, detail = '') {
   if (reason === 'unsupported_platform') {
     return '当前平台没有可用的沙箱（macOS 用 sandbox-exec，Linux 用 bwrap，'
-      + 'Windows 用仓库自带的 pibot-sandbox.exe），这个 bot 挂了 MCP，'
+      + 'Windows 用仓库自带的 orbis-sandbox.exe），这个 bot 挂了 MCP，'
       + '为安全起见拒绝执行 shell 命令。';
   }
   if (reason === 'no_binary') {
     return '沙箱程序不存在：macOS 需要系统自带 sandbox-exec，Linux 需要 bubblewrap（bwrap），'
-      + 'Windows 需要 pibot-sandbox.exe（随发行包提供，源码在 native/pibot-sandbox）。'
+      + 'Windows 需要 orbis-sandbox.exe（随发行包提供，源码在 native/orbis-sandbox）。'
       + '为安全起见拒绝执行。';
   }
   // Windows 启动器自己的机读错误码，文案在 sandbox-win.js 里维护

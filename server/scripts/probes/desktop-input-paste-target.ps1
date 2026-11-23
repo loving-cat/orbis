@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'pi-bot paste target'
+$form.Text = 'Orbis paste target'
 $form.Width = 700; $form.Height = 260
 $form.StartPosition = 'CenterScreen'
 $box = New-Object System.Windows.Forms.TextBox

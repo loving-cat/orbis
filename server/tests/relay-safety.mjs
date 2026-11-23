@@ -26,7 +26,7 @@ async function test(name, fn) {
   }
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-relay-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-relay-'));
 const serverDir = fileURLToPath(new URL('..', import.meta.url));
 
 /** 跑一次 relay-server，拿到退出码与输出 */

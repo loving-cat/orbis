@@ -7,7 +7,7 @@ import 'package:pi_bot/api.dart';
 
 /// 服务端要求所有改状态的请求都带客户端标记头（防本机 CSRF），
 /// 这里锁住 App 的每条写路径都带上它。1.7.1 起发正式名 `x-orbis-*`，
-/// 旧名 `x-pi-bot-*` 留到 2.0 删。全部是假地址、假 token。
+/// 旧名 `x-pi-bot-*` 留到 2.0 删。全部是假地址、假 token。 —— legacy-guard-ok: 回归用例说明
 void main() {
   test('头名与服务端一致（正式名 x-orbis-*，不再发旧名）', () {
     expect(Api.clientHeader, 'x-orbis-client');

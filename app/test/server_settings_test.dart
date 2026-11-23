@@ -51,7 +51,7 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
-    temp = Directory.systemTemp.createTempSync('pi-bot-settings-');
+    temp = Directory.systemTemp.createTempSync('Orbis-settings-');
     launcher = _Launcher(temp);
     state = _State(launcher);
   });

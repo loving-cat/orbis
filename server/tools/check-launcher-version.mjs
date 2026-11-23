@@ -12,7 +12,7 @@ import path from 'node:path';
 
 const exeArg = process.argv[2];
 if (!exeArg) {
-  console.error('用法: node tools/check-launcher-version.mjs <pibot-sandbox.exe>');
+  console.error('用法: node tools/check-launcher-version.mjs <orbis-sandbox.exe>');
   process.exit(2);
 }
 const exe = path.resolve(exeArg);
@@ -36,14 +36,14 @@ if (res.status !== 0) {
   console.error(`启动器跑不起来（exit ${res.status}）：${(res.stderr || '').slice(0, 200)}`);
   process.exit(1);
 }
-const reported = /pibot-sandbox\s+(\S+)/.exec(res.stdout || '')?.[1];
+const reported = /orbis-sandbox\s+(\S+)/.exec(res.stdout || '')?.[1];
 if (!reported) {
   console.error(`版本输出无法解析：${JSON.stringify(res.stdout)}`);
   process.exit(1);
 }
 if (reported !== wanted) {
   console.error(`版本不一致：Node 侧 ${wanted}，exe ${reported}`);
-  console.error('改了一边就要改另一边，并重新编译 native/pibot-sandbox。');
+  console.error('改了一边就要改另一边，并重新编译 native/orbis-sandbox。');
   process.exit(1);
 }
 console.log(`version ok: ${reported}`);

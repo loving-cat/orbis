@@ -2,7 +2,7 @@
  * Windows 沙箱真机冒烟（spec §11 的 1–12 项在这里跑一半）。
  *   node tools/win-sandbox-e2e.mjs
  *
- * 只用于手工验收：需要 Windows + 编译好的 pibot-sandbox.exe
+ * 只用于手工验收：需要 Windows + 编译好的 orbis-sandbox.exe
  * （scripts/build-sandbox-win.ps1）。CI 不跑它（Windows runner 上没有
  * 那台机器上的 Git / Node 布局，且要装 Rust）。
  */
@@ -19,7 +19,7 @@ if (process.platform !== 'win32') {
   process.exit(0);
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pibot-sbx-e2e-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orbis-sbx-e2e-'));
 const workDir = path.join(root, 'work');
 const instanceDir = path.join(root, 'instances', 'a');
 const otherInstance = path.join(root, 'instances', 'b');

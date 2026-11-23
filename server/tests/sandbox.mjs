@@ -61,7 +61,7 @@ await test('平台探测：能识别出用的哪种沙箱', () => {
   assert.ok(['seatbelt', 'bwrap', 'appcontainer', 'none'].includes(probe.kind));
   if (process.platform === 'darwin') assert.equal(probe.kind, 'seatbelt');
   if (process.platform === 'linux') assert.equal(probe.kind, 'bwrap');
-  // ★ Windows 上是 appcontainer（仓库自带的 pibot-sandbox.exe）。
+  // ★ Windows 上是 appcontainer（仓库自带的 orbis-sandbox.exe）。
   //   启动器没编译时 kind 仍是 appcontainer、available 为 false ——
   //   那是 fail-closed，不是"平台不支持"。
   if (process.platform === 'win32') assert.equal(probe.kind, 'appcontainer');
@@ -94,7 +94,7 @@ await test('★ Windows profile 名按实例派生且稳定', async () => {
   const b = profileNameFor('C:\\data\\instances\\b');
   assert.notEqual(a, b, '两个实例必须拿到不同的 profile');
   assert.equal(a, profileNameFor('C:\\data\\instances\\a'), '同一实例重启后 profile 必须一样');
-  assert.match(a, /^pi-bot\.sbx\.[A-Za-z0-9_-]+\.[0-9a-f]{12}$/);
+  assert.match(a, /^Orbis\.sbx\.[A-Za-z0-9_-]+\.[0-9a-f]{12}$/);
 });
 
 await test('沙箱不可用时给的是拒绝提示，不是空串', () => {
@@ -109,7 +109,7 @@ await test('沙箱不可用时给的是拒绝提示，不是空串', () => {
 
 const canRun = probe.available && process.platform !== 'win32';
 
-await test('★ 沙箱里读 pi-bot token 文件失败', async () => {
+await test('★ 沙箱里读 Orbis token 文件失败', async () => {
   if (!canRun) { console.log('     （当前平台无沙箱，跳过）'); return; }
   const r = runSandboxed('cat ' + JSON.stringify(tokenFile));
   assert.notEqual(r.status, 0, '读 token 应失败，实际 status=' + r.status);

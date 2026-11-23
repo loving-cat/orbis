@@ -33,8 +33,8 @@ grep -rn "@remove-2.0" server/src app/lib
 
 | 标识 | 值 | 为什么不动 |
 |---|---|---|
-| Android `APP_ID` | `com.pibot.pi_bot` | 改了手机装不上更新，必须卸载重装（聊天数据在应用私有目录） |
-| macOS `PRODUCT_BUNDLE_IDENTIFIER` | `io.pibot.piBot` | 改了等于新应用：权限、钥匙串、偏好全部重来 |
+| Android `APP_ID` | `com.orbis.orbis` | 改了手机装不上更新，必须卸载重装（聊天数据在应用私有目录） |
+| macOS `PRODUCT_BUNDLE_IDENTIFIER` | `io.orbis.piBot` | 改了等于新应用：权限、钥匙串、偏好全部重来 |
 | Inno `AppId` GUID | `{7A31C4E8-...}` | 升级替换旧安装靠它；改了会并列装两份 |
 
 ## 一句话
@@ -270,9 +270,9 @@ alpha.1 的教训（这次照做）：
 | `bin.pi-bot-server` | ✅ | ❌ **已删**：`npm exec orbis-server`（1.7.1 起就有了） |
 | 全部 `PI_BOT_*` 环境变量 | ✅ | ❌ **已删**：只认 `ORBIS_*`（桌面端 1.7.0 起传的就是新名） |
 | `PI_BOT_SECRET_KEY` | ✅ | ❌ **已删**：只认 `ORBIS_SECRET_KEY` |
-| `pi-bot.config.json` | ✅ | ⚠️ 仍能读（提醒一次）；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
+| `Orbis.config.json` | ✅ | ⚠️ 仍能读（提醒一次）；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
 | 旧数据目录回退 | ✅ | ❌ **已删**：2.0 只认新目录；旧目录有数据时启动会在日志里给出 `orbis migrate` 指引（`/health` 的 `needsMigration=true`） |
-| 发现协议 | ✅ | ✅ **永久双播**：服务端同时回应 `orbis.host` 与 `pibot.host`，App 两边都发都认 |
+| 发现协议 | ✅ | ✅ **永久双播**：服务端同时回应 `orbis.host` 与 `orbis.host`，App 两边都发都认 |
 | TLS 证书 | ✅ | ✅ 新证书 SAN 增加 `orbis.local`，旧 `pi-bot.local` 与 CN `pi-bot` 保留 |
 
 ### 2.0 升级：先跑 `orbis migrate`

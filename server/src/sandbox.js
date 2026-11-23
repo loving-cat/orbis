@@ -13,9 +13,9 @@
  *
  *   macOS  —— sandbox-exec + 自写 Seatbelt profile（默认 deny）
  *   Linux  —— bwrap（bubblewrap）
- *   Windows —— 仓库自带的 `pibot-sandbox.exe`（AppContainer + Job Object）
+ *   Windows —— 仓库自带的 `orbis-sandbox.exe`（AppContainer + Job Object）
  *             Node 拼不了 `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`，
- *             所以隔离逻辑在 native/pibot-sandbox（Rust），这里只调它。
+ *             所以隔离逻辑在 native/orbis-sandbox（Rust），这里只调它。
  *             细节与实测坑见 docs/WINDOWS-SANDBOX.md。
  *
  * ## fail-closed
@@ -54,7 +54,7 @@ export const SANDBOX_UNAVAILABLE = {
  * @param {object} o
  * @param {string} o.workDir  允许读写的工作目录
  * @param {string} o.tmpDir   允许读写的私有临时目录
- * @param {string[]} [o.denyPaths] 额外要显式拒绝的路径（如 pi-bot 数据目录）
+ * @param {string[]} [o.denyPaths] 额外要显式拒绝的路径（如 Orbis 数据目录）
  */
 /**
  * 把路径展开成"原样 + 符号链接解析后"两种。
@@ -405,7 +405,7 @@ export function assertSafeWorkDir({ workDir, dataDir = '' }) {
       ok: false,
       reason: 'workdir_is_home_or_ancestor',
       message: `工作目录 ${workDir} 是家目录（或它的上级），沙箱在这种配置下挡不住凭据目录。`
-        + '请把 bot 的工作目录设成一个专用子目录（例如 ~/pi-bot-work）再试。',
+        + '请把 bot 的工作目录设成一个专用子目录（例如 ~/Orbis-work）再试。',
     };
   }
   if (isSame(w, h)) {
@@ -413,7 +413,7 @@ export function assertSafeWorkDir({ workDir, dataDir = '' }) {
       ok: false,
       reason: 'workdir_is_home',
       message: '工作目录就是家目录，沙箱挡不住 ~/.ssh 等凭据目录。'
-        + '请把 bot 的工作目录设成一个专用子目录（例如 ~/pi-bot-work）再试。',
+        + '请把 bot 的工作目录设成一个专用子目录（例如 ~/Orbis-work）再试。',
     };
   }
   if (d && (isSame(w, d) || isAncestorOf(w, d))) {
@@ -485,7 +485,7 @@ export function wrapCommand({ command, workDir, tmpDir, denyPaths = [], instance
   }
 
   if (probe.kind === 'appcontainer') {
-    // Windows：交给 pibot-sandbox.exe。
+    // Windows：交给 orbis-sandbox.exe。
     // 拒绝规则的权威实现在启动器里（它要按 canonical 路径判，还要处理
     // junction / 8.3 短名）；这里只把 dataDir 传下去让它一并拒。
     return wrapWindowsCommand({ command, workDir, instanceDir, dataDir });

@@ -524,7 +524,7 @@ class Bot {
 /// 本机 pi 上已经装好的能力（只读扫描的结果）。
 ///
 /// 存在的意义：用户在终端里用 pi 时早就装了一堆 skill / MCP，
-/// 但 pi-bot 是独立进程、默认不加载。扫描出来让他一键导入，
+/// 但 Orbis 是独立进程、默认不加载。扫描出来让他一键导入，
 /// 比让他把已有的东西再手抄一遍合理。
 class LocalCapabilities {
   LocalCapabilities({

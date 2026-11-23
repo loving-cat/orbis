@@ -27,7 +27,7 @@ bool shouldLoadInPlace(Uri uri) => allowBrowserNavigation(uri);
 InAppWebViewSettings browserPaneSettings(TargetPlatform platform) =>
     InAppWebViewSettings(
       javaScriptEnabled: true,
-      // ★ 不给网页 JS bridge：网页不能直接调 pi-bot 的接口
+      // ★ 不给网页 JS bridge：网页不能直接调 Orbis 的接口
       javaScriptBridgeEnabled: false,
       // ★ 不落盘：浏览记录、缓存留在内存里，退出就没了
       incognito: true,

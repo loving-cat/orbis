@@ -70,7 +70,8 @@ jobs:
           node scripts/check-style.mjs
           # 旧品牌串（env 前缀 / 请求头 / 包名 / 原生产物）只许变小：
           # 新文件出现就红，已登记文件计数上涨也红。基线在 scripts/legacy-allowlist.json。
-          node scripts/check-legacy.mjs
+          # --strict：2.0 收门 —— 待清债必须为 0（只留 permanent 与行内 legacy-guard-ok）。
+          node scripts/check-legacy.mjs --strict
       - name: Run server unit tests
         working-directory: server
         timeout-minutes: 15
@@ -128,18 +129,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      # The Windows sandbox launcher (native/pibot-sandbox) is Rust. It is not
+      # The Windows sandbox launcher (native/orbis-sandbox) is Rust. It is not
       # required to build the app, but if the crate stops compiling we would
       # only find out on a release machine, and a missing launcher silently
       # turns into "shell refused" for every bot with MCP attached.
       - uses: dtolnay/rust-toolchain@stable
       - name: Build launcher
-        working-directory: native/pibot-sandbox
+        working-directory: native/orbis-sandbox
         run: cargo build --release
       - name: Version matches the Node side
-        working-directory: native/pibot-sandbox
+        working-directory: native/orbis-sandbox
         run: |
-          node ../../server/tools/check-launcher-version.mjs target/release/pibot-sandbox.exe
+          node ../../server/tools/check-launcher-version.mjs target/release/orbis-sandbox.exe
 
   app:
     name: app analyze + test (${{ matrix.os }})

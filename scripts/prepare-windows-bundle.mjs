@@ -128,14 +128,14 @@ export function rewritePeDebugPaths(input) {
  * - 只替换调用方明确给出的构建根，不动其它字节；替换完仍要独立扫描，不靠它蒙混过关。
  * - 占位串沿用绝对路径形状（某些产物可能拿它当 URI/路径解析），但不含盘符目录、不含用户名。
  */
-export const BUILD_ROOT_PLACEHOLDER = 'C:\\pi-bot-build\\'; // C:\pi-bot-build\
+export const BUILD_ROOT_PLACEHOLDER = 'C:\\Orbis-build\\'; // C:\Orbis-build\
 
 /** 构建根路径的可能写法：反斜杠、正斜杠、JSON 双写反斜杠。长串先换，避免前缀互盖。 */
 export function buildRootNeedles(buildRoot) {
   if (!buildRoot || !isAbsoluteDebugPath(buildRoot)) return [];
   const values = new Set([buildRoot, buildRoot.replaceAll('\\', '/'), buildRoot.replaceAll('\\', '\\\\')]);
   // ★ Dart 产物（app.so）里编译进去的是**构建根本身**，不是本次运行目录。
-  //   pack 传进来的是 …/.orbis-build/pi-bot-windows-build-<id>，而 app.so 里是
+  //   pack 传进来的是 …/.orbis-build/Orbis-windows-build-<id>，而 app.so 里是
   //   file:///D:/.orbis-build/ —— 只换精确路径会漏掉，残留扫描就把包拦下。
   //   所以把基目录（去掉最后一段运行目录）也作为候选。
   //

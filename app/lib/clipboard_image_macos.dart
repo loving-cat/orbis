@@ -30,7 +30,7 @@ Future<Uint8List?> readMacOSClipboardPng({
   Future<List<int>>? completion;
   try {
     temporaryDirectory = await (temporaryRoot ?? Directory.systemTemp)
-        .createTemp('pi-bot-paste-');
+        .createTemp('orbis-paste-');
     final image = File(
       '${temporaryDirectory.path}${Platform.pathSeparator}clipboard.png',
     );

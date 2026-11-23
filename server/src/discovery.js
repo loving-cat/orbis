@@ -49,7 +49,7 @@ const REPLY_THROTTLE_MS = 500;
 /**
  * 只对**局域网来源**应答。
  *
- * 应答里虽然只有名字/地址这种公开信息，但"这台机器装着 pi-bot"本身也是信息：
+ * 应答里虽然只有名字/地址这种公开信息，但"这台机器装着 Orbis"本身也是信息：
  * 从公网打进来的探针（端口映射、云主机的 0.0.0.0 绑定）不该得到确认。
  * 回环也放行 —— 本机自检/测试走的就是它。
  */
@@ -86,7 +86,7 @@ export function buildAnnouncement(overrides = {}) {
     v: PROTOCOL_VERSION,
     /** 用户给这台主机起的名字（ORBIS_NAME） */
     name: overrides.name ?? config.serverName,
-    /** 机器名 —— 同一个 Wi-Fi 下有两台 pi-bot 时，靠它区分 */
+    /** 机器名 —— 同一个 Wi-Fi 下有两台 Orbis 时，靠它区分 */
     hostname: overrides.hostname ?? config.hostname,
     version: overrides.version ?? VERSION,
     port,

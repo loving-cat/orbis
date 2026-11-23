@@ -96,7 +96,7 @@ async function test(name, fn) {
 }
 
 const TOKEN = 'server-mode-test-token';
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-server-mode-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-server-mode-'));
 
 /** 子进程：用给定环境起一个只带 HTTP + WS 的服务端，打印端口后常驻 */
 const CHILD = `

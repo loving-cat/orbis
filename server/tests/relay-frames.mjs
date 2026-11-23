@@ -27,7 +27,7 @@ await test('往返：小消息原样还原（不压缩）', () => {
 });
 
 await test('★ 往返：大段重复内容会被压缩，且无损', () => {
-  const body = Buffer.from('pi-bot 中转 '.repeat(5000));
+  const body = Buffer.from('Orbis 中转 '.repeat(5000));
   const packed = packBody(body);
   assert.equal(packed.z, 1, '重复内容应该压得动');
   assert.ok(

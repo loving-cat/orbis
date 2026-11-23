@@ -25,7 +25,7 @@ async function test(name, fn) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- 假 host：模拟电脑上的 pi-bot 服务端 ----------
+// ---------- 假 host：模拟电脑上的 Orbis 服务端 ----------
 const host = http.createServer((req, res) => {
   if (req.url.startsWith('/headers')) {
     res.writeHead(200, { 'content-type': 'application/json' });

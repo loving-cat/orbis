@@ -24,7 +24,7 @@ function test(name, fn) {
   }
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-artifacts-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-artifacts-'));
 const write = (rel, content = 'x') => {
   const full = path.join(root, ...rel.split('/'));
   fs.mkdirSync(path.dirname(full), { recursive: true });

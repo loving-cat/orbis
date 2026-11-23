@@ -388,7 +388,7 @@ debugPrint(DefaultTextStyle.of(tester.element(find.text('置顶'))).style.toStri
 | ② bot 选中它 | bot 编辑页 → MCP 能力 | 没选中的 bot 不会挂载任何 MCP |
 
 之所以设计成两道门：MCP **真的会起子进程**（一个 `npx` 服务几百 MB）。
-pi-bot 里可能同时开几十个 bot 会话，每个都挂一份会直接把机器拖死。
+Orbis 里可能同时开几十个 bot 会话，每个都挂一份会直接把机器拖死。
 
 **为什么不用 session option**：pi 的 MCP 不是 `createAgentSession` 的参数，
 而是**扩展注册**（`pi.registerMcpServer(name, config)`）。所以走 `mcp-hook.js`
@@ -431,15 +431,15 @@ pi-bot 里可能同时开几十个 bot 会话，每个都挂一份会直接把�
 ## 30. 别让用户把已经装好的东西再手抄一遍
 
 **症状**：用户终端里的 pi 早就装了一堆 skill（`~/.pi/agent/skills/*/SKILL.md`）
-和 MCP（`~/.pi/agent/mcp.json`），但在 pi-bot 里是一张白纸，得重新手填。
+和 MCP（`~/.pi/agent/mcp.json`），但在 Orbis 里是一张白纸，得重新手填。
 
-**根因**：pi-bot 是独立进程，`resourceSwitches()` 默认不加载这些
+**根因**：Orbis 是独立进程，`resourceSwitches()` 默认不加载这些
 （它们会给每个 bot 会话拉子进程，几十个 bot 并存会拖死机器）。
 不加载是对的，但**不扫描是错的** —— 加载和发现是两件事。
 
 **修法**：`local-capabilities.js` 只读扫描，扫描结果里每条标出 `imported`
 （库里是否已有同名）。导入是"复制一份过来"而不是引用：两边独立，
-用户在终端里改了自己那份不会影响 pi-bot，反之亦然。
+用户在终端里改了自己那份不会影响 Orbis，反之亦然。
 
 **踩到的具体坑**：
 - SKILL.md 的 frontmatter 支持 YAML 块标量（`description: >`）。
@@ -555,7 +555,7 @@ Volta 在 `%LOCALAPPDATA%\Volta\bin`、Scoop 在 `scoop\apps\nodejs\current`。
 ## 36. 打包脚本别先删成品 —— 那正是要发出去的东西
 
 **症状**：`pack-windows.ps1` 跑到一半 npm install 失败（断网/私有源/磁盘满），
-回头发现 `dist/pi-bot-windows` 已经被删了，上一个能发的包没了。
+回头发现 `dist/Orbis-windows` 已经被删了，上一个能发的包没了。
 
 **根因**：老脚本第一行就 `Remove-Item -Recurse dist/pi-bot-windows`，
 然后才开始复制 —— 失败路径没有任何东西可回滚。
@@ -720,7 +720,7 @@ node -e "import('@earendil-works/pi-ai').then(async m=>{...})"
 #    以前 requested=max -> effective=high；加了映射后 requested=max -> effective=max
 ```
 
-**pi-bot 这一侧也补了两处**：
+**Orbis 这一侧也补了两处**：
 
 - `availableThinkingLevels()` 现在把 off 永远算可选，并且只有 map 里显式写了
   `max` / `xhigh` 才把它们给前台（避免让用户选一个后台根本不会传的档位）；
@@ -731,7 +731,7 @@ node -e "import('@earendil-works/pi-ai').then(async m=>{...})"
 
 ## 42. `server.listen` 的 EADDRINUSE 被 ws 库吞掉 —— 端口被占变成僵尸进程
 
-**症状**：端口被占用时，pi-bot 进程**活着但不监听**。桌面端一直转圈，
+**症状**：端口被占用时，Orbis 进程**活着但不监听**。桌面端一直转圈，
 日志里只有一句「未捕获异常（进程继续跑）：listen EADDRINUSE」，
 没有 banner、没有配对码、也没有退出。
 

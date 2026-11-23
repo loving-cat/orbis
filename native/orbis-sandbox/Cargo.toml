@@ -1,12 +1,12 @@
 [package]
-name = "pibot-sandbox"
+name = "orbis-sandbox"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "pi-bot 的 Windows 沙箱启动器：AppContainer + Job Object"
+description = "Orbis 的 Windows 沙箱启动器：AppContainer + Job Object"
 
 [[bin]]
-name = "pibot-sandbox"
+name = "orbis-sandbox"
 path = "src/main.rs"
 
 [dependencies]

@@ -56,7 +56,7 @@ if (!env.ok || env.session !== true) {
 
 const FIXTURES = path.join(import.meta.dirname, 'fixtures', 'island');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-island-'));
-const island = `pibot_test_${Math.random().toString(36).slice(2, 8)}`;
+const island = `orbis_test_${Math.random().toString(36).slice(2, 8)}`;
 const marker = path.join(tmp, 'clicked.txt');
 const shot = path.join(tmp, 'island.png');
 const state = { pids: [], hwnd: 0 };
@@ -177,7 +177,7 @@ try {
     const file = await until(() => (fs.existsSync(checkOut) ? checkOut : null), { timeout: 20_000 });
     assert.ok(file, '岛上那个检查进程没写出结果');
     const text = fs.readFileSync(file, 'utf8');
-    assert.match(text, /thread_desktop=pibot_test_/, '它应该跑在岛上');
+    assert.match(text, /thread_desktop=orbis_test_/, '它应该跑在岛上');
     assert.match(text, /sendinput_move=sent=0/, `SendInput 应该被拒：${text}`);
     assert.match(text, /sendinput_move=.*err=5/, 'err=5 是 ERROR_ACCESS_DENIED');
     assert.match(text, /setcursorpos_returned=False/, 'SetCursorPos 应该被拒');

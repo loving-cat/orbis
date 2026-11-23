@@ -30,7 +30,7 @@ Future<({int port, String? Function() localToken, Future<void> Function() stop})
   if (!Directory('$serverDir/node_modules').existsSync()) return null;
   final node = await findNode(Directory.current.path);
   if (node == null) return null;
-  final home = Directory.systemTemp.createTempSync('pi-bot-app-server-mode-');
+  final home = Directory.systemTemp.createTempSync('Orbis-app-server-mode-');
   final script = File('$serverDir/.local-token-test-${home.path.hashCode}.mjs');
   script.writeAsStringSync('''
 const { createHttpServer } = await import('./src/http.js');

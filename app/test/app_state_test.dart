@@ -1,5 +1,5 @@
-// App 网络层端到端测试（需要本地 pi-bot 服务端在跑）：
-//   cd ../server && PI_BOT_TOKEN=test-token node src/index.js
+// App 网络层端到端测试（需要本地 Orbis 服务端在跑）：
+//   cd ../server && ORBIS_TOKEN=test-token node src/index.js
 //   cd ../app && flutter test test/app_state_test.dart
 import 'dart:io';
 
@@ -9,20 +9,20 @@ import 'package:pi_bot/models.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const serverUrl = String.fromEnvironment(
-  'PI_BOT_URL',
+  'ORBIS_URL',
   defaultValue: 'http://127.0.0.1:8787',
 );
 const token = String.fromEnvironment(
-  'PI_BOT_TOKEN',
+  'ORBIS_TOKEN',
   defaultValue: 'test-token',
 );
 
 /// 这条是**真集成**用例：要有服务端、而且服务端必须带静态 token 起来。
 /// 默认不跑 —— 否则在"服务端走配对码模式"时它会报一个和代码无关的失败，
 /// 让人以为是自己改坏了。要跑就：
-///   cd ../server && PI_BOT_TOKEN=test-token node src/index.js
-///   cd ../app && flutter test --dart-define=PI_BOT_E2E=true test/app_state_test.dart
-const runE2E = bool.fromEnvironment('PI_BOT_E2E');
+///   cd ../server && ORBIS_TOKEN=test-token node src/index.js
+///   cd ../app && flutter test --dart-define=ORBIS_E2E=true test/app_state_test.dart
+const runE2E = bool.fromEnvironment('ORBIS_E2E');
 
 Future<void> waitFor(
   bool Function() predicate,
@@ -50,7 +50,7 @@ void main() {
     // CI 上没有服务端，WebSocket 会在用例"跳过之后"抛 Connection refused，
     // 变成一条假失败（macOS runner 上就是这样红的）。
     if (!runE2E) {
-      markTestSkipped('集成用例默认不跑（加 --dart-define=PI_BOT_E2E=true 才跑）');
+      markTestSkipped('集成用例默认不跑（加 --dart-define=ORBIS_E2E=true 才跑）');
       return;
     }
 

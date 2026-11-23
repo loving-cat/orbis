@@ -16,7 +16,7 @@ test('空脚本直接拒绝，不起进程', async () => {
 
 test('真实跑一段脚本并拿到输出', { skip: process.env.ORBIS_EGO_INTEGRATION !== '1' }, async () => {
   const r = await runEgoScript({
-    script: 'const task = await taskSpace("pi-bot-test-space"); console.log("hello-from-ego:" + (task.spaceId ? "ok" : "no"));',
+    script: 'const task = await taskSpace("Orbis-test-space"); console.log("hello-from-ego:" + (task.spaceId ? "ok" : "no"));',
     timeoutMs: 60000,
   });
   // 没装 ego 的环境跳过（CI 上可能没有）

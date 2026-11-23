@@ -28,6 +28,18 @@
  *
  * `--strict` 只要求 `entries` 清零；`permanent` 不参与收门判定 —— 否则
  * 「C6 永久双播」和「2.0 收门」会互相卡死。
+ *
+ * ## 第三种豁免：`legacy-guard-ok: <理由>`
+ *
+ * 有一类行**必须**写出旧名字才能讲清楚：历史注释（「1.7 时代它管三件……」）、
+ * 回归测试的标题、以及专门验「旧名字被拒」的用例。把它们也塞进 `permanent`
+ * 会让白名单长成一堆散文片段；改写文案又会把历史抹掉。所以给一条行内豁免：
+ *
+ *   // legacy-guard-ok: 讲 1.7 的历史（这一行不是代码）
+ *
+ * 规则：**同一行**必须带理由（至少 2 个字），否则不算豁免；命中计入
+ * 「注释性豁免」单独报数，仍能 `grep` 出来复查。新写的代码行不该用它 ——
+ * 新债要么不留，要么走 `permanent`。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -59,6 +71,8 @@ const BINARY_EXT = new Set([
 ]);
 /** `pi-bot` / `pi_bot` / `pibot`（大小写不敏感，含 PI_BOT_ 与 x-pi-bot-） */
 const LEGACY = /pi[-_]?bot|pibot/gi;
+/** 行内豁免：`legacy-guard-ok: <理由>`（理由至少 2 个字，空理由不算豁免） */
+const GUARD_OK = /legacy-guard-ok:\s*(\S.*)$/;
 /**
  * 守卫自己与它的基线文件永远不参与扫描。
  * 否则：注释里写了旧名字 → 基线涨 → 再写基线 → 永远自己追自己。
@@ -125,6 +139,7 @@ function walk(dir, out = []) {
 
 /** 统计一行里「不被 permanent 模式覆盖」的旧品牌命中 */
 function countLine(line, patterns) {
+  const excused = GUARD_OK.test(line);
   const ranges = [];
   for (const p of patterns) {
     let from = 0;
@@ -137,14 +152,16 @@ function countLine(line, patterns) {
   }
   let debt = 0;
   let permanent = 0;
+  let marked = 0;
   for (const m of line.matchAll(LEGACY)) {
     const start = m.index;
     const end = start + m[0].length;
     const covered = ranges.some(([s, e]) => start >= s && end <= e);
     if (covered) permanent++;
+    else if (excused) marked++;
     else debt++;
   }
-  return { debt, permanent };
+  return { debt, permanent, marked };
 }
 
 function countInFile(file, patterns) {
@@ -152,17 +169,19 @@ function countInFile(file, patterns) {
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch {
-    return { debt: 0, permanent: 0 };
+    return { debt: 0, permanent: 0, marked: 0 };
   }
-  if (!text || text.includes('\u0000')) return { debt: 0, permanent: 0 }; // 保险：读成二进制就跳过
+  if (!text || text.includes('\u0000')) return { debt: 0, permanent: 0, marked: 0 }; // 保险：读成二进制就跳过
   let debt = 0;
   let permanent = 0;
+  let marked = 0;
   for (const line of text.split(/\r?\n/)) {
     const r = countLine(line, patterns);
     debt += r.debt;
     permanent += r.permanent;
+    marked += r.marked;
   }
-  return { debt, permanent };
+  return { debt, permanent, marked };
 }
 
 function readAllowlist(file) {
@@ -200,14 +219,16 @@ const patterns = allow.permanent.map((p) => p.pattern);
 
 const hits = new Map();
 let permanentHits = 0;
+let markedHits = 0;
 for (const rel of SCAN_DIRS) {
   const abs = path.join(opts.root, rel);
   if (!fs.existsSync(abs)) continue;
   for (const file of walk(abs)) {
     const relPath = path.relative(opts.root, file).split(path.sep).join('/');
     if (SKIP_FILES.has(relPath)) continue;
-    const { debt, permanent } = countInFile(file, patterns);
+    const { debt, permanent, marked } = countInFile(file, patterns);
     permanentHits += permanent;
+    markedHits += marked;
     if (debt > 0) hits.set(relPath, debt);
   }
 }
@@ -273,7 +294,8 @@ const remaining = total(allow.map) - shrunk;
 console.log(
   `✓ 旧品牌残留未增长（待清债 ${hits.size} 个文件 / ${total(hits)} 处；` +
     `基线 ${allow.entries.length} 个文件 / ${total(allow.map)} 处；` +
-    `永久保留 ${allow.permanent.length} 个模式 / ${permanentHits} 处不计入）`,
+    `永久保留 ${allow.permanent.length} 个模式 / ${permanentHits} 处不计入；` +
+    `注释性豁免 ${markedHits} 处（legacy-guard-ok））`,
 );
 if (shrunk > 0) {
   console.log(`  比基线少了 ${shrunk} 处 —— 跑 \`node scripts/check-legacy.mjs --write\` 收基线`);

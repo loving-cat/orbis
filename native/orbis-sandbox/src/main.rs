@@ -1,6 +1,6 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 //
-// pi-bot 的 Windows 沙箱启动器。
+// Orbis 的 Windows 沙箱启动器。
 //
 // 为什么要有这个 exe：Node 的 `child_process` 无法设置
 // `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` —— 那是 CreateProcessW 的
@@ -16,7 +16,7 @@
 //    Access denied、相对路径写到 `C:\` 根、`Get-ChildItem` 报
 //    "Cannot find drive ... FileSystem"。改成 AC 目录后这些全部消失。
 //
-//    代价：进程 cwd ≠ 工作目录。工作目录通过环境变量 `PIBOT_SANDBOX_WORKDIR`
+//    代价：进程 cwd ≠ 工作目录。工作目录通过环境变量 `ORBIS_SANDBOX_WORKDIR`
 //    交给 PowerShell 引导脚本，由它 New-PSDrive + Set-Location 进去
 //    （普通用户对工作目录授 (OI)(CI)(M) 是可行的）。
 //
@@ -53,16 +53,16 @@ fn main() -> ExitCode {
         Some("revoke") => cmd_grant(&args[1..], false),
         Some("delete-profile") => cmd_delete_profile(&args[1..]),
         Some("version") | None => {
-            println!("pibot-sandbox {}", env!("CARGO_PKG_VERSION"));
+            println!("orbis-sandbox {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some(other) => fail("BAD_COMMAND", &format!("未知子命令 {other}")),
     }
 }
 
-/// 机读错误码（spec §5）：一行 `PIBOT_SANDBOX_ERR <code> <msg>`。
+/// 机读错误码（spec §5）：一行 `ORBIS_SANDBOX_ERR <code> <msg>`。
 fn fail(code: &str, msg: &str) -> ! {
-    eprintln!("PIBOT_SANDBOX_ERR {code} {msg}");
+    eprintln!("ORBIS_SANDBOX_ERR {code} {msg}");
     std::process::exit(1);
 }
 
@@ -73,14 +73,14 @@ fn arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
         .map(|s| s.as_str())
 }
 
-/// `--data-dir` 优先，其次环境变量 `PIBOT_DATA_DIR`。没给返回 None。
+/// `--data-dir` 优先，其次环境变量 `ORBIS_DATA_DIR`。没给返回 None。
 fn arg_data_dir(args: &[String]) -> Option<PathBuf> {
     if let Some(v) = arg_value(args, "--data-dir") {
         if !v.is_empty() {
             return Some(PathBuf::from(v));
         }
     }
-    if let Ok(v) = std::env::var("PIBOT_DATA_DIR") {
+    if let Ok(v) = std::env::var("ORBIS_DATA_DIR") {
         if !v.is_empty() {
             return Some(PathBuf::from(v));
         }
@@ -141,7 +141,7 @@ fn cmd_grant(args: &[String], grant: bool) -> ExitCode {
         let data_dir = arg_data_dir(args);
         match imp::grant(profile, &path, mode, grant, data_dir.as_deref()) {
             Ok(()) => {
-                println!("PIBOT_SANDBOX_OK {} {}", if grant { "grant" } else { "revoke" }, path.display());
+                println!("ORBIS_SANDBOX_OK {} {}", if grant { "grant" } else { "revoke" }, path.display());
                 ExitCode::SUCCESS
             }
             Err((code, msg)) => {
@@ -220,7 +220,7 @@ mod imp {
             CreateAppContainerProfile(
                 name.as_ptr(),
                 name.as_ptr(),
-                wide("pi-bot sandbox instance").as_ptr(),
+                wide("Orbis sandbox instance").as_ptr(),
                 std::ptr::null(),
                 0,
                 &mut sid,
@@ -539,7 +539,7 @@ mod imp {
     /// spec §15 的拒绝清单。返回 Err 时调用方 fail-closed。
     ///
     /// ★ 只拒「就是保护目录」或「是保护目录的祖先」两种。
-    ///   保护目录的**子目录**是正常用法（`~\pi-bot-work` 就在 %USERPROFILE% 下），
+    ///   保护目录的**子目录**是正常用法（`~\Orbis-work` 就在 %USERPROFILE% 下），
     ///   一律拒掉会让沙箱在任何真实布局下都开不起来。
     fn reject_unsafe(path: &Path, data_dir: Option<&Path>) -> Result<(), (String, String)> {
         let norm = |s: &str| {
@@ -548,7 +548,7 @@ mod imp {
             // 不去掉前缀会被下面的 UNC 规则误杀。
             let stripped = lower.strip_prefix("\\\\?\\").unwrap_or(&lower).to_string();
             // ★ 分隔符要统一。canonicalize 给的是全反斜杠，而工作目录 / dataDir
-            //   可能是 `<用户目录>\AppData\Local/pi-bot/data` 这种混写（环境变量、
+            //   可能是 `<用户目录>\AppData\Local/Orbis/data` 这种混写（环境变量、
             //   脚本传参都会这样）。不归一化的话比较永远不相等，
             //   dataDir 保护被静默绕过（实测：混写路径能拿到 grant）。
             let unified = stripped.replace('/', "\\");
@@ -598,7 +598,7 @@ mod imp {
         // ★ 凭据 / 浏览器配置 / 其它实例的敏感子目录：**包括其子目录**都要拒。
         //
         //   上面那圈只拒“就是 X”和“是 X 的祖先”，允许 X 的子目录当工作目录
-        //   （`~\pi-bot-work` 这种正常用法必须放行）。但那让 `~/.ssh`、
+        //   （`~\Orbis-work` 这种正常用法必须放行）。但那让 `~/.ssh`、
         //   `%APPDATA%\Microsoft\Credentials` 这种“敏感目录本身”也能过 ——
         //   实测：`workDir=~/.ssh` 时 wrap 返回 ok，沙箱里能直接列出
         //   `config` / `config.bak`。所以凭据类目录要整棵子树都拒。
@@ -621,7 +621,7 @@ mod imp {
                 if !base.is_empty() {
                     // 浏览器配置 / 凭据库目录（子目录整棵拒）
                     //
-                    // ★ 不列 `{key}\pi-bot`：那正是 pi-bot 自己的数据目录的
+                    // ★ 不列 `{key}\Orbis`：那正是 Orbis 自己的数据目录的
                     //   上级，而默认工作目录就是 `<dataDir>\workspace`
                     //   （见 server/src/config.js）。把它列成敏感目录会让
                     //   每一个默认配置的 bot 都报 WORKDIR_IS_SENSITIVE ——
@@ -733,7 +733,7 @@ mod imp {
             Ok(v) => v,
             Err((c, m)) => fail(&c, &m),
         };
-        eprintln!("PIBOT_SANDBOX_PROFILE {profile} sid={sid_str}");
+        eprintln!("ORBIS_SANDBOX_PROFILE {profile} sid={sid_str}");
 
         // 工作目录与实例目录都要有 ACE（实例目录放 HOME/TEMP）
         for (dir, mode) in [(&workdir, "rw"), (&instance, "rw")] {
@@ -834,8 +834,8 @@ mod imp {
         }
         // 工作目录通过环境变量交给引导脚本：进程 cwd 在 AC 目录，
         // 用户命令的相对路径要落在真正的工作目录上。
-        env.insert("PIBOT_SANDBOX_WORKDIR".into(), workdir.to_string_lossy().into());
-        env.insert("PIBOT_SANDBOX_INSTANCE".into(), instance.to_string_lossy().into());
+        env.insert("ORBIS_SANDBOX_WORKDIR".into(), workdir.to_string_lossy().into());
+        env.insert("ORBIS_SANDBOX_INSTANCE".into(), instance.to_string_lossy().into());
         let mut env_block = Vec::<u16>::new();
         for (k, v) in &env {
             env_block.extend(wide(&format!("{k}={v}")));
@@ -878,7 +878,7 @@ mod imp {
         let _ = fs::create_dir_all(&ac_temp);
         if let Err((c, m)) = set_ace(&ac_temp, sid, mode_mask("rw"), true, true) {
             // 系统通常已经给了，授失败不阻断，只是记一条
-            eprintln!("PIBOT_SANDBOX_WARN ACE_AC_TEMP {c} {m}");
+            eprintln!("ORBIS_SANDBOX_WARN ACE_AC_TEMP {c} {m}");
         }
 
         let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
@@ -919,7 +919,7 @@ mod imp {
         if std_invalid {
             // 宿主自己就没标准句柄（很少见，双击启动之类）：退回"不传句柄"，
             // 让子进程自己找控制台。至少不因为 -1 句柄让 CreateProcess 失败。
-            eprintln!("PIBOT_SANDBOX_WARN NO_STD_HANDLES");
+            eprintln!("ORBIS_SANDBOX_WARN NO_STD_HANDLES");
             si.StartupInfo.dwFlags = 0;
             si.StartupInfo.hStdInput = std::ptr::null_mut();
             si.StartupInfo.hStdOutput = std::ptr::null_mut();
@@ -998,12 +998,12 @@ mod imp {
         let hr = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
         // 已经不存在也算成功（幂等）：卸载脚本不该因为重复调用而报错。
         if hr >= 0 {
-            println!("PIBOT_SANDBOX_OK delete-profile {profile}");
+            println!("ORBIS_SANDBOX_OK delete-profile {profile}");
             return ExitCode::SUCCESS;
         }
         // ERROR_FILE_NOT_FOUND = 0x80070002
         if (hr as u32 & 0xFFFF) == 2 {
-            println!("PIBOT_SANDBOX_OK delete-profile {profile} (already gone)");
+            println!("ORBIS_SANDBOX_OK delete-profile {profile} (already gone)");
             return ExitCode::SUCCESS;
         }
         fail("PROFILE_DELETE_FAILED", &format!("删除 AppContainer profile 失败（hr=0x{hr:08X}）"));
@@ -1028,7 +1028,7 @@ mod imp {
         }
         // 只检查 profile / SID / ACE 三件事；真正能否跑 PowerShell
         // 由 run 的第一条命令暴露（fail-closed 由 Node 侧根据退出码判定）。
-        println!("PIBOT_SANDBOX_OK selfcheck profile={profile} sid={sid_str}");
+        println!("ORBIS_SANDBOX_OK selfcheck profile={profile} sid={sid_str}");
         ExitCode::SUCCESS
     }
 
@@ -1062,18 +1062,18 @@ mod imp {
     ///   所以这里只到 `X:\` 就是工作目录的根。
     fn powershell_prologue() -> String {
         r#"$ErrorActionPreference = 'Continue'
-$__pibotWork = $env:PIBOT_SANDBOX_WORKDIR
-if ($__pibotWork) {
+$__orbisWork = $env:ORBIS_SANDBOX_WORKDIR
+if ($__orbisWork) {
   try {
-    if (-not (Get-PSDrive -Name 'pibot' -ErrorAction SilentlyContinue)) {
-      New-PSDrive -Name 'pibot' -PSProvider FileSystem -Root $__pibotWork -Scope Global -ErrorAction Stop | Out-Null
+    if (-not (Get-PSDrive -Name 'orbis' -ErrorAction SilentlyContinue)) {
+      New-PSDrive -Name 'orbis' -PSProvider FileSystem -Root $__orbisWork -Scope Global -ErrorAction Stop | Out-Null
     }
-    Set-Location 'pibot:' -ErrorAction Stop
+    Set-Location 'orbis:' -ErrorAction Stop
   } catch {
-    [Console]::Error.WriteLine('PIBOT_SANDBOX_ERR WORKDIR_CD_FAILED ' + $_.Exception.Message)
+    [Console]::Error.WriteLine('ORBIS_SANDBOX_ERR WORKDIR_CD_FAILED ' + $_.Exception.Message)
   }
 } else {
-  [Console]::Error.WriteLine('PIBOT_SANDBOX_ERR WORKDIR_ENV_MISSING')
+  [Console]::Error.WriteLine('ORBIS_SANDBOX_ERR WORKDIR_ENV_MISSING')
 }
 "#
         .to_string()

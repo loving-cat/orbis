@@ -53,13 +53,13 @@ class Notifier {
         body.length > 160 ? '${body.substring(0, 160)}…' : body,
         const NotificationDetails(
           android: AndroidNotificationDetails(
-            'pibot_messages',
+            'orbis_messages',
             '机器人消息',
             channelDescription: '部门/成员干完活时通知你',
             importance: Importance.high,
             priority: Priority.high,
             styleInformation: BigTextStyleInformation(''),
-            groupKey: 'pibot',
+            groupKey: 'orbis',
           ),
           iOS: DarwinNotificationDetails(),
         ),

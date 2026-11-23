@@ -60,7 +60,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 - 真要换成正式 keystore（上应用市场那种），改 `scripts/pack-android.mjs` 里的
   `EXPECTED_SIGNER_SHA256`，并在发布说明里写一句"老用户需先卸载旧版"。
 
-`applicationId` 是 `com.pibot.pi_bot`，同理不能改；`versionCode` 取 `pubspec.yaml`
+`applicationId` 是 `com.orbis.orbis`，同理不能改；`versionCode` 取 `pubspec.yaml`
 的 `+N`，**只增不减**（当前 19）。
 
 ## 手机怎么找电脑：附近的电脑 → 电脑上点允许
@@ -70,8 +70,8 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 
 ```
 手机                                             电脑（宿主）
-  │  ① 广播 UDP 8788  {"t":"pibot.discover"}  →   │  发现应答器
-  │  ←  单播应答 {"t":"pibot.host", name, hostname, urls, approve}
+  │  ① 广播 UDP 8788  {"t":"orbis.discover"}  →   │  发现应答器
+  │  ←  单播应答 {"t":"orbis.host", name, hostname, urls, approve}
   │
   │  ② 点那台电脑 → POST /api/pair/request      →│  弹窗："我的手机 想连接，允许吗"
   │                                              │  人在电脑前点【允许】
@@ -107,7 +107,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 ### 找不到电脑时
 
 1. 两台设备是不是**同一个 Wi-Fi**（有些路由器的访客网络互相隔离，AP isolation）。
-2. 电脑上 Windows 防火墙第一次会问"是否允许 pi-bot 访问网络" —— 要选**允许**；只放行过 TCP 8787 的话，UDP 8788 可能还是拦着的（发现靠它）。
+2. 电脑上 Windows 防火墙第一次会问"是否允许 Orbis 访问网络" —— 要选**允许**；只放行过 TCP 8787 的话，UDP 8788 可能还是拦着的（发现靠它）。
 3. 服务端日志里应该有 `[discovery] 局域网发现已开启：UDP 8788`。没有这行就是端口被占或被 `ORBIS_DISCOVERY=0` 关了。
 4. 实在找不到就点"找不到？手动填地址"，填 `http://<电脑IP>:8787` + 电脑屏幕上那 6 位配对码 —— 这条路一直都能用。
 
@@ -133,7 +133,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 - 存在 `<数据目录>/tls/{cert,key}.pem`，**网卡 IP 变了自动重签**；
 - 生成过程不依赖 openssl（用户机器上不一定有），纯 JS 拼 DER，见 `server/src/tls.js`。
 
-自签证书不证明"这是真的 pi-bot" —— 谁来都能给自己签一张。身份靠下面两条：
+自签证书不证明"这是真的 Orbis" —— 谁来都能给自己签一张。身份靠下面两条：
 
 1. **固定指纹**：手机的 `badCertificateCallback` 只认一个 sha256 指纹
    （`app/lib/pinned_http.dart`）。指纹从发现应答的 `tls.fingerprint` 里拿到，
@@ -151,7 +151,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 | 8443 | **HTTPS / WSS** | 手机（局域网） | 自签证书 + 指纹固定；`ORBIS_TLS_PORT` 可改 |
 | 8788 | UDP | 发现 | 应答里带 `tls: {port, fingerprint}` 和 `https://` 地址 |
 
-Windows 防火墙第一次会问"是否允许 pi-bot 访问网络"，**TCP 8787、TCP 8443、
+Windows 防火墙第一次会问"是否允许 Orbis 访问网络"，**TCP 8787、TCP 8443、
 UDP 8788 三个都要放行**（允许的是同一个程序，通常一次就够）。
 
 ### 关掉加密
@@ -178,7 +178,7 @@ UDP 8788 三个都要放行**（允许的是同一个程序，通常一次就够
 |---|---|
 | 同一个 Wi-Fi 的人自己点一下就连进来 | 连接必须有人在**这台电脑前**点允许；点错了还能在设置里撤销设备 |
 | 知道请求 id 就想换 token | token 只交给**发起请求的那个 IP**（`PAIR_REQUEST_WRONG_NETWORK`），且只交付一次 |
-| 拿广播探针去问"这台机器有 pi-bot 吗" | 只对私有网段/链路本地来源应答（`isLanSource`），公网探针一个字都不回 |
+| 拿广播探针去问"这台机器有 Orbis 吗" | 只对私有网段/链路本地来源应答（`isLanSource`），公网探针一个字都不回 |
 | 用请求接口当弹窗炸弹 | 同 IP 3 次/分钟、同时最多 3 个待批、没人点 30 秒过期 |
 | 手机自己批准自己 | `POST /api/pair/request/<id>` 要求本机身份，未鉴权 401 |
 | 重放一次请求就再连一遍 | 请求一次性；批准后 id 再查只有状态、没有 token |
@@ -214,7 +214,7 @@ UDP 8788 三个都要放行**（允许的是同一个程序，通常一次就够
 
 ```bash
 adb install -r dist/orbis-android-v1.7.0.apk
-adb shell am start -n com.pibot.pi_bot/.MainActivity
+adb shell am start -n com.orbis.orbis/.MainActivity
 ```
 
 | # | 项 | 怎么算过 | 状态 |
@@ -223,7 +223,7 @@ adb shell am start -n com.pibot.pi_bot/.MainActivity
 | 2 | 首屏 = 配对页 | 能看到"配对码 / 固定 token"两页签、服务器地址、6 位配对码、手机名 | ✅ 同上（截图比对过） |
 | 3 | 通知权限弹窗 | 首次启动就弹"允许通知"，选允许 | ✅ 同上 |
 | 4 | 附近的电脑能出现 | 打开 App 就看到电脑的机器名（不是空白列表）；电脑端日志有 `[discovery] 局域网发现已开启` | ✅ 服务端应答器实测（单播探针拿到 name/hostname/urls）；Windows 上 255.255.255.255 广播没回来，需要真机+防火墙确认 |
-| 4b | 点电脑 → 电脑上弹窗 | 手机点那台电脑 → 电脑的 pi-bot 弹「一台手机想连接」，点允许后手机进会话列表 | ✅ 接口链路实测（create → 待批列表 → approve → 手机拿到一次性 token）；弹窗 UI 由 widget 测试覆盖 |
+| 4b | 点电脑 → 电脑上弹窗 | 手机点那台电脑 → 电脑的 Orbis 弹「一台手机想连接」，点允许后手机进会话列表 | ✅ 接口链路实测（create → 待批列表 → approve → 手机拿到一次性 token）；弹窗 UI 由 widget 测试覆盖 |
 | 4c | 拒绝/超时 | 电脑上点拒绝 → 手机明确提示"被拒绝"；不理它 60 秒 → 手机提示过期，重新点即可 | ✅ 服务端与客户端规则都有测试 |
 | 4d | 配对码兜底 | 手动填地址 + 6 位码仍然能连（老服务端/无界面部署） | ⬜ 待真机 |
 | 4e | 加密链路 | 手机连上后设置页显示「已加密」，地址是 `https://…:8443`；电脑端日志有 `🔒 加密监听已开启` | ✅ 服务端实测（https 握手、TLS 1.3、指纹一致）；App 侧由单测覆盖指纹比对 |
@@ -259,7 +259,7 @@ cd app && flutter test test/phone_layout_test.dart
 
 | 能力 | 实现 | 文件 |
 |---|---|---|
-| 常驻前台服务（`dataSync`） | `BotService` + `pibot/native` 通道 | `app/android/.../BotService.kt`、`app/lib/native.dart` |
+| 常驻前台服务（`dataSync`） | `BotService` + `orbis/native` 通道 | `app/android/.../BotService.kt`、`app/lib/native.dart` |
 | 本地通知 | `flutter_local_notifications`，不走 FCM | `app/lib/notify.dart` |
 | 忽略电池优化 | 系统白名单 Intent | `app/lib/native.dart` |
 | 扫码配对 | `mobile_scanner` + 相机权限 | `app/lib/screens/scan_screen.dart` |

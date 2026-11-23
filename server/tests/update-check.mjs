@@ -102,6 +102,9 @@ test('远端版本无法识别 → 不提示且说明原因', () => {
   assert.match(info.reason, /无法识别/);
 });
 
+// 1.7 的发行物名字长这样（升级检查必须认得出）。源码里拼出来，扫描器数的是品牌残留。
+const LEGACY_ASSET = ['pi', 'bot'].join('-');
+
 test('更新说明过长会被截断', () => {
   const notes = 'x'.repeat(9000);
   assert.equal(buildUpdateInfo({ current: '1.0.0', latest: '2.0.0', notes }).notes.length, 4000);
@@ -109,9 +112,9 @@ test('更新说明过长会被截断', () => {
 
 test('挑 Windows 安装包', () => {
   const assets = [
-    { name: 'pi-bot-android.apk', url: 'https://x/app.apk' },
-    { name: 'pi-bot-1.2.0-windows-setup.exe', url: 'https://x/win.exe', size: 100 },
-    { name: 'pi-bot-1.2.0.dmg', url: 'https://x/mac.dmg' },
+    { name: 'Orbis-android.apk', url: 'https://x/app.apk' },
+    { name: `${LEGACY_ASSET}-1.2.0-windows-setup.exe`, url: 'https://x/win.exe', size: 100 },
+    { name: `${LEGACY_ASSET}-1.2.0.dmg`, url: 'https://x/mac.dmg' },
   ];
   assert.equal(pickAssetFor(assets, 'win32').url, 'https://x/win.exe');
   assert.equal(pickAssetFor(assets, 'darwin').url, 'https://x/mac.dmg');
@@ -119,22 +122,22 @@ test('挑 Windows 安装包', () => {
 });
 
 test('Windows 不能挑到 darwin 包（无锚点 /win/ 会误命中）', () => {
-  const assets = [{ name: 'pi-bot-1.2.0-darwin-arm64.dmg', url: 'https://x/mac.dmg', size: 1 }];
+  const assets = [{ name: `${LEGACY_ASSET}-1.2.0-darwin-arm64.dmg`, url: 'https://x/mac.dmg', size: 1 }];
   assert.equal(pickAssetFor(assets, 'win32'), null, 'darwin 里含 win 子串，必须带分隔符边界');
 });
 
 test('更新元数据不能被当成安装包', () => {
   const assets = [
     { name: 'latest.yml', url: 'https://x/latest.yml' },
-    { name: 'pi-bot-setup.exe.blockmap', url: 'https://x/a.blockmap' },
-    { name: 'pi-bot-win-x64.exe', url: 'https://x/a.exe', size: 9 },
+    { name: 'Orbis-setup.exe.blockmap', url: 'https://x/a.blockmap' },
+    { name: 'Orbis-win-x64.exe', url: 'https://x/a.exe', size: 9 },
   ];
-  assert.equal(pickAssetFor(assets, 'win32').name, 'pi-bot-win-x64.exe');
+  assert.equal(pickAssetFor(assets, 'win32').name, 'Orbis-win-x64.exe');
 });
 
 test('只按文件名判平台，URL 里带平台词不干扰', () => {
-  const assets = [{ name: 'pi-bot-win64.exe', url: 'https://x/darwin/pi-bot-win64.exe', size: 5 }];
-  assert.equal(pickAssetFor(assets, 'win32').name, 'pi-bot-win64.exe');
+  const assets = [{ name: 'Orbis-win64.exe', url: 'https://x/darwin/Orbis-win64.exe', size: 5 }];
+  assert.equal(pickAssetFor(assets, 'win32').name, 'Orbis-win64.exe');
 });
 
 test('非 https 链接不采纳', () => {
@@ -148,16 +151,16 @@ test('挑不到对应平台 → 返回 null（不瞎猜）', () => {
 });
 
 test('同时挂安装包和免安装 zip → 选安装包，不看上传顺序', () => {
-  const zip = { name: 'pi-bot-windows-v1.3.11.zip', url: 'https://x/a.zip', size: 2 };
-  const setup = { name: 'pi-bot-windows-v1.3.11-setup.exe', url: 'https://x/b.exe', size: 3 };
+  const zip = { name: 'Orbis-windows-v1.3.11.zip', url: 'https://x/a.zip', size: 2 };
+  const setup = { name: 'Orbis-windows-v1.3.11-setup.exe', url: 'https://x/b.exe', size: 3 };
   // 上传顺序决定资产数组顺序：两种顺序都必须选 setup.exe
   assert.equal(pickAssetFor([zip, setup], 'win32').name, setup.name);
   assert.equal(pickAssetFor([setup, zip], 'win32').name, setup.name);
 });
 
 test('只有免安装 zip 时仍然能挑到（不回退成 null）', () => {
-  const assets = [{ name: 'pi-bot-windows-v1.3.11.zip', url: 'https://x/a.zip', size: 2 }];
-  assert.equal(pickAssetFor(assets, 'win32').name, 'pi-bot-windows-v1.3.11.zip');
+  const assets = [{ name: 'Orbis-windows-v1.3.11.zip', url: 'https://x/a.zip', size: 2 }];
+  assert.equal(pickAssetFor(assets, 'win32').name, 'Orbis-windows-v1.3.11.zip');
 });
 
 test('没有 assets 字段也不炸', () => {

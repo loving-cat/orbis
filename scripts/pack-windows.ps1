@@ -360,11 +360,11 @@ try {
   # Windows sandbox launcher: required when a bot has MCP attached. Missing it
   # is fail-closed (shell refused), not a crash -- but shipping without it
   # would silently disable the feature, so warn loudly here.
-  $sandboxExe = Join-Path $stageServer "resources\pibot-sandbox.exe"
+  $sandboxExe = Join-Path $stageServer "resources\orbis-sandbox.exe"
   if (Test-Path -LiteralPath $sandboxExe) {
-    Write-Host "bundled pibot-sandbox.exe"
+    Write-Host "bundled orbis-sandbox.exe"
   } else {
-    Write-Host "WARNING: server/resources/pibot-sandbox.exe is missing." -ForegroundColor Yellow
+    Write-Host "WARNING: server/resources/orbis-sandbox.exe is missing." -ForegroundColor Yellow
     Write-Host "         Bots with MCP attached will refuse shell commands on this build." -ForegroundColor Yellow
     Write-Host "         Build it with scripts/build-sandbox-win.ps1 (needs Rust + MSVC)." -ForegroundColor Yellow
   }

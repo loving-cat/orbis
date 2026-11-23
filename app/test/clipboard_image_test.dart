@@ -10,11 +10,11 @@ void main() {
   test('从 PowerShell 输出里取出临时 PNG 路径', () {
     const out = r'''
 Add-Type : something
-C:\Users\user\AppData\Local\Temp\pi-bot-paste-abc.png
+C:\Users\user\AppData\Local\Temp\orbis-paste-abc.png
 ''';
     expect(
       clipboardImagePathFromOutput(out),
-      r'C:\Users\user\AppData\Local\Temp\pi-bot-paste-abc.png',
+      r'C:\Users\user\AppData\Local\Temp\orbis-paste-abc.png',
     );
   });
 
@@ -31,7 +31,7 @@ C:\Users\user\AppData\Local\Temp\pi-bot-paste-abc.png
     late Directory root;
 
     setUp(() {
-      root = Directory.systemTemp.createTempSync('pi-bot-clipboard-test-');
+      root = Directory.systemTemp.createTempSync('Orbis-clipboard-test-');
     });
 
     tearDown(() async {

@@ -14,7 +14,7 @@ const roomName = process.argv[4] || 'Pi';
 const auth = token ? { authorization: (token ? `Bearer ${token}` : '') } : {};
 
 // 造一个 xlsx（只是暂存，传完就删 —— 用系统临时目录，别写死谁机器上的路径）
-const dir = path.join(os.tmpdir(), 'pi-bot-attach-test');
+const dir = path.join(os.tmpdir(), 'Orbis-attach-test');
 fs.mkdirSync(dir, { recursive: true });
 const wb = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(

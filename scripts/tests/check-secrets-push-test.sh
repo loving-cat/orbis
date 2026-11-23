@@ -68,10 +68,10 @@ expect "known 'before' only scans the new range" 0 "$d3" "$b4" HEAD
 d4="$(new_repo)"
 commit "$d4" 1+someone@users.noreply.github.com "clean"
 b5="$(git -C "$d4" rev-parse HEAD)"
-commit "$d4" 1+someone@users.noreply.github.com "msg"$'\n\n'"Co-authored-by: pi-bot <$gh_noreply>"
+commit "$d4" 1+someone@users.noreply.github.com "msg"$'\n\n'"Co-authored-by: Orbis <$gh_noreply>"
 expect "github noreply co-author trailer passes" 0 "$d4" "$b5" HEAD
 b6="$(git -C "$d4" rev-parse HEAD)"
-commit "$d4" 1+someone@users.noreply.github.com "msg"$'\n\n'"Co-authored-by: pi-bot <$gh_noreply> Someone <$real_mail>"
+commit "$d4" 1+someone@users.noreply.github.com "msg"$'\n\n'"Co-authored-by: Orbis <$gh_noreply> Someone <$real_mail>"
 expect "real address on the same github noreply line is caught" 1 "$d4" "$b6" HEAD
 
 # ---- 历史豁免是“绑 sha”的，不是“绑内容”的 ----

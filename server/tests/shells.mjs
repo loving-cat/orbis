@@ -11,7 +11,7 @@ import path from 'node:path';
 import { ShellRegistry, trimChunks } from '../src/shells.js';
 
 // 用临时脚本文件跑，避免不同平台 shell 对引号/括号的解析差异
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-shells-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-shells-'));
 const script = (name, body) => {
   const file = path.join(tmp, name);
   fs.writeFileSync(file, body, 'utf8');

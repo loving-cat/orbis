@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-ask-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-ask-'));
 
 // 隔离环境：不碰真实数据目录，也不许出网
 const inherited = new Set(['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT']);

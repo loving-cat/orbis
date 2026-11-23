@@ -20,7 +20,7 @@ import androidx.core.app.NotificationCompat
 class BotService : Service() {
 
     companion object {
-        const val CHANNEL_ID = "pibot_service"
+        const val CHANNEL_ID = "orbis_service"
         const val NOTIFY_ID = 1001
         const val ACTION_START = "com.pibot.pi_bot.START"
         const val ACTION_STOP = "com.pibot.pi_bot.STOP"
@@ -62,7 +62,7 @@ class BotService : Service() {
             "后台常驻",
             NotificationManager.IMPORTANCE_MIN,
         ).apply {
-            description = "保持与 pi-bot 服务端的连接，以便随时收到机器人的消息"
+            description = "保持与 Orbis 服务端的连接，以便随时收到机器人的消息"
             setShowBadge(false)
         }
         manager.createNotificationChannel(channel)
@@ -79,7 +79,7 @@ class BotService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("pi-bot 在线")
+            .setContentTitle("Orbis 在线")
             .setContentText("保持连接中，机器人干活完会通知你")
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
             .setContentIntent(pending)

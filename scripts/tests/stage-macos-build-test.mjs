@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { includeBuildSource, stageMacosBuild } from '../stage-macos-build.mjs';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-stage-test-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-stage-test-'));
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log(`✓ ${name}`); }
 function fixture() {

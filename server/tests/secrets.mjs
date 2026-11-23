@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // store 依赖数据目录，必须在 import 之前指好
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-secrets-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-secrets-'));
 process.env.ORBIS_HOME = tmpRoot;
 
 const { encrypt, decrypt, isEncrypted, loadOrCreateKey, hasKey } = await import('../src/secrets.js');

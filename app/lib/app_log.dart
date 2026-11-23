@@ -11,7 +11,7 @@ import 'server/launcher.dart';
 /// 用户只会说"它闪退了"，我们连堆栈都拿不到。这里把 Flutter 层的错误落盘，
 /// 并在设置页给出日志位置。
 ///
-/// 位置与 server.log 同一个目录（`%LOCALAPPDATA%\\pi-bot` / macOS 的
+/// 位置与 server.log 同一个目录（`%LOCALAPPDATA%\\Orbis` / macOS 的
 /// Application Support），超过 1MB 轮转一次。
 
 Timer? _flushTimer;

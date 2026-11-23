@@ -11,7 +11,7 @@
  *
  * ## 开关控制
  *
- * 默认开启（优先读取 `ORBIS_TASK_INTAKE`，兼容 `PI_BOT_TASK_INTAKE`；设 `'0'` / `'false'` / `'off'` 关闭）。
+ * 默认开启（`ORBIS_TASK_INTAKE`；设 `'0'` / `'false'` / `'off'` 关闭）。
  * SDK 轻量模式由 `createOrbisRuntime` 显式传 `taskIntake: false` 隔离。
  */
 import path from 'node:path';
@@ -27,7 +27,7 @@ import { admitFirstTask, admissionBudget } from './task-admission.js';
 import { createRequestReceipts } from '../tasks/task-request-receipts.js';
 import { config } from '../config.js';
 
-/** 环境开关：默认开启，可通过 ORBIS_TASK_INTAKE=0 / PI_BOT_TASK_INTAKE=0 显式关闭。 */
+/** 环境开关：默认开启，可通过 `ORBIS_TASK_INTAKE=0` 显式关闭。 */
 export function intakeEnabled(env = process.env) {
   const raw = readBrandEnv(env, 'TASK_INTAKE');
   if (raw === undefined || raw === null || String(raw).trim() === '') return true;

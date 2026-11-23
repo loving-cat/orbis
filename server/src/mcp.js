@@ -11,7 +11,7 @@ import { probeMcpServer } from './mcp-probe.js';
  *   全都要在入库前卡死，不能等到建会话时才炸。
  *
  * 与 pi 侧 mcp.json 的关系：
- *   pi 的 mcp.json 是**终端用户**自己的配置；pi-bot 里每个 bot 会话默认**不加载任何 MCP**
+ *   pi 的 mcp.json 是**终端用户**自己的配置；Orbis 里每个 bot 会话默认**不加载任何 MCP**
  *   （见 config.js 的 resourceSwitches）。用户在这里配的 MCP 是给 bot 用的，
  *   由服务端在建会话时按"这个 bot 选了哪几个"逐个注册，不碰用户的 mcp.json。
  */

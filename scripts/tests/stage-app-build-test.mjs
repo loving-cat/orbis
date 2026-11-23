@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { includeBuildSource, stageAppBuild } from '../stage-app-build.mjs';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-stage-app-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-stage-app-'));
 const windowsRequired = ['pubspec.yaml', 'lib/main.dart', 'windows/CMakeLists.txt'];
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log(`✓ ${name}`); }

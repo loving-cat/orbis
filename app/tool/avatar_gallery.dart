@@ -38,7 +38,7 @@ class _AvatarGalleryState extends State<AvatarGallery> {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'pi-bot Avatar Studio',
+    title: 'Orbis Avatar Studio',
     debugShowCheckedModeBanner: false,
     theme: ThemeData.dark().copyWith(
       scaffoldBackgroundColor: const Color(0xFF0F131B),

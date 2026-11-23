@@ -34,15 +34,16 @@ export function isConfigObject(value) {
 /**
  * 用户数据目录：与安装位置无关，重装/换目录不影响数据。
  *
- * Windows 为 %LOCALAPPDATA%\pi-bot\data，macOS 为
- * ~/Library/Application Support/pi-bot/data，Linux 为
- * $XDG_DATA_HOME/pi-bot/data。
+ * Windows 为 %LOCALAPPDATA%\Orbis\data，macOS 为
+ * ~/Library/Application Support/Orbis/data，Linux 为
+ * $XDG_DATA_HOME/Orbis/data。
  */
 // 目录名与平台根的纯规则在 user-dirs.js（那边没有副作用，migrate 命令也用同一份）
 import { HOME_DIR_NAME, LEGACY_HOME_DIR_NAME, userDataBaseDir } from './user-dirs.js';
 
 /**
- * 选一个目录名：`orbis` 优先，旧 `pi-bot` 只在“新目录还不存在”时继续沿用。
+ * 选一个目录名：`orbis` 优先；2.0 起不再沿用 1.7 的旧目录 ——
+ * 发现旧数据时由启动护栏给出 `orbis migrate` 指引（见 noticeLegacyDataIfAny）。
  *
  * ★ 为什么不自动迁移：迁移一旦半途失败（磁盘满、权限、进程被结束），
  *   用户看到的是“我的聊天记录全没了”。沿用旧目录零风险，想换的用户
@@ -146,7 +147,7 @@ export function createConfig(overrides = {}) {
   // ★ 只在「真的要起服务端」且未覆盖 dataDir 时动数据：
   //   index.js 在导入 server-main 之前调用 markServerBoot()。
   //   否则任何 import 了 config 的脚本（诊断、维护、一次性检查）都会改写用户的 state.json。
-  //   用进程内的标记而不是环境变量：ORBIS_* / PI_BOT_* 会被子进程继承（见 child-env.js），
+  //   用进程内的标记而不是环境变量：ORBIS_* / PI_BOT_* 会被子进程继承（见 child-env.js）， —— legacy-guard-ok: 讲为什么不用环境变量
   //   bot 的 shell 里再跑一个导入 config 的脚本也会触发。
   /** 旧数据目录里发现真实数据、但新目录还没有（启动护栏会大声提示） */
   let legacyDataDir = null;

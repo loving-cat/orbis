@@ -35,7 +35,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { providerKeys } from './provider-keys.js';
 
-/** pi-bot 自己的入口。和别的 index.js 比的是绝对路径，不是文件名。 */
+/** Orbis 自己的入口。和别的 index.js 比的是绝对路径，不是文件名。 */
 const ORBIS_ENTRY = fileURLToPath(new URL('./index.js', import.meta.url));
 
 /**

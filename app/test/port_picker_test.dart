@@ -12,11 +12,11 @@ void main() {
       expect(r.problem, isNull);
     });
 
-    test('★ 偏好端口上已是健康 pi-bot → 复用，不新起', () async {
+    test('★ 偏好端口上已是健康 Orbis → 复用，不新起', () async {
       final r = await choosePort(
         8787,
         probe: (p) async =>
-            p == 8787 ? PortProbeKind.piBot : PortProbeKind.free,
+            p == 8787 ? PortProbeKind.orbis : PortProbeKind.free,
       );
       expect(r.port, 8787);
       expect(r.reused, true, reason: '应复用已有实例');
@@ -25,7 +25,7 @@ void main() {
   });
 
   group('偏好端口被占用时', () {
-    test('★ 被非 pi-bot 占用、下一个空闲 → 用下一个，带实际端口', () async {
+    test('★ 被非 Orbis 占用、下一个空闲 → 用下一个，带实际端口', () async {
       final r = await choosePort(
         8787,
         probe: (p) async => switch (p) {
@@ -40,17 +40,17 @@ void main() {
       expect(r.notice, contains('8788'));
     });
 
-    test('★ 邻口上已有 pi-bot → 不复用，继续往后找', () async {
+    test('★ 邻口上已有 Orbis → 不复用，继续往后找', () async {
       final r = await choosePort(
         8787,
         probe: (p) async => switch (p) {
           8787 => PortProbeKind.occupied,
-          8788 => PortProbeKind.piBot, // 邻口的 pi-bot 也不能连
+          8788 => PortProbeKind.orbis, // 邻口的 Orbis 也不能连
           8789 => PortProbeKind.free,
           _ => PortProbeKind.occupied,
         },
       );
-      expect(r.port, 8789, reason: '应跳过邻口的 pi-bot');
+      expect(r.port, 8789, reason: '应跳过邻口的 Orbis');
       expect(r.reused, false);
     });
 
@@ -162,12 +162,12 @@ void main() {
       expect(port, 8444);
     });
 
-    test('★ 邻口是别的 pi-bot 也跳过（加密腿不复用别人的实例）', () async {
+    test('★ 邻口是别的 Orbis 也跳过（加密腿不复用别人的实例）', () async {
       final port = await chooseFreePort(
         8443,
         probe: (p) async {
           if (p == 8443) return PortProbeKind.occupied;
-          if (p == 8444) return PortProbeKind.piBot;
+          if (p == 8444) return PortProbeKind.orbis;
           return PortProbeKind.free;
         },
       );

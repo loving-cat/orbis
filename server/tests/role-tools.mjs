@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-bot-role-tools-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-role-tools-'));
 const keep = new Set(['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT']);
 for (const name of Object.keys(process.env)) if (!keep.has(name)) delete process.env[name];
 Object.assign(process.env, {

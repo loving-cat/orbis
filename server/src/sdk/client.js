@@ -1,7 +1,7 @@
 /**
  * Orbis 远程 HTTP / WebSocket SDK 客户端。
  *
- * 用于从外部 Node 脚本、CI、或独立进程控制已在运行中的 Orbis / pi-bot 服务端实例；
+ * 用于从外部 Node 脚本、CI、或独立进程控制已在运行中的 Orbis / Orbis 服务端实例；
  * 会自动从 `dataDir/local-token` 读本机凭据（或使用显式传入的 token），
  * 并在需要管理员一次性 nonce 的写接口上自动申请并携带 `x-orbis-nonce`。
  */

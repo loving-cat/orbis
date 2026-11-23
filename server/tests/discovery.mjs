@@ -51,7 +51,7 @@ function probe(port, payload, { timeout = 700 } = {}) {
 
 const announce = { name: '我的 Mac', hostname: 'studio-mbp', version: '1.4.1', port: 8787, pairing: true };
 
-await test('探针格式：两种类型都认（orbis.discover / pibot.discover）', () => {
+await test('探针格式：两种类型都认（orbis.discover / orbis.discover）', () => {
   assert.equal(isProbe(Buffer.from(JSON.stringify({ t: PROBE_TYPE }))), true);
   assert.equal(isProbe(Buffer.from('hello')), false);
   assert.equal(isProbe(Buffer.from(JSON.stringify({ t: 'other' }))), false);
@@ -74,7 +74,7 @@ await test('应答字段：名字/机器名/版本/地址都在，且不含配�
   assert.equal(JSON.stringify(a).includes('code'), false, '应答里不能出现配对码字段');
 });
 
-await test('★ 双播：一次探针回两个包（orbis.host + pibot.host），内容一致', async () => {
+await test('★ 双播：一次探针回两个包（orbis.host + orbis.host），内容一致', async () => {
   const responder = await startDiscovery({ port: 0, enabled: true, announcement: () => buildAnnouncement({ ...announce }), logLine: () => {} });
   assert.ok(responder, '应答器应该起来（端口 0 = 随便挑一个）');
   try {
@@ -116,7 +116,7 @@ await test('真 UDP：垃圾包 / 别的类型 → 不回', async () => {
   assert.ok(responder);
   try {
     assert.deepEqual(await probe(responder.port, 'GET / HTTP/1.1'), []);
-    assert.deepEqual(await probe(responder.port, { t: 'pibot.something-else' }), []);
+    assert.deepEqual(await probe(responder.port, { t: 'orbis.something-else' }), []);
   } finally {
     await responder.close();
   }

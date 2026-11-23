@@ -44,7 +44,7 @@ String _ext(String name) {
 /// 临时目录按"这次会话"分开放，避免不同附件的同名文件互相覆盖。
 String attachmentTempDir({String? base}) {
   final root = base ?? Directory.systemTemp.path;
-  return '$root${Platform.pathSeparator}pi-bot-attachments';
+  return '$root${Platform.pathSeparator}Orbis-attachments';
 }
 
 /// 把字节复制到剪贴板（文本附件用）。

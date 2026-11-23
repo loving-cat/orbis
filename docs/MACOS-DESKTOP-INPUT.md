@@ -133,14 +133,14 @@ macOS 没有 `powershell` 这种"一条命令办完事"的通道。三条路，�
 
 | 方案 | 做法 | 代价 | 推荐度 |
 |---|---|---|---|
-| **A. 自写原生二进制** | 在 `native/` 下加一个 `pibot-desktop-mac`（Swift/Rust），服务端 `spawn` 它 | 多一个二进制要构建+签名+打包+版本校验 | ⭐⭐⭐ 推荐 |
+| **A. 自写原生二进制** | 在 `native/` 下加一个 `orbis-desktop-mac`（Swift/Rust），服务端 `spawn` 它 | 多一个二进制要构建+签名+打包+版本校验 | ⭐⭐⭐ 推荐 |
 | **B. osascript 调 ObjC** | `osascript -l JavaScript -e '...'`（JXA）直接调 ObjC 桥 | 慢（每次 ~200ms）、不能发 `CGEvent` 高频事件、JXA 对 CoreGraphics 支持不全 | ⭐ 只适合诊断类（光标位置、窗口标题） |
 | **C. Node 原生插件** | 写 `.node` 插件（node-gyp / napi-rs） | 要为两个架构（arm64/x64）各编一份，还要跟 Node ABI 对齐；升级 Node 就得重编 | ⭐⭐ 不推荐 |
 
 **推荐 A + B 混合**：`cginput` 二进制负责 `perform`（高频、精确），
 其余四个诊断函数用 `osascript` 就够（低频、可以慢）。
 
-`native/` 下已经有先例：`native/pibot-sandbox`（Rust，Windows 沙箱启动器）。
+`native/` 下已经有先例：`native/orbis-sandbox`（Rust，Windows 沙箱启动器）。
 它的构建/版本校验/打包流程可以直接抄：
 
 ```

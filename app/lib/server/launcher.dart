@@ -12,8 +12,8 @@ import 'supervisor.dart';
 ///
 /// 按顺序执行，每一步失败都返回可读的原因：
 ///   1. `/health` 有应答 → 直接复用（已有服务端时不再启动新进程）；
-///   2. 定位服务端入口：用户设置 → `PI_BOT_SERVER` → exe 同级 → 上层目录；
-///   3. 定位 node：用户设置 → `PI_BOT_NODE` → exe 同级 → Program Files → PATH，
+///   2. 定位服务端入口：用户设置 → `ORBIS_SERVER` → exe 同级 → 上层目录；
+///   3. 定位 node：用户设置 → `ORBIS_NODE` → exe 同级 → Program Files → PATH，
 ///      并校验版本（需 22+）；
 ///   4. `node_modules` 缺失时执行 `npm install`（并发/重试共享同一个 Future）；
 ///   5. 启动进程（stdout/stderr 由操作系统重定向到日志文件），轮询 `/health`。
@@ -72,9 +72,9 @@ class LocalServerLauncher {
   /// Windows 是 `%LOCALAPPDATA%\<品牌>`，macOS 是
   /// `~/Library/Application Support/<品牌>` —— 不能用临时目录（重启就没了）。
   ///
-  /// ★ 品牌名 v1.7 起从 `pi-bot` 换成 `orbis`（服务端同样改了，见
+  /// ★ 品牌名 v1.7 起从 `pi-bot` 换成 `orbis`（服务端同样改了，见 —— legacy-guard-ok: 讲品牌历史
   ///   `server/src/config.js` 的 `resolveHomeDir`）。老用户的日志和 pid
-  ///   都在 `pi-bot` 下，服务端也还在读 `pi-bot/data` —— 两边必须用
+  ///   都在 `Orbis` 下，服务端也还在读 `Orbis/data` —— 两边必须用
   ///   **同一个**判定，否则会出现「App 日志在新目录、服务端数据在旧目录」的分叉。
   static Directory defaultStateDir() {
     final sep = Platform.pathSeparator;
@@ -230,7 +230,7 @@ class LocalServerLauncher {
       //   服务端本身保持「端口被占就 exit 1」，不自己顺延 —— 它顺延的话
       //   我们还按偏好端口去连，必然连错。所以决定权在这里。
       //
-      //   偏好端口上已经是健康 pi-bot 时 choosePort 会返回 reused，
+      //   偏好端口上已经是健康 Orbis 时 choosePort 会返回 reused，
       //   直接复用，不新起进程。
       // 最多试两次：第一次用选出来的端口，若启动瞬间被抢走再换下一个重试一次。
       // 两次合起来覆盖的端口仍落在「偏好端口 + 20」范围内（choosePort 自己保证）。
@@ -310,7 +310,7 @@ class LocalServerLauncher {
           );
         }
 
-        // 端口上有人在听但 /health 不是 pi-bot 的 → 我们在选完之后被抢了端口。
+        // 端口上有人在听但 /health 不是 Orbis 的 → 我们在选完之后被抢了端口。
         // （选端口到 listen 之间有空隙，别的程序可能正好挤进来。）
         final stolen = await portOpen('127.0.0.1', port);
         if (!stolen) break;   // 不是被抢，是别的原因失败 → 不重试
@@ -534,7 +534,7 @@ Future<bool> serverAlive(
   Duration timeout = const Duration(seconds: 2),
 }) async {
   final body = await _healthBody(baseUrl, timeout);
-  return body != null && isPiBotHealthResponse(body);
+  return body != null && isOrbisHealthResponse(body);
 }
 
 /// 本机服务端是否开了服务器模式（本机请求也要带 token）。连不上或旧版服务端都算「不要」。
@@ -544,7 +544,7 @@ Future<bool> localServerRequiresToken(
 }) async {
   final body = await _healthBody(baseUrl, timeout);
   return body != null &&
-      isPiBotHealthResponse(body) &&
+      isOrbisHealthResponse(body) &&
       healthRequiresToken(body);
 }
 

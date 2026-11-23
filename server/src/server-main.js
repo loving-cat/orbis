@@ -47,7 +47,7 @@ async function banner(pairing, runner) {
   const lines = [
     '',
     '  ┌───────────────────────────────────────────────┐',
-    '  │               pi-bot   server                 │',
+    '  │               Orbis   server                 │',
     '  └───────────────────────────────────────────────┘',
     `  工作目录   ${c.workspace}`,
     `  数据目录   ${c.dataDir}`,
@@ -274,7 +274,7 @@ async function main() {
     const code = err?.code ?? '';
     if (code === 'EADDRINUSE') {
       log(
-        `❌ 端口 ${config.port} 已被占用 —— 可能上一次的 pi-bot 还在跑。\n` +
+        `❌ 端口 ${config.port} 已被占用 —— 可能上一次的 Orbis 还在跑。\n` +
           `   查一下：lsof -nP -iTCP:${config.port} -sTCP:LISTEN\n` +
           `   或在设置里换一个端口。`,
       );
@@ -453,6 +453,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('pi-bot server 启动失败：', err);
+  console.error('Orbis server 启动失败：', err);
   process.exit(1);
 });

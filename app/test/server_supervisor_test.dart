@@ -12,7 +12,7 @@ const _fixture = r'''
 const http = require('node:http');
 const server = http.createServer((req, res) => {
   res.setHeader('content-type', 'application/json');
-  res.end(JSON.stringify({ok: true, serverName: 'pi-bot fixture', version: '1.0.0',
+  res.end(JSON.stringify({ok: true, serverName: 'Orbis fixture', version: '1.0.0',
     port: process.env.ORBIS_PORT,
     data: process.env.ORBIS_HOME, entry: __filename}));
 });
@@ -79,7 +79,7 @@ void main() {
   });
 
   setUp(() {
-    temp = Directory.systemTemp.createTempSync('pi-bot-supervisor-');
+    temp = Directory.systemTemp.createTempSync('Orbis-supervisor-');
     supervisor = ServerSupervisor(temp);
   });
 
@@ -131,7 +131,7 @@ void main() {
     addTearDown(() => server.close(force: true));
     server.listen((request) {
       request.response.write(
-        '{"ok":true,"serverName":"pi-bot","version":"1.0.0"}',
+        '{"ok":true,"serverName":"Orbis","version":"1.0.0"}',
       );
       unawaited(request.response.close());
     });

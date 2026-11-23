@@ -2,7 +2,7 @@
  * 数据目录迁移与会话路径修复（纯文件操作，不依赖 config / store，可单测）。
  *
  * 旧数据目录是 `<安装目录>/server/data`，现在是用户数据目录
- * （Windows 的 %LOCALAPPDATA%\pi-bot\data 等）。
+ * （Windows 的 %LOCALAPPDATA%\Orbis\data 等）。
  *
  * 两件事：
  *   · migrateLegacyData：新目录还没有数据时，从旧目录复制服务端自己的数据（ENTRIES）。
@@ -62,7 +62,7 @@ export const NEEDS_MIGRATION_MARKER = '.needs-migration.json';
  * config.js 只有看到它才会迁移 / 修复数据目录。放在 globalThis 上、不用环境变量：
  * 环境变量会被子进程继承，这个不会。
  */
-export const SERVER_BOOT = Symbol.for('pi-bot.server-boot');
+export const SERVER_BOOT = Symbol.for('Orbis.server-boot');
 
 /** 入口在导入 server-main（也就是 config / store）之前调用 */
 export function markServerBoot() {

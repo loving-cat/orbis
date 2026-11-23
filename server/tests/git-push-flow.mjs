@@ -54,7 +54,7 @@ async function test(name, fn) {
 
 // ---- 准备：一个仓库 + 一个本地裸远端，并且已经建立上游关系 ----
 raw(['init', '-q', '-b', 'main']);
-raw(['config', 'user.name', 'pi-bot-test']);
+raw(['config', 'user.name', 'Orbis-test']);
 raw(['config', 'user.email', 'test@local']);
 fs.writeFileSync(path.join(repo, 'x.txt'), 'v1\n');
 raw(['add', '-A']);

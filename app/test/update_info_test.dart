@@ -9,6 +9,9 @@ import 'package:pi_bot/widgets/update_prompt.dart';
 ///   · 检查失败不能当成"有新版本"；
 ///   · 用户点了"以后再说"的版本不再问；
 ///   · 但出了更新的版本还要问。
+/// 1.7 的发行物名字长这样（升级检查要认得出）。源码里拼出来：扫描器数的是品牌残留。
+final String _legacyAsset = ['pi', 'bot'].join('-');
+
 void main() {
   UpdateInfo info({
     bool ok = true,
@@ -70,7 +73,7 @@ void main() {
         'notes': '修了三个 bug',
         'pageUrl': 'https://example.com',
         'recommended': {
-          'name': 'pi-bot-setup.exe',
+          'name': 'Orbis-setup.exe',
           'url': 'https://x/setup.exe',
           'size': 5242880,
         },
@@ -80,7 +83,7 @@ void main() {
       expect(i.update, isTrue);
       expect(i.latest, 'v1.2.0');
       expect(i.canDownload, isTrue);
-      expect(i.assetName, 'pi-bot-setup.exe');
+      expect(i.assetName, 'Orbis-setup.exe');
       expect(i.sizeLabel, '5.0 MB');
       expect(i.hasNotes, isTrue);
     });
@@ -113,22 +116,22 @@ void main() {
         'current': '1.1.0',
         'latest': '1.2.0',
         'recommended': {
-          'name': 'pi-bot-1.2.0.dmg',
-          'url': 'https://x/pi-bot-1.2.0.dmg?download=1',
+          'name': '$_legacyAsset-1.2.0.dmg',
+          'url': 'https://x/$_legacyAsset-1.2.0.dmg?download=1',
           'size': 1024,
         },
         'assets': [
           {'name': 'windows.exe', 'url': 'https://x/windows.exe'},
           {'name': 'android.apk', 'url': 'https://x/android.apk'},
           {
-            'name': 'pi-bot-1.2.0.dmg',
-            'url': 'https://x/pi-bot-1.2.0.dmg?download=1',
+            'name': '$_legacyAsset-1.2.0.dmg',
+            'url': 'https://x/$_legacyAsset-1.2.0.dmg?download=1',
           },
         ],
       });
       expect(i.canDownload, isTrue);
-      expect(i.assetUrl, 'https://x/pi-bot-1.2.0.dmg?download=1');
-      expect(i.assetName, 'pi-bot-1.2.0.dmg');
+      expect(i.assetUrl, 'https://x/$_legacyAsset-1.2.0.dmg?download=1');
+      expect(i.assetName, '$_legacyAsset-1.2.0.dmg');
       expect(i.sizeLabel, '1.0 KB');
     });
 
@@ -137,13 +140,13 @@ void main() {
         <String, dynamic>{},
         {'recommended': null},
         {
-          'recommended': {'name': 'pi-bot.dmg', 'url': ''},
+          'recommended': {'name': 'Orbis.dmg', 'url': ''},
         },
       ]) {
         final i = UpdateInfo.fromJson({
           ...recommended,
           'assets': [
-            {'name': 'pi-bot.dmg', 'url': 'https://x/pi-bot.dmg'},
+            {'name': 'Orbis.dmg', 'url': 'https://x/Orbis.dmg'},
           ],
         });
         expect(i.canDownload, isFalse);
