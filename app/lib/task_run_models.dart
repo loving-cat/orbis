@@ -311,18 +311,26 @@ class TaskRunPlanStep {
     this.index = 0,
     this.title = '',
     this.owner = '',
+    this.ownerBotId = '',
     this.status = 'pending',
   });
 
   final int index;
   final String title;
+
+  /// 负责人（服务端已经按 `nameOf` 翻译过一次；老数据可能还是 botId）。
   final String owner;
+
+  /// 负责人的 botId。有它就能在本地再解析一次真实名字 —— 服务端不认识这只
+  /// bot（已删/换机器）时 `owner` 会退回原名，而这里能兜住「名字是 id」的老数据。
+  final String ownerBotId;
   final String status;
 
   factory TaskRunPlanStep.fromJson(Map<String, dynamic> json) => TaskRunPlanStep(
     index: _asInt(json['index']),
     title: _asString(json['title']),
     owner: _asString(json['owner']),
+    ownerBotId: _asString(json['ownerBotId']),
     status: _asString(json['status'], 'pending'),
   );
 }

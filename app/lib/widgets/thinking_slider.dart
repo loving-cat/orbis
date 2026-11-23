@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
@@ -132,6 +133,12 @@ class _ThinkingSliderState extends State<ThinkingSlider>
   String? _gestureValue;
   bool _dragging = false;
 
+  /// 已经排了「点按取消」但还没执行。轻点被判成拖拽时，手势系统会先给
+  /// `onTapCancel`、同一帧再给 `onHorizontalDragStart` —— 立刻回弹就是
+  /// 用户看到的「先弹回旧档、再跳回手指位置」。所以这次取消推迟到微任务，
+  /// 真被拖拽接管了就作废。
+  bool _tapCancelPending = false;
+
   late final Ticker _ticker = createTicker(_onTick);
   Duration _lastTick = Duration.zero;
   double _phase = 0.0;
@@ -259,6 +266,8 @@ class _ThinkingSliderState extends State<ThinkingSlider>
 
   void _begin(double dx, double width, {bool dragging = false}) {
     if (!widget.enabled || widget.levels.length < 2) return;
+    // 拖拽/点按已经接管：刚才排的取消作废（见 _tapCancelPending）
+    _tapCancelPending = false;
     _gestureLevels = List.of(widget.levels);
     _gestureValue = widget.value;
     _dragging = dragging;
@@ -270,7 +279,11 @@ class _ThinkingSliderState extends State<ThinkingSlider>
       _cancel();
       return;
     }
-    final t = (dx / math.max(1, width)).clamp(0.0, 1.0);
+    // ★ 和 _TrackPainter 的几何对齐：轨道左右各内缩 15px（knob 9 + 6 余量）。
+    //   用 dx / width 归一化会让最左/最右差半档，点刻度时停错档位。
+    const pad = 15.0;
+    final span = math.max(1.0, width - pad * 2);
+    final t = ((dx - pad) / span).clamp(0.0, 1.0);
     final idx = _indexForT(t);
     final snapped = widget.levels.length <= 1
         ? 0.0
@@ -279,7 +292,24 @@ class _ThinkingSliderState extends State<ThinkingSlider>
     _syncTicker();
   }
 
+  /// 点按被取消：推迟一个微任务再看要不要回弹（见 [_tapCancelPending]）。
+  void _onTapCancel() {
+    _tapCancelPending = true;
+    scheduleMicrotask(() {
+      if (!mounted || !_tapCancelPending) return;
+      _tapCancelPending = false;
+      _cancel(tapOnly: true);
+    });
+  }
+
+  /// 拖拽被取消（不是被别的识别器接管）：立刻回弹，同时丢掉挂起的点按取消。
+  void _onDragCancel() {
+    _tapCancelPending = false;
+    _cancel();
+  }
+
   void _commit() {
+    _tapCancelPending = false;
     final t = _dragT;
     if (t == null) return;
     if (!_gestureValid || widget.levels.length < 2) {
@@ -314,18 +344,22 @@ class _ThinkingSliderState extends State<ThinkingSlider>
           onEnter: (_) => _setHover(true),
           onExit: (_) => _setHover(false),
           child: Listener(
-            onPointerCancel: (_) => _cancel(),
+            onPointerCancel: (_) {
+              // 指针本身被系统取消（来电/窗口失焦）：没有拖拽能接管，立刻回弹
+              _tapCancelPending = false;
+              _cancel();
+            },
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapDown: (d) => _begin(d.localPosition.dx, width),
               onTapUp: (_) => _commit(),
-              onTapCancel: () => _cancel(tapOnly: true),
+              onTapCancel: _onTapCancel,
               onHorizontalDragStart: (d) =>
                   _begin(d.localPosition.dx, width, dragging: true),
               onHorizontalDragUpdate: (d) =>
                   _updateFromDx(d.localPosition.dx, width),
               onHorizontalDragEnd: (_) => _commit(),
-              onHorizontalDragCancel: _cancel,
+              onHorizontalDragCancel: _onDragCancel,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [_track(), const SizedBox(height: 6), _labels()],

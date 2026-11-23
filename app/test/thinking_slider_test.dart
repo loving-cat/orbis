@@ -257,6 +257,36 @@ void main() {
     expect(picked, ['medium']);
   });
 
+  testWidgets('★ 轻点带 3px 水平抖动：不出现「先弹回旧档」的中间帧，直接过渡到拖拽', (tester) async {
+    // 已保存的是 low、手指按在 max 上：整段手势里**任何一帧**都不许回到 low。
+    // 旧实现在 tapCancel 时立刻 `_cancel()` 回弹，被拖拽接管后再跳回来；
+    // 现在取消推迟到微任务（`onHorizontalDragStart` 一到就作废），逐帧断言钉住。
+    final picked = <String>[];
+    await _pump(tester, value: 'low', onChanged: picked.add);
+    final rect = tester.getRect(find.byType(ThinkingSlider));
+    final saved = _t(tester);
+    expect(saved, lessThan(0.5));
+
+    final gesture = await tester.startGesture(Offset(rect.right - 4, rect.center.dy));
+    // onTapDown 要等手势竞技场判定（有横向拖拽竞争时是 kPressTimeout=100ms）
+    await tester.pump(const Duration(milliseconds: 120));
+    final pressed = _t(tester);
+    expect(pressed, greaterThan(saved + 0.3), reason: '按下就该预览到手指位置');
+
+    // 抖 3px：这一帧不许回弹
+    await gesture.moveBy(const Offset(3, 0));
+    await tester.pump();
+    expect(_t(tester), closeTo(pressed, 0.05), reason: '抖动一帧就弹回旧档 = 抽搐');
+
+    // 继续拖 → 正常接管，最终提交手指所在的那一档
+    await gesture.moveBy(const Offset(40, 0));
+    await tester.pump();
+    expect(_t(tester), greaterThan(pressed - 0.05));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(picked, ['max']);
+  });
+
   testWidgets('选中档位的标签会高亮', (tester) async {
     await _pump(tester, value: 'max');
     // 每一档都有标签；高亮的是当前档
@@ -343,6 +373,9 @@ void main() {
 }
 
 void _noop(String _) {}
+
+/// 读当前归一化位置（0..1）：painter 是私有的，只能动态取。
+double _t(WidgetTester tester) => (_painter(tester) as dynamic).t as double;
 
 CustomPainter _painter(WidgetTester tester) => tester
     .widget<CustomPaint>(

@@ -71,6 +71,8 @@ function commandIdOf(scope) {
 
 export function buildTaskInsightTools({ runner, store, roomId, botId }) {
   const taskRuns = store.taskRuns;
+  // 回执里的快照要给人看：负责人/参与者按 id 现查名字（历史数据里可能存的就是 id）。
+  const nameOf = (botId) => store.getBot?.(botId)?.name ?? '';
   const currentScope = () => runner.currentRequestScope?.(roomId, botId) ?? null;
   const answerCurrent = (reason) => {
     const scope = currentScope();
@@ -140,7 +142,7 @@ export function buildTaskInsightTools({ runner, store, roomId, botId }) {
         },
         device: { id: requesterId },
         findRun: (id) => store.taskRuns.read(id)?.taskRun ?? null,
-        snapshotOf: (run) => projectTaskRun(run),
+        snapshotOf: (run) => projectTaskRun(run, { nameOf }),
       });
 
       // 重放：先读原操作信封与应用事实，不按当前版本/当前 Goal 重新解释
@@ -229,7 +231,7 @@ export function buildTaskInsightTools({ runner, store, roomId, botId }) {
         },
         device: { id: scope.requesterId },
         findRun: (id) => store.taskRuns.read(id)?.taskRun ?? null,
-        snapshotOf: (run) => projectTaskRun(run),
+        snapshotOf: (run) => projectTaskRun(run, { nameOf }),
       });
       if (!out || out.status >= 400) {
         return error('解除阻塞未生效：' + (out?.body?.text ?? out?.body?.code ?? '未知错误'));
@@ -279,7 +281,7 @@ export function buildTaskInsightTools({ runner, store, roomId, botId }) {
         },
         device: { id: scope.requesterId },
         findRun: (id) => store.taskRuns.read(id)?.taskRun ?? null,
-        snapshotOf: (run) => projectTaskRun(run),
+        snapshotOf: (run) => projectTaskRun(run, { nameOf }),
       });
       if (!out || out.status >= 400) {
         return error('追加额度未生效：' + (out?.body?.text ?? out?.body?.code ?? '未知错误'));

@@ -86,6 +86,19 @@ class _BotRunSectionState extends State<BotRunSection> {
     text: widget.bot.keepRecentTokens?.toString() ?? '',
   );
   bool _saving = false;
+
+  /// 思考等级的**乐观值**：点下去立刻显示，不等 HTTP 回来。
+  ///
+  /// 症状（用户原话「点修改思考等级时抽搐一下」）：滑条先弹回旧档再跳到新档。
+  /// 两个原因叠在一起：
+  ///   · 改思考等级走 `_patch` → `_saving = true` → 滑条 `enabled: false`，整条变灰；
+  ///   · `value` 仍然取 `widget.bot.thinking`，那个值要等服务端回显才变。
+  /// 所以这里自己记一个「已经点过、还没回显」的值，回显到了再交还权威值。
+  String? _pendingThinking;
+
+  /// 思考等级请求序号：连续点击只认最新一次的结果（last-write-wins）。
+  int _thinkingSeq = 0;
+
   ModelSelectionSave? _modelSave;
   AppState? _modelState;
   Object? _modelApi;
@@ -156,6 +169,13 @@ class _BotRunSectionState extends State<BotRunSection> {
       _model.text = widget.bot.model ?? '';
       _reserve.text = widget.bot.reserveTokens?.toString() ?? '';
       _keep.text = widget.bot.keepRecentTokens?.toString() ?? '';
+      // 乐观值属于上一只 bot：留着会把新 bot 的滑条显示成旧 bot 的档位。
+      _pendingThinking = null;
+      _thinkingSeq++; // 让还在飞的请求作废
+    } else if (_pendingThinking != null &&
+        (widget.bot.thinking ?? '') == _pendingThinking) {
+      // 服务端回显到了：权威值已经等于乐观值，此刻交还控制权不会有任何闪烁。
+      _pendingThinking = null;
     }
     _bindModelSave(AppScope.read(context));
   }
@@ -167,6 +187,24 @@ class _BotRunSectionState extends State<BotRunSection> {
     _reserve.dispose();
     _keep.dispose();
     super.dispose();
+  }
+
+  /// 改思考等级：**先本地生效**，再等保存结果。
+  ///
+  /// 不走 [_patch]（那个会把 `_saving` 置 true 让滑条变灰）；
+  /// 成功后把乐观值一直留到服务端回显（见 didUpdateWidget），失败才回滚。
+  Future<void> _setThinking(String level) async {
+    final seq = ++_thinkingSeq;
+    final botId = widget.bot.id;
+    final state = AppScope.read(context);
+    setState(() => _pendingThinking = level);
+    await state.updateBot(botId, {'thinking': level});
+    if (!mounted || seq != _thinkingSeq) return; // 又有新的点击了，交给它
+    // updateBot 内部吞异常（只记 lastError），所以以「本地花名册里的值」为准。
+    final saved = (state.botById(botId)?.thinking ?? '') == level;
+    if (saved) return;
+    setState(() => _pendingThinking = null); // 回滚到权威值
+    _toast(L10n.s(context).t('think.levelSaveFailed'));
   }
 
   Future<void> _patch(Map<String, dynamic> patch, {String? msg}) async {
@@ -306,11 +344,12 @@ class _BotRunSectionState extends State<BotRunSection> {
         // 滑条更贴合"思考强度是一根刻度尺"的心理模型；顶格（max）时小球会呼吸发光。
         ThinkingLevelField(
           levels: _levelsFor(AppScope.of(context)),
-          value: thinking.isEmpty ? null : thinking,
+          // 乐观值优先：点下去的这一帧就是新档位，不回弹、不变灰。
+          value: _pendingThinking ?? (thinking.isEmpty ? null : thinking),
           enabled: !saving,
           onChanged: (level) {
-            // 停到某一档就立刻生效，不弹提示（滑块本身已经给出反馈）
-            _patch({'thinking': level});
+            // 停到某一档就立刻生效；滑条自己的位置已经给出反馈，不必弹 toast。
+            unawaited(_setThinking(level));
           },
         ),
         const SizedBox(height: 12),

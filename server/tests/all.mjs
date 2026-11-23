@@ -43,6 +43,7 @@ const TESTS = [
   'unit',
   'tasks',
   'task-projection',
+  'task-plan-tool',
   'task-supervisor',
   'task-commands',
   'task-budget',

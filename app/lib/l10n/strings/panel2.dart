@@ -150,6 +150,7 @@ const areaPanel2 = StringArea(
     'think.switchingModel': '正在切换模型…',
     'think.switchUnconfirmed': '未能确认模型切换，请重试。',
     'think.switchApplied': '模型已切换，下一轮使用',
+    'think.levelSaveFailed': '思考等级没保存成功，已回到原来的档位',
     'think.contextBudget': '上下文预算',
     'think.budgetHint': '留空就用全局默认。改大 = 记得更多但更贵；改小 = 便宜但更容易忘事。',
     'think.reserveLabel': '预留（给回复）',
@@ -571,6 +572,8 @@ const areaPanel2 = StringArea(
     'think.switchUnconfirmed':
         'Could not confirm the model switch. Please try again.',
     'think.switchApplied': 'Model switched. It will be used next turn.',
+    'think.levelSaveFailed':
+        'Could not save the thinking level; back to the previous one.',
     'think.contextBudget': 'Context budget',
     'think.budgetHint': 'Leave blank to use the global default. Larger means better recall at a higher cost; smaller is cheaper but forgets sooner.',
     'think.reserveLabel': 'Reserve (for replies)',

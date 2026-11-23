@@ -1,7 +1,7 @@
 /** 任务投影：plan 字段必须和存储层一致，不能出现 [object Object]。 */
 import assert from 'node:assert/strict';
 
-const { projectTaskRun } = await import('../src/tasks/task-transport.js');
+const { projectTaskRun, projectTaskRunList } = await import('../src/tasks/task-transport.js');
 
 let passed = 0;
 let failed = 0;
@@ -101,6 +101,42 @@ test('★ flags.legacyNote 透传到投影（W5c 前端消费的就是这个字�
   assert.equal(marked.legacyNote, true, '打过标必须告诉前端');
   const plain = projectTaskRun({ ...base, flags: {} });
   assert.equal(plain.legacyNote, false, '没打标就是 false');
+});
+
+test('★ 老数据 memberName 存的是 botId：经 nameOf 还原真实名字，并透出 ownerBotId', () => {
+  // normalizePlan 早期把 member 里的 botId 原样存进了 memberName，
+  // 已落盘的历史任务只能用 nameOf 现查回来 —— 否则界面显示 b_xxxx。
+  const names = { b1: '数据核验员' };
+  const out = projectTaskRun(taskRun({
+    steps: [{ task: '盘点现有数据集', memberName: 'b1', memberBotId: 'b1' }],
+  }), { nameOf: (id) => names[id] ?? '' });
+  assert.equal(out.plan.steps[0].owner, '数据核验员');
+  assert.equal(out.plan.steps[0].ownerBotId, 'b1');
+});
+
+test('★ 只有 memberName（没有 memberBotId）时也按名字/id 现查，最多退回原值', () => {
+  const names = { b2: '财务建模师' };
+  const out = projectTaskRun(taskRun({
+    steps: [{ task: '写出核算口径', memberName: 'b2' }],
+  }), { nameOf: (id) => names[id] ?? '' });
+  assert.equal(out.plan.steps[0].owner, '财务建模师');
+  assert.equal(out.plan.steps[0].ownerBotId, '');
+
+  // 不传 nameOf（纯投影）时保持落盘值，不能崩、不能变空
+  const plain = projectTaskRun(taskRun({ steps: [{ task: 'x', memberName: '财务建模师' }] }));
+  assert.equal(plain.plan.steps[0].owner, '财务建模师');
+});
+
+test('★ projectTaskRunList 把 nameOf 透传给每一条（WS hello 快照用这条路）', () => {
+  const names = { b1: '数据核验员', b2: '财务建模师' };
+  const list = projectTaskRunList([
+    taskRun({ steps: [{ task: 'a', memberName: 'b1', memberBotId: 'b1' }] }),
+    taskRun({ steps: [{ task: 'b', memberName: 'b2', memberBotId: 'b2' }] }),
+  ], { nameOf: (id) => names[id] ?? '' });
+  assert.deepEqual(list.map((t) => t.plan.steps[0].owner), ['数据核验员', '财务建模师']);
+  // 不传 nameOf 时行为与原来一致（退回落盘值）
+  const plain = projectTaskRunList([taskRun({ steps: [{ task: 'a', memberName: 'b1' }] })]);
+  assert.equal(plain[0].plan.steps[0].owner, 'b1');
 });
 
 console.log(`\n任务投影：${passed}/${passed + failed} 通过`);

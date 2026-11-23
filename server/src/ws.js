@@ -171,20 +171,35 @@ export function attachWs(server, { runner }) {
       const loaded = store.taskRuns.read(rootId);
       return loaded?.status === 'found' ? loaded.taskRun : null;
     };
+    // 子任务索引：复用上面已扫过的 runs，不再额外扫盘（review 里点过这个成本）。
+    const kids = new Map();
+    for (const r of runs) {
+      const parent = r?.parentTaskId;
+      if (!parent) continue;
+      let arr = kids.get(parent);
+      if (!arr) kids.set(parent, (arr = []));
+      arr.push(r);
+    }
+    const childrenOf = (run) => (kids.get(run.id) ?? [])
+      // 与 /api/task-runs 同一套口径：只看本版本（revision）的子任务
+      .filter((r) => (r.parentRevision ?? r.revision) === run.revision);
+    const nameOf = (botId) => store.getBot?.(botId)?.name ?? '';
     const activeCount = runs.filter(
       (r) => r.state !== 'completed' && r.state !== 'cancelled',
     ).length;
     const snap = {
       // 活跃任务权威快照：断线重连靠它补齐；仍以 taskRun.* 增量更新
       // 活跃任务权威快照（含完整性与根预算）+ 最近终态（历史入口）
-      taskRuns: projectTaskRunList(runs, { includeDone: false, limit: 200, rootOf }),
+      taskRuns: projectTaskRunList(runs, {
+        includeDone: false, limit: 200, rootOf, nameOf, childrenOf,
+      }),
       taskRunMeta: {
         activeCount,
         activeComplete: activeCount <= 200,
         activeLimit: 200,
       },
       recentTaskRuns: projectTaskRunList(runs, {
-        includeDone: true, limit: 500, rootOf,
+        includeDone: true, limit: 500, rootOf, nameOf, childrenOf,
       })
         .filter((t) => t.state === 'completed' || t.state === 'cancelled')
         .slice(0, 30),

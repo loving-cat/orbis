@@ -41,17 +41,28 @@ const MAX_STEP_CHARS = 300;
  */
 export function normalizePlan(steps, members = []) {
   if (!Array.isArray(steps) || !steps.length) return { ok: false, text: '计划至少要有一条分工。' };
-  const byName = new Map(members.map((m) => [String(m.name ?? '').trim(), m.id]));
-  const byId = new Set(members.map((m) => m.id));
+  const byName = new Map();
+  const byId = new Map();
+  for (const m of members) {
+    if (!m || !m.id) continue;
+    byId.set(String(m.id), m);
+    const name = String(m.name ?? '').trim();
+    if (name && !byName.has(name)) byName.set(name, m);
+  }
   const out = [];
   for (const raw of steps.slice(0, MAX_STEPS)) {
     const task = String(raw?.task ?? raw?.requirement ?? '').trim().slice(0, MAX_STEP_CHARS);
     if (!task) continue;
     const who = String(raw?.member ?? raw?.assignee ?? '').trim();
-    const botId = byId.has(who) ? who : (byName.get(who) ?? null);
+    // ★ 模型常直接把 botId 填进 member（它手里两个都有）。存进 memberName 的话，
+    //   界面上「负责人」那一列就变成 `b_xxxx` —— 用户原话「任务面板里露出 botId」。
+    //   命中成员时一律存真实 name，只有解析不到的人名才原样保留。
+    const hit = byId.get(who) ?? byName.get(who) ?? null;
+    const botId = hit ? String(hit.id) : null;
+    const displayName = String(hit?.name ?? '').trim() || who || '未指定';
     out.push({
       task,
-      memberName: who || '未指定',
+      memberName: displayName,
       memberBotId: botId,
       deliverable: String(raw?.deliverable ?? '').trim().slice(0, MAX_STEP_CHARS),
       // 这条分工要动哪些文件。派活时带上它，搅车的活才会排队。
@@ -68,6 +79,33 @@ export function renderPlan(steps) {
   return steps
     .map((s, i) => (i + 1) + '. ' + s.memberName + '：' + s.task + (s.deliverable ? '（交付：' + s.deliverable + '）' : ''))
     .join('\n');
+}
+
+/**
+ * 计划里可解析的候选成员：**房间成员优先，花名册兜底**。
+ *
+ * ★ 为什么不能只看 `room.botIds`：负责人会在主控私聊里派活给别的房间的 Bot，
+ *   也可能直接引用花名册里的名字。少了兜底，这些条目解析不到成员，
+ *   计划里的负责人就退化成一串 botId 显示给用户。
+ *
+ * 抽成独立函数是为了能单测这条收集规则（不依赖 runner 的受管提交流程）。
+ *
+ * @param {object} store
+ * @param {string} roomId
+ * @returns {Array<{id:string, name:string, role:string}>}
+ */
+export function planMembersFor(store, roomId) {
+  const room = store?.getRoom?.(roomId);
+  const members = [];
+  const seen = new Set();
+  const push = (b) => {
+    if (!b?.id || seen.has(b.id)) return;
+    seen.add(b.id);
+    members.push({ id: b.id, name: b.name, role: b.role });
+  };
+  for (const id of room?.botIds ?? []) push(store.getBot?.(id));
+  for (const b of store?.listBots?.() ?? []) push(b);
+  return members;
 }
 
 /**
@@ -115,11 +153,7 @@ export function buildPlanTool({ runner, store, roomId, botId }) {
       const run = loaded?.status === 'found' ? loaded.taskRun : null;
       if (!run) return error('找不到当前任务，不能写计划。');
 
-      const room = store.getRoom(roomId);
-      const members = (room?.botIds ?? [])
-        .map((id) => store.getBot(id))
-        .filter(Boolean)
-        .map((b) => ({ id: b.id, name: b.name, role: b.role }));
+      const members = planMembersFor(store, roomId);
 
       const normalized = normalizePlan(params?.steps, members);
       if (!normalized.ok) return error(normalized.text);

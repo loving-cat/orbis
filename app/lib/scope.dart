@@ -19,6 +19,10 @@ class AppScope extends InheritedNotifier<AppState> {
     final scope = context.getInheritedWidgetOfExactType<AppScope>();
     return scope!.notifier!;
   }
+
+  /// 拿不到就返回 null（可复用的展示组件用这个：单测里常常不挂 AppScope）。
+  static AppState? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AppScope>()?.notifier;
 }
 
 /// 从任何地方请求"切到某个会话"（点 @提及 / 点引用气泡 / 点通知都走这里）。

@@ -165,20 +165,32 @@ export function projectTaskRun(taskRun, { root = null, children = null, nameOf =
     //   带上 steps 与生成时间，界面才能把它显示出来。
     plan: Array.isArray(taskRun.plan?.steps) && taskRun.plan.steps.length
       ? {
-          steps: taskRun.plan.steps.slice(0, 20).map((s, i) => ({
-            index: i + 1,
-            // ★ 字段名必须和 normalizePlan 存的保持一致。
-            //
-            //   存储层（task-plan-tool.js 的 normalizePlan）写的是
-            //   { task, memberName, memberBotId, deliverable }，
-            //   而这里原来读的是 title/text、owner/botName —— 全都读不到，
-            //   于是退回整个对象，String(对象) 就成了 "[object Object]"。
-            //
-            //   保留 title/text/owner 作为兼容读法：老数据可能用过别的写法。
-            title: String(s?.task ?? s?.title ?? s?.text ?? '').slice(0, 200),
-            owner: String(s?.memberName ?? s?.owner ?? s?.botName ?? '').slice(0, 80),
-            status: String(s?.status ?? 'pending'),
-          })),
+          steps: taskRun.plan.steps.slice(0, 20).map((s, i) => {
+            const rawOwner = String(s?.memberName ?? s?.owner ?? s?.botName ?? '').trim();
+            const ownerBotId = String(s?.memberBotId ?? s?.ownerBotId ?? '').trim();
+            // ★ 名字要按 id 现查，不能只信落盘的那一列：
+            //   历史任务的 memberName 可能就是 botId（normalizePlan 以前存的是 id），
+            //   所以按「id → 名字」「名字恰好是 id → 名字」两层翻译后再退回原值。
+            const resolved = typeof nameOf === 'function'
+              ? (nameOf(ownerBotId) || nameOf(rawOwner) || '')
+              : '';
+            return {
+              index: i + 1,
+              // ★ 字段名必须和 normalizePlan 存的保持一致。
+              //
+              //   存储层（task-plan-tool.js 的 normalizePlan）写的是
+              //   { task, memberName, memberBotId, deliverable }，
+              //   而这里原来读的是 title/text、owner/botName —— 全都读不到，
+              //   于是退回整个对象，String(对象) 就成了 "[object Object]"。
+              //
+              //   保留 title/text/owner 作为兼容读法：老数据可能用过别的写法。
+              title: String(s?.task ?? s?.title ?? s?.text ?? '').slice(0, 200),
+              owner: String(resolved || rawOwner).slice(0, 80),
+              // 前端按 id 再解析一次：服务端不认识这个 bot（已删）时也能兜底显示原值。
+              ownerBotId,
+              status: String(s?.status ?? 'pending'),
+            };
+          }),
           at: taskRun.plan.at ?? null,
           revision: taskRun.plan.revision ?? null,
         }
@@ -188,9 +200,16 @@ export function projectTaskRun(taskRun, { root = null, children = null, nameOf =
 }
 
 /** 列表投影：默认只列未终态 + 最近完成的（避免旧清单淹没）。 */
-export function projectTaskRunList(taskRuns, { includeDone = true, limit = 50, rootOf = null, childrenOf = null } = {}) {
+export function projectTaskRunList(
+  taskRuns,
+  { includeDone = true, limit = 50, rootOf = null, childrenOf = null, nameOf = null } = {},
+) {
   const list = taskRuns
-    .map((run) => projectTaskRun(run, { root: typeof rootOf === 'function' ? rootOf(run) : null, children: typeof childrenOf === 'function' ? childrenOf(run) : null }))
+    .map((run) => projectTaskRun(run, {
+      root: typeof rootOf === 'function' ? rootOf(run) : null,
+      children: typeof childrenOf === 'function' ? childrenOf(run) : null,
+      nameOf,
+    }))
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   const visible = includeDone ? list : list.filter((t) => t.state !== 'completed' && t.state !== 'cancelled');
   return visible.slice(0, limit);

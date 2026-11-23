@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../app_state.dart';
 import '../scope.dart';
+import '../task_bot_name.dart';
 import '../task_run_models.dart';
 import '../theme.dart';
 
@@ -67,7 +69,7 @@ class RoomTaskPanel extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               for (final task in tasks.take(3))
-                _TaskRow(task: task, onTap: () => onOpen(task)),
+                _TaskRow(task: task, state: state, onTap: () => onOpen(task)),
             ],
           ),
         );
@@ -77,9 +79,10 @@ class RoomTaskPanel extends StatelessWidget {
 }
 
 class _TaskRow extends StatelessWidget {
-  const _TaskRow({required this.task, required this.onTap});
+  const _TaskRow({required this.task, required this.state, required this.onTap});
 
   final TaskRun task;
+  final AppState state;
   final VoidCallback onTap;
 
   @override
@@ -88,14 +91,18 @@ class _TaskRow extends StatelessWidget {
     final subtitle = <String>[task.stateText];
     if (children != null && !children.isEmpty) {
       subtitle.add(children.progressText);
+      // 同 TaskRunCard：先按 id 解析成真名，再判空 —— 不能因为 name 为空就把人抹掉。
       final following = children.participants
-          .where((p) => !p.done && p.name.isNotEmpty)
-          .map((p) => p.name)
+          .where((p) => !p.done)
+          .map((p) => resolveTaskBotName(state, botId: p.botId, name: p.name))
+          .where((name) => name.isNotEmpty)
           .take(2)
           .toList();
       if (following.isNotEmpty) subtitle.add('${following.join('、')} 在跟');
-    } else if (task.leadBotName.isNotEmpty) {
-      subtitle.add(task.leadBotName);
+    } else {
+      // 负责人可能只剩 id（服务端解析不到那只 bot 时），也要显示出来。
+      final lead = resolveTaskBotName(state, botId: task.leadBotId, name: task.leadBotName);
+      if (lead.isNotEmpty) subtitle.add(lead);
     }
     return InkWell(
       borderRadius: BorderRadius.circular(6),

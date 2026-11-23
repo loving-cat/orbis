@@ -4,6 +4,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../task_bot_name.dart';
 import '../task_run_models.dart';
 import '../theme.dart';
 import 'task_run_card.dart';
@@ -97,6 +98,15 @@ class TaskRunSheet extends StatelessWidget {
   }
 }
 
+/// 计划里的一步要显示的文本：`负责人：做什么`。
+///
+/// 负责人一律过 [resolveTaskBotName]：老数据里 `owner` 可能就是 `memberBotId`，
+/// 直接拼上去就是用户看到的「b_xxxx：拉取竞品清单」。
+String _planStepText(AppState state, TaskRunPlanStep step) {
+  final owner = resolveTaskBotName(state, botId: step.ownerBotId, name: step.owner);
+  return owner.isEmpty ? step.title : '$owner：${step.title}';
+}
+
 /// 详情主体：任务卡 + 范围/缺项/结果 + 控制按钮。
 class _TaskRunSheetBody extends StatelessWidget {
   const _TaskRunSheetBody({required this.state, required this.task, required this.onRun});
@@ -107,17 +117,23 @@ class _TaskRunSheetBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ★ 负责人不能因为 `leadBotName` 为空就整条丢掉。
+    //
+    //   服务端 `nameOf` 查不到那只 bot（改名/已删/跨机器）时名字就是空的，
+    //   而之前这里直接 `if (leadBotName.isNotEmpty)` —— 负责人凭空消失，
+    //   用户只看到「成员 0/3 已交」。解析器会退回到 id，至少能对上是谁。
+    final leadName = resolveTaskBotName(state, botId: task.leadBotId, name: task.leadBotName);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
         TaskRunCard(task: task, onOpen: null),
         // 谁在带这件事、谁在跟：用户要能一眼分辨任务归属。
-        if (task.leadBotName.isNotEmpty || task.childrenSummary != null) ...[
+        if (leadName.isNotEmpty || task.childrenSummary != null) ...[
           const SizedBox(height: 8),
           Text(
             [
-              if (task.leadBotName.isNotEmpty) '负责人：${task.leadBotName}',
+              if (leadName.isNotEmpty) '负责人：$leadName',
               if (task.childrenSummary != null)
                 '成员 ${task.childrenSummary!.done}/${task.childrenSummary!.total} 已交',
             ].join(' · '),
@@ -126,7 +142,8 @@ class _TaskRunSheetBody extends StatelessWidget {
           if (task.childrenSummary != null)
             for (final p in task.childrenSummary!.participants)
               Text(
-                '· ${p.name}　${p.done ? '已交' : _childStateText(p.state)}',
+                '· ${resolveTaskBotName(state, botId: p.botId, name: p.name)}　'
+                '${p.done ? '已交' : _childStateText(p.state)}',
                 style: TextStyle(
                   fontSize: 12,
                   color: p.done ? PB.success : PB.textTertiary,
@@ -164,7 +181,7 @@ class _TaskRunSheetBody extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(bottom: 2),
               child: Text(
-                '${step.owner.isEmpty ? '' : '${step.owner}：'}${step.title}',
+                _planStepText(state, step),
                 style: TextStyle(fontSize: 13, color: PB.textSecondary),
               ),
             ),

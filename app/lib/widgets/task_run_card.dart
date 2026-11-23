@@ -4,6 +4,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../scope.dart';
+import '../task_bot_name.dart';
 import '../task_run_controller.dart';
 import '../task_run_models.dart';
 import '../theme.dart';
@@ -108,11 +110,15 @@ class TaskRunCard extends StatelessWidget {
     required this.task,
     this.compact = false,
     this.onOpen,
+    this.nameOf,
   });
 
   final TaskRun task;
   final bool compact;
   final VoidCallback? onOpen;
+
+  /// 把 botId 换成真实名字。不传时自动用挂载的 [AppScope]（单测里可以不挂）。
+  final String Function(String id)? nameOf;
 
   @override
   Widget build(BuildContext context) {
@@ -152,7 +158,7 @@ class TaskRunCard extends StatelessWidget {
                       if (!compact || task.waiting != null) ...[
                         const SizedBox(height: 2),
                         Text(
-                          _subtitle(task),
+                          _subtitle(task, _nameFor(context)),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(fontSize: 12, color: color),
@@ -176,7 +182,24 @@ class TaskRunCard extends StatelessWidget {
     );
   }
 
-  static String _subtitle(TaskRun task) {
+  /// 名字解析：显式传入优先，否则看有没有挂在树上的 AppState。
+  String Function(String id) _nameFor(BuildContext context) {
+    final explicit = nameOf;
+    if (explicit != null) return explicit;
+    final state = AppScope.maybeOf(context);
+    if (state == null) return (id) => '';
+    return (id) => resolveTaskBotName(state, botId: id);
+  }
+
+  static String _childName(TaskRunChild p, String Function(String id) nameOf) {
+    if (p.botId.isNotEmpty) {
+      final real = nameOf(p.botId).trim();
+      if (real.isNotEmpty) return real;
+    }
+    return p.name.trim();
+  }
+
+  static String _subtitle(TaskRun task, String Function(String id) nameOf) {
     // 需要人处理的先说明原因：用户最想知道的是「为什么停了、我该做什么」。
     if (task.state == 'blocked') {
       final why = task.blockedReason;
@@ -194,9 +217,12 @@ class TaskRunCard extends StatelessWidget {
     final children = task.childrenSummary;
     if (children != null && !children.isEmpty) {
       final parts = <String>[task.stateText, children.progressText];
+      // ★ 名字可能只在 id 上（服务端没解析到，或老数据把 id 存进了名字列），
+      //   所以先解析再判空 —— 不能因为 `p.name` 为空就把这个人从「谁在跟」里删掉。
       final following = children.participants
-          .where((p) => !p.done && p.name.isNotEmpty)
-          .map((p) => p.name)
+          .where((p) => !p.done)
+          .map((p) => _childName(p, nameOf))
+          .where((name) => name.isNotEmpty)
           .take(3)
           .toList();
       if (following.isNotEmpty) parts.add('${following.join('、')} 在跟');
