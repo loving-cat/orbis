@@ -578,6 +578,11 @@ async function runWithLease(
     const withLessons = (text) => {
       try {
         if (bot?.role !== 'main') return text;
+        // ★ 经验库整体关掉时（ORBIS_LESSON_REFLECT=0）**不注入、也不 touchLessons**。
+        //
+        //   以前只关了"收尾复盘"，注入和 hit 计数照旧落盘：用户把开关关了，
+        //   提示词里还有经验、磁盘还每秒被写 —— 那个开关等于没关。
+        if (typeof runner.store.lessonsEnabled === 'function' && !runner.store.lessonsEnabled()) return text;
         const library = runner.store.lessonLibrary();
         if (!library.length) return text;
         const task = text + '\n' + String(meta?.text ?? '');

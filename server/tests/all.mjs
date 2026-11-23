@@ -170,6 +170,7 @@ const TESTS = [
   'department-preview',
   'migrate-home',
   'pending-migration',
+  'config-no-dirs',
   'user-dirs',
   'storage-retention',
   'storage-housekeeping',

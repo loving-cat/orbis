@@ -180,6 +180,21 @@ await test('store：不传时仍然是真实 store（state.json 落盘，老行�
   assert.ok(fs.existsSync(path.join(dirs.dataDir, 'state.json')), '默认 store 必须照旧写 state.json');
 });
 
+// ---------------------------------------------------------------- ②.5 全局副作用
+
+await test('★ 只 import SDK 不劫持宿主的 ChildProcess.prototype.spawn（P1-4）', async () => {
+  const cp = await import('node:child_process');
+  assert.notEqual(
+    cp.ChildProcess.prototype.spawn.name,
+    'patchedChildSpawn',
+    'import SDK 就把宿主的 spawn 换掉了 —— "只 import 不碰全局"是 SDK 的承诺',
+  );
+  // 显式安装之后才该生效
+  const { installChildEnvScrub } = await import('../src/child-env.js');
+  installChildEnvScrub();
+  assert.equal(cp.ChildProcess.prototype.spawn.name, 'patchedChildSpawn', '显式安装必须真的装上');
+});
+
 // ---------------------------------------------------------------- ③ bus
 
 await test('bus：注入的总线能收到事件；dispose 只摘自己的监听，不碰宿主的', async () => {
@@ -479,6 +494,35 @@ await test('六类全不传：默认路径照旧（自建 store/bus/modelRuntime
     await rt.dispose();
   }
 });
+await test('★ 只注入 store 时，dispose 也不许清空宿主 store.bus 的监听（P1-3）', async () => {
+  const dirs = makeDirs('store-only-bus');
+  const { Store } = await import('../src/store.js');
+  const hostStore = new Store({ dataDir: dirs.dataDir });
+  let hostEvents = 0;
+  const hostListener = () => { hostEvents++; };
+  hostStore.bus.on('event', hostListener);
+
+  const rt = await sdk.createOrbisRuntime({
+    store: hostStore,
+    workspace: dirs.workspace,
+    defaultModel: 'mock/fast-1',
+    modelRuntimeFactory: makeMockModelRuntimeFactory(),
+    sessionApi: makeMockSessionApi({ behavior: 'reply' }, path.join(dirs.base, 'agent')),
+  });
+  try {
+    assert.equal(rt.bus, hostStore.bus, 'bus 应当从注入的 store 继承');
+    await rt.askMain('跑一轮');
+    assert.ok(hostEvents > 0, '宿主在继承来的 bus 上应该能收到事件');
+  } finally {
+    await rt.dispose();
+  }
+  assert.ok(
+    hostStore.bus.listeners('event').includes(hostListener),
+    '★ 只注入 store 时 bus 是宿主的，dispose 后监听必须还在（不能 removeAllListeners）',
+  );
+  hostStore.dispose();
+});
+
 
 console.log(`\nsdk-injection: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

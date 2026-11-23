@@ -270,6 +270,24 @@ await test('I5-1 lessonReflect=false → 复盘直接 no-op（不调模型、不
   assert.equal(modelCalls, 0, '关掉之后连模型总线都不该摸');
 });
 
+await test('★ I5-1b 经验库关掉后，withLessons 既不注入也不 touchLessons 落盘', () => {
+  const file = path.join(import.meta.dirname, '..', 'src', 'runner', 'turn-executor.js');
+  const src = fs.readFileSync(file, 'utf8');
+  const at = src.indexOf('const withLessons');
+  assert.ok(at > 0, '注入点还在（I0-2 已守）；这里看它的开关');
+  const block = src.slice(at, at + 1600);
+  const gate = block.indexOf('lessonsEnabled()');
+  assert.ok(gate > 0, 'withLessons 必须先看 lessonsEnabled()');
+  assert.ok(
+    gate < block.indexOf('lessonLibrary()'),
+    '开关判断要在读经验库之前（关了就不该读、更不该注入）',
+  );
+  assert.ok(
+    gate < block.indexOf('touchLessons('),
+    '开关判断要在 touchLessons 之前（关了不该写盘）',
+  );
+});
+
 await test('I5-2 删掉经验后 preview 立刻变空（不缓存、不留幽灵）', async () => {
   const { store } = await import('../src/store.js');
   const { selectLessonsFor } = await import('../src/lessons.js');

@@ -508,4 +508,13 @@ export function installChildEnvScrub() {
   attachSpawnSyncScrub(binding);
 }
 
-installChildEnvScrub();
+// ★ 这里**不再**自动安装。
+//
+//   以前模块顶层直接 `installChildEnvScrub()`，于是任何 `import 'orbis-agent'`
+//   的宿主进程（IDE 插件、脚本、别人的服务）只要间接 import 到这里，
+//   `ChildProcess.prototype.spawn` 就被我们替换掉了 —— SDK 的承诺是
+//   「只 import 不碰全局」，这属于悄悄改了宿主的行为。
+//
+//   真正跑服务端的入口（index.js / server-main.js / relay-agent.js）以及
+//   专测这个补丁的用例显式调用它；SDK 内部的子进程自己传收紧后的 env
+//   （childEnvDirect / buildChildEnv），不依赖这层兜底。

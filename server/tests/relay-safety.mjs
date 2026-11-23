@@ -161,6 +161,48 @@ await test('同 code 且带了正确 secret → 允许替换（电脑重连场�
   }
 });
 
+await test('★ 顶号时先清理旧房间：手机侧 WS 被关（4409）、挂起的 HTTP 变 504', async () => {
+  const { relay, port, url } = await startRelay('sec-3');
+  const code = 'cccccccccccc';
+  try {
+    const first = await connectAgent(url, { code, secret: 'sec-3' });
+    assert.equal(first.closed, null, '第一台应该挂着');
+
+    // 手机侧一条 WS + 一个正在等的 HTTP（旧 agent 一律不回，模拟"卡住"）
+    const phone = new WebSocket(`${url}/${code}/ws`);
+    const phoneClosed = new Promise((resolve) => phone.on('close', (c, r) => resolve({ c, r: r.toString() })));
+    await new Promise((resolve, reject) => {
+      phone.on('open', resolve);
+      phone.on('error', reject);
+    });
+    const pendingHttp = fetch(`http://127.0.0.1:${port}/${code}/api/slow`, { method: 'POST', body: '{}' })
+      .then(async (res) => ({ status: res.status, body: await res.text() }))
+      .catch((err) => ({ status: 0, body: String(err) }));
+    await new Promise((r) => setTimeout(r, 120)); // 让 req 帧到达旧 agent
+
+    // 同一台电脑带正确 secret 重连 → 顶号
+    const second = await connectAgent(url, { code, secret: 'sec-3' });
+    assert.equal(second.closed, null, '带对 secret 的新连接要接上');
+
+    const closed = await Promise.race([
+      phoneClosed,
+      new Promise((r) => setTimeout(() => r(null), 2000)),
+    ]);
+    assert.ok(closed, '★ 手机侧 WS 不能留在旧房间里等（否则永远等不到）');
+    assert.equal(closed.c, 4409, `手机 WS 应以 4409 关闭，实际 ${closed.c}`);
+
+    const http = await Promise.race([
+      pendingHttp,
+      new Promise((r) => setTimeout(() => r({ status: 'timeout' }), 2000)),
+    ]);
+    assert.equal(http.status, 504, `挂起的请求要立刻失败，实际 ${JSON.stringify(http)}`);
+
+    second.ws.close();
+  } finally {
+    await relay.close();
+  }
+});
+
 console.log(`\n${failed ? '✗' : '✓'} ${passed} 通过，${failed} 失败`);
 fs.rmSync(root, { recursive: true, force: true });
 process.exit(failed ? 1 : 0);

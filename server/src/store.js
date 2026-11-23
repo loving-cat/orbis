@@ -1421,7 +1421,12 @@ export class Store {
     return normalizeLessonList(this.state.lessons ?? []);
   }
 
-  /** 收尾复盘是否开启（关掉之后不会再产生新候选，已有经验照常注入） */
+  /**
+   * 经验库总开关（`ORBIS_LESSON_REFLECT=0` 关掉）。
+   *
+   * ★ 关了就是**整个特性关**：不再产生候选、不再注入既有经验、也不再记 hit ——
+   *   注入侧（turn-executor 的 withLessons）与复盘侧都看这一个开关。
+   */
   lessonsEnabled() {
     return this.config.lessonReflect !== false;
   }
@@ -1497,6 +1502,8 @@ export class Store {
     // 蒸馏器留下的「待确认的边」：**只在人工启用这一次物化**（归档/删除不动边表）。
     // 目标已删 / 已不是 active / 边已存在 → 静默跳过；无论成不成，建议消费完就清掉。
     let materialized = 0;
+    /** 因为和这条冲突而被归档的其它经验（界面要能告诉用户为什么少了） */
+    const archivedConflicts = [];
     if (lesson.status === 'active' && lesson.pendingEdges?.length) {
       const others = new Map(list.filter((_, i) => i !== idx).map((l) => [l.id, l]));
       const edges = this.lessonEdges({ lessons: list });
@@ -1506,7 +1513,24 @@ export class Store {
         if (!target || target.status !== 'active') continue;
         if (edges.some((e) => e.from === id && e.to === pe.to && e.type === pe.type)) continue;
         const edge = normalizeLessonEdge({ from: id, to: pe.to, type: pe.type, by: 'distiller' }, Date.now());
-        if (edge) added.push(edge);
+        if (!edge) continue;
+        added.push(edge);
+        // ★ contradicts 边一物化，两条就不能同时 active。
+        //
+        //   否则界面显示"两条都已启用"，而打分时它们互相排除 —— 实际一条都注入不进去，
+        //   用户看到的启用状态是假的。这里把**目标**归档（用户正在启用的是新这条），
+        //   并把 id 返回给调用方，界面可以说明"因冲突归档了 N 条"。
+        if (pe.type === 'contradicts') {
+          const tIdx = list.findIndex((l) => l.id === pe.to);
+          if (tIdx >= 0) {
+            const archived = normalizeLesson({ ...list[tIdx], status: 'archived', updatedAt: Date.now() });
+            if (archived) {
+              list[tIdx] = archived;
+              others.delete(pe.to);
+              archivedConflicts.push(pe.to);
+            }
+          }
+        }
       }
       if (added.length) {
         this.state.lessonEdges = normalizeLessonEdgeList([...edges, ...added], {
@@ -1521,7 +1545,7 @@ export class Store {
     this.state.lessons = list;
     this.scheduleSave();
     this.emitLessons();
-    return { lesson, materialized };
+    return { lesson, materialized, archivedConflicts };
   }
 
   /** 删一条经验（**级联删掉它挂的边**，不留下悬空关系） */

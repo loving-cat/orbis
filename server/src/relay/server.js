@@ -89,6 +89,23 @@ export function createRelay({ secret = '', port = 8788, host = '0.0.0.0' } = {})
     return wss.handleUpgrade(req, socket, head, (ws) => onClientWs(ws, room, url, code, req.headers));
   });
 
+  /**
+   * 关掉一个房间：手机侧挂着的 WS 全部关闭，挂起的 HTTP 请求全部以 504 失败。
+   *
+   * ★ 顶号（同一台电脑带正确 secret 重连）时必须先调它 —— 见 onAgent 的注释。
+   */
+  function closeRoom(room, { reason = 'replaced' } = {}) {
+    for (const [id, client] of room.streams) {
+      room.streams.delete(id);
+      try { client.close(4409, reason); } catch { /* 已经断了 */ }
+    }
+    for (const [id, waiting] of room.pending) {
+      room.pending.delete(id);
+      try { clearTimeout(waiting.timer); } catch { /* 计时器可能已触发 */ }
+      try { waiting.fail(new Error(reason)); } catch { /* 响应可能已经写完 */ }
+    }
+  }
+
   function onAgent(ws, url) {
     const code = String(url.searchParams.get('code') ?? '');
     const given = String(url.searchParams.get('secret') ?? '');
@@ -116,6 +133,13 @@ export function createRelay({ secret = '', port = 8788, host = '0.0.0.0' } = {})
         log(`中转：${code} 已在使用，新连接没有正确 secret → 拒绝（不顶掉现有电脑）`);
         return ws.close(4404, 'code in use');
       }
+      // ★ 先把这个房间彻底清掉，再让新 agent 接管。
+      //
+      //   只 close 旧 agent 的 socket 是不够的：旧房间里还挂着手机侧的 WS
+      //   与正在等的 HTTP 请求（`streams` / `pending`）。它们绑在**旧 room 对象**上，
+      //   新 room 是另一个 Map —— 手机那边会永远等下去（既不报错也不超时重连），
+      //   而旧 agent 如果半死不活，手机还可能收到它发来的帧。
+      closeRoom(existing, { reason: 'agent replaced' });
       try {
         existing.socket.close(4409, 'replaced');
       } catch {}

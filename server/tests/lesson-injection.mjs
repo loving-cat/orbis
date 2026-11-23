@@ -25,7 +25,10 @@ process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
 process.env.ORBIS_HOME = root;
 process.env.ORBIS_WORKSPACE = path.join(root, 'workspace');
 process.env.ORBIS_PROBE = '0';
-process.env.ORBIS_LESSON_REFLECT = '0';
+// ★ 必须是 1：经验库是一个总开关（ORBIS_LESSON_REFLECT=0 时**连注入都不做**，
+//   见 turn-executor 的 withLessons）。以前这里设 0 只是想让复盘安静点，
+//   那会把这几个用例本身关掉。
+process.env.ORBIS_LESSON_REFLECT = '1';
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 globalThis.fetch = () => {

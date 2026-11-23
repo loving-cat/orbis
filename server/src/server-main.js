@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import https from 'node:https';
 import path from 'node:path';
 
@@ -14,6 +15,7 @@ import { markRetiredPresets } from './mcp-presets.js';
 import { attachWs } from './ws.js';
 import { log } from './util.js';
 import { servePendingMigrationMode } from './pending-migration.js';
+import { installChildEnvScrub } from './child-env.js';
 import { shells } from './shells.js';
 import { createAutomationScheduler } from './automations.js';
 import { createTaskHost } from './bootstrap/task-host.js';
@@ -102,10 +104,19 @@ async function main() {
     log(`服务端进程退出 code=${code}`);
   });
 
+  // 子进程环境白名单：SDK 不再 import 即生效（见 child-env.js），服务端自己显式装上。
+  installChildEnvScrub();
+
   // ★ 待迁移模式：必须在碰任何持久化状态之前返回（见 servePendingMigrationMode）。
   if (config.legacyDataDir) {
     await servePendingMigrationMode(config);
     return;
+  }
+
+  // 默认导出的 config 不再建目录（T2.3：只 import SDK 不该在用户家目录里写东西），
+  // 真正起服务时在这里补上。store 自己会建 dataDir / rooms / sessions。
+  for (const dir of [config.home, config.dataDir, config.workspace]) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 
   const reaped = store.reapStaleStreaming();

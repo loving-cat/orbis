@@ -604,7 +604,9 @@ async function buildRuntime(options, cleanup) {
     //   例如共享 bus 上还有别的 runtime 的监听，removeAllListeners 会把人家一起干掉。
     if (!injectedStore) step('store', () => store.dispose());
     if (!injectedGroups) step('modelGroups', () => modelGroups.dispose?.());
-    if (!injectedBus) step('bus', () => bus.removeAllListeners());
+    // ★ 只清自己创建的 bus：store 注入时 bus 也可能从 store 继承（inheritedBus），
+    //   那是宿主的对象，removeAllListeners 会把宿主其他 runtime 的监听一起干掉。
+    if (!inheritedBus) step('bus', () => bus.removeAllListeners());
     return failed.length ? { ok: false, already: false, failed } : { ok: true, already: false };
   }
 

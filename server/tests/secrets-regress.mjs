@@ -12,6 +12,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// ★ 子进程环境白名单要显式装上：SDK 不再 import 即劫持 ChildProcess
+//   （见 src/child-env.js 的注释）。这个文件测的正是那层兜底。
+const { installChildEnvScrub } = await import('../src/child-env.js');
+installChildEnvScrub();
+
+
 delete process.env.ORBIS_SECRET_KEY;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-secrets-regress-'));
 process.env.ORBIS_HOME = root;

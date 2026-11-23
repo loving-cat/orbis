@@ -251,7 +251,9 @@ export function createConfig(overrides = {}) {
     memoryRecursive: readBrandEnv(env, 'MEMORY_RECURSIVE') !== '0',
     runTimeoutMs: Number(readBrandEnv(env, 'RUN_TIMEOUT_MS') || 10 * 60 * 1000),
     hostname: os.hostname(),
-    userName: readBrandEnv(env, 'USER_NAME') || os.userInfo().username || '我',
+    // os.userInfo() 在没有 /etc/passwd 的容器里会抛（任意 UID 跑镜像很常见）——
+    // 只 import 一下 库 不该让进程崩掉，所以兜住。
+    userName: readBrandEnv(env, 'USER_NAME') || safeUserName() || '我',
   };
 
   for (const [k, v] of Object.entries(scalarOverrides)) {
@@ -262,10 +264,27 @@ export function createConfig(overrides = {}) {
   return built;
 }
 
+/**
+ * 默认导出的**实例配置**。
+ *
+ * ★ `ensureDirs: false`：光 import 配置模块（SDK / 诊断脚本 / 单元测试）不该在
+ *   用户家里建 `orbis/data`、`workspace` 这些目录。真正起服务时由
+ *   `server-main.js` 负责建（它有明确的启动边界）。
+ */
 export const config = createConfig({
   env: process.env,
   serverBoot: globalThis[SERVER_BOOT] === true,
+  ensureDirs: false,
 });
+
+/** `os.userInfo()` 的安全包装：拿不到（容器 / 任意 UID）就返回空串。 */
+function safeUserName() {
+  try {
+    return os.userInfo().username || '';
+  } catch {
+    return '';
+  }
+}
 
 export function describeConfig(cfg = config) {
   return {

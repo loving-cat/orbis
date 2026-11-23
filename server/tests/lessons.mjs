@@ -479,6 +479,43 @@ test('store 边候选：目标是候选（非 active）时不物化 —— 不�
   assert.equal(store.lessonLibrary().find((x) => x.id === cand.id).pendingEdges, undefined, '仍然清空');
 });
 
+test('★ store 矛盾边物化：启用新条时把冲突目标归档（不再"两条都显示启用"）', () => {
+  const target = store.addLesson({
+    cue: '矛盾目标：先跑全量测试',
+    lesson: '发版前必须跑全量',
+    evidence: EVIDENCE,
+    status: 'active',
+  }).lesson;
+  const cand = store.addLesson({
+    cue: '矛盾候选：只跑冒烟',
+    lesson: '发版前跑冒烟就够',
+    evidence: EVIDENCE,
+    pendingEdges: [{ to: target.id, type: 'contradicts' }],
+  }).lesson;
+
+  const act = store.updateLesson(cand.id, { status: 'active' });
+  assert.ok(act.lesson, act.error);
+  assert.equal(act.materialized, 1, '矛盾边要真的物化');
+  assert.deepEqual(act.archivedConflicts, [target.id], '要把被冲突的目标归档并报给调用方');
+
+  const byId = (id) => store.lessonLibrary().find((x) => x.id === id);
+  assert.equal(byId(cand.id).status, 'active');
+  assert.equal(
+    byId(target.id).status,
+    'archived',
+    '★ 两条 contradicts 不能同时 active：界面显示双启用、打分却互相排除 = 假启用',
+  );
+  assert.equal(
+    store.lessonEdges().filter((e) => e.type === 'contradicts' && e.to === target.id).length,
+    1,
+    '矛盾边本身要留下（审计要能看出为什么归档）',
+  );
+
+  // 归档的那条不再进提示词（选路细节由 lessons.js 的单测覆盖，这里只验状态）
+  assert.equal(store.lessonLibrary().filter((l) => l.status === 'active' && l.cue.includes('矛盾')).length, 1);
+});
+
+
 // ---------------------------------------------------------------------------
 // store：updateLesson 的错误分层（让 HTTP 能区分 404 / 409 / 400）
 // ---------------------------------------------------------------------------

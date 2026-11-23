@@ -8,7 +8,10 @@
  * 它要排在 `isPiInvocation` **之前**判：`migrate` 不是 pi 的旗标，
  * 但被当成 pi CLI 透传出去会让用户看到一堆莫名其妙的帮助。
  */
-import './child-env.js';
+import { installChildEnvScrub } from './child-env.js';
+
+// 进程入口：子进程环境白名单在这里显式装上（SDK 不再 import 即生效，见 child-env.js）
+installChildEnvScrub();
 import { isPiInvocation, runPiCli } from './pi-args.js';
 import { markServerBoot } from './data-migration.js';
 
