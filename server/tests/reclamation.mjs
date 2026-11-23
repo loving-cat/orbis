@@ -210,10 +210,10 @@ await test('★ 子授权随父授权一起失效（父链语义）', () => {
 await test('★ 设备撤销不动授权（授权绑 bot 不绑设备）', () => {
   const bot = store.createBot({ name: '有设备的' });
   const g = grantFor(bot.id);
-  const dev = store.addDevice({ name: '手机A', platform: 'android' }) ?? null;
-  if (dev?.id) {
-    store.revokeDevice(dev.id);
-  }
+  // ★ 以前这里传的是对象，`addDevice` 只认名字、返回 `{ token, device }`：
+  //   `dev?.id` 恒为 undefined，撤销那两行从来没跑过 —— 用例是空的。
+  const { device } = store.addDevice('手机A');
+  assert.equal(store.revokeDevice(device.id), true, '这台设备要真的撤掉，否则下面的断言是空的');
   const after = (store.state.grants ?? []).find((x) => x.id === g.id);
   assert.equal(after.revokedAt, null, '★ 撤一台设备不该让 bot 失去权限 —— 那是"换手机要重新授权"');
 });
