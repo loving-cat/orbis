@@ -33,8 +33,8 @@ grep -rn "@remove-2.0" server/src app/lib
 
 | 标识 | 值 | 为什么不动 |
 |---|---|---|
-| Android `APP_ID` | `com.orbis.orbis` | 改了手机装不上更新，必须卸载重装（聊天数据在应用私有目录） |
-| macOS `PRODUCT_BUNDLE_IDENTIFIER` | `io.orbis.piBot` | 改了等于新应用：权限、钥匙串、偏好全部重来 |
+| Android `APP_ID` | `com.pibot.pi_bot` | 改了手机装不上更新，必须卸载重装（聊天数据在应用私有目录） |
+| macOS `PRODUCT_BUNDLE_IDENTIFIER` | `io.pibot.piBot` | 改了等于新应用：权限、钥匙串、偏好全部重来 |
 | Inno `AppId` GUID | `{7A31C4E8-...}` | 升级替换旧安装靠它；改了会并列装两份 |
 
 ## 一句话
@@ -259,36 +259,57 @@ alpha.1 的教训（这次照做）：
 - **tgz 必须在干净 clone 上打**：`prepack` 负责重建 `types/` 并复制 `LICENSE` / `docs/SDK.md`，
   少一步打出来就缺文件（`check:pack-install` 会先删盘上副本再测，就是为了抓这个）；
 - **tgz 不进 git**：`server/*.tgz` 已在 `.gitignore` 里，交付走 release 附件；
-- **tag 与 commit 的对应关系要写进 release notes**，否则 mac 端补 DMG 时不知道从哪构建。
+- **tag 与 commit 的对应关系要写进 release notes**，否则 mac 端补 DMG 时不知道从哪构建；
+- **发版前复核公告**（ROADMAP T1.9 的验收项）：§2.0 的破坏性变更表 / 常见问答 / 回滚步骤
+  必须与本次真正删掉的东西逐条对得上 —— 公告写错比不写更糟，用户会照着错的指引回滚。
 
 ### 2.0 的破坏性变更（相对 1.7）
 
+> **升级路径：1.4 / 1.7 → 先升 1.7.1 → 再升 2.0。**
+> 1.7.1 是这次过渡的「垫片」：App 开始发 `x-orbis-*`、服务端开始对旧 env / 旧目录 /
+> 旧请求头打去重告警。跳过它直接上 2.0，会同时踩「请求头失效 + 环境变量读不到」两件事；
+> 旧数据目录则靠 2.0 自带的 `orbis migrate` 搬（见下节，**不是**在 1.7.1 上搬）。
+
 | 变了什么 | 1.7 还能用吗 | 2.0 怎么办 |
 |---|---|---|
-| SDK 别名 `createPiBotRuntime` / `createPiBotClient` / `PiBotClient` | ✅ | ❌ **已删**：改成 `createOrbisRuntime` / `createOrbisClient` / `OrbisClient`（签名一致） |
-| 请求头 `x-pi-bot-client` / `-nonce` / `-channel` | ✅ | ❌ **已删**：只认 `x-orbis-*`，缺头 403 并提示正式头名 |
-| `bin.pi-bot-server` | ✅ | ❌ **已删**：`npm exec orbis-server`（1.7.1 起就有了） |
-| 全部 `PI_BOT_*` 环境变量 | ✅ | ❌ **已删**：只认 `ORBIS_*`（桌面端 1.7.0 起传的就是新名） |
+| 旧数据目录回退 | ✅ | ❌ **已删**：2.0 只认新目录；旧目录有数据时启动会在日志里给出 `orbis migrate` 指引（`/health` 的 `needsMigration=true`）。**升级后先跑迁移再让用户用**，见下节 |
+| 全部 `PI_BOT_*` 环境变量 | ✅ | ❌ **已删**：只认 `ORBIS_*`（桌面端 1.7.0 起传的就是新名）。启动脚本 / systemd / 容器 env 要先改名 |
 | `PI_BOT_SECRET_KEY` | ✅ | ❌ **已删**：只认 `ORBIS_SECRET_KEY` |
-| `Orbis.config.json` | ✅ | ⚠️ 仍能读（提醒一次）；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
-| 旧数据目录回退 | ✅ | ❌ **已删**：2.0 只认新目录；旧目录有数据时启动会在日志里给出 `orbis migrate` 指引（`/health` 的 `needsMigration=true`） |
-| 发现协议 | ✅ | ✅ **永久双播**：服务端同时回应 `orbis.host` 与 `orbis.host`，App 两边都发都认 |
-| TLS 证书 | ✅ | ✅ 新证书 SAN 增加 `orbis.local`，旧 `pi-bot.local` 与 CN `pi-bot` 保留 |
+| 请求头 `x-pi-bot-client` / `-nonce` / `-channel` | ✅ | ❌ **已删**：只认 `x-orbis-*`，缺头 403 并提示正式头名。**App 必须是 1.7.1 及以上** |
+| SDK 别名 `createPiBotRuntime` / `createPiBotClient` / `PiBotClient` | ✅ | ❌ **已删**：改成 `createOrbisRuntime` / `createOrbisClient` / `OrbisClient`（签名一致） |
+| `bin.pi-bot-server` | ✅ | ❌ **已删**：`npm exec orbis-server`（1.7.1 起就有了） |
+| 沙箱启动器 `pibot-sandbox.exe` | ✅ | ⚠️ 改名 `orbis-sandbox.exe`：2.0 只找新名字；旧 env `PIBOT_SANDBOX_EXE` / `PIBOT_GIT_PATH` 还能读**一个周期**（命中会在日志里提醒一次，2.1 删除） |
+| `pi-bot.config.json` | ✅ | ⚠️ 仍能读（提醒一次）；新名字是 `orbis.config.json`（`orbis migrate` 会复制一份） |
+| 发现协议（UDP 双播） | ✅ | ✅ **永久双播**：服务端同时回应 `orbis.host` 与 `pibot.host`，App 两边都发都认 |
+| TLS 证书 | ✅ | ✅ 新证书 SAN 增加 `orbis.local`，旧 `pi-bot.local` 与 CN `pi-bot` 保留（不改证书身份 = 不重配对） |
 
-### 2.0 升级：先跑 `orbis migrate`
+### 1.4 / 1.7 → 2.0 的平滑路径
 
-2.0 起服务端**只认新目录**（`<数据根>/orbis/data`）。从 1.7 升上来的用户必须先把数据复制过去：
+**1) 先升到 1.7.1**（只打补丁：不动数据、不改证书）。装完启动一次，让它把命中的
+旧 env / 旧数据目录 / 旧请求头写进日志 —— 那一串弃用提醒就是你的「2.0 待办清单」，
+按它把启动脚本里的 `PI_BOT_*` 改成 `ORBIS_*`（1.7.1 两种名字都认），并确认手机 App 到了 1.7.1。
+
+**2) 再装 2.0。** `orbis migrate` 从 `2.0.0-alpha.1` 起才有 —— 1.7.1 上没有这个命令，
+所以迁移只能在新版本上做。2.0 首次启动会发现旧目录有数据但新目录没有：**它不建空库**，
+只在日志里给出两条真实路径 + 一条可复制执行的命令，并给 `/health` 落一个
+`needsMigration=true`。
+
+**3) 按提示迁移，再重启。**
 
 ```bash
-# 1. 停掉旧版（别在跑的时候迁：state.json 可能正在写）
-# 2. 只复制、不删除；--dry-run 可以先看一眼会搬什么
-orbis migrate --dry-run
-orbis migrate
-
-# 3. 再启动服务端。报告在 <数据根>/orbis/data/migration-report.json
+orbis migrate --dry-run   # 只报告会搬什么，不写盘
+orbis migrate             # 只复制、不删除
+# 重启服务端；/health 的 needsMigration 变 false 就完成了
 ```
 
-要点：
+跳过 1.7.1 直接装 2.0 也能起来，但要自己记得跑迁移；否则界面是空的
+（旧数据还在原处，只是 2.0 不认那个目录）。
+
+### `orbis migrate` 的细节
+
+2.0 起服务端**只认新目录**（`<数据根>/orbis/data`）。命令本身只有三步
+（`--dry-run` 看一遍 → `orbis migrate` → 重启，报告在
+`<数据根>/orbis/data/migration-report.json`），容易踩的是下面几条：
 
 - **旧目录不会被删除**，确认新目录能正常起来之后再自己删；
 - 重复执行是幂等的（第二次直接报「已经迁移过」）；
@@ -296,6 +317,51 @@ orbis migrate
 - `workspace` 不复制（里面常有几百 MB 的 .venv / node_modules，且绝对路径复制过去就坏），
   迁移报告里会记下旧工作目录，服务端继续用它；
 - 自定义安装位置可以用 `--from <旧> --to <新>`；脚本里用 `--json` 拿结果。
+
+### 常见问答
+
+**Q：手机还是老版本 App（1.7.0 或更早），能连 2.0 服务端吗？**
+
+能发现、能配对、能看历史，**不能发消息**：
+
+- 发现走 UDP 永久双播，`pibot.discover` 照样有应答；
+- 配对走 `POST /api/pair`，那个接口本来就不要求 `x-orbis-client`（配对码本身就是凭证）；
+- 但发消息 / 改设置是写请求，2.0 只认 `x-orbis-*`，1.7.0 的 App 发的是旧头 → 403，
+  报错里会写明该带哪个头。**升到 1.7.1 或更新的 App 就恢复正常。**
+
+**Q：升级后界面是空的，数据去哪了？**
+
+在旧目录里，2.0 只是不认它。跑 `orbis migrate` 复制过来再重启；`/health` 的
+`needsMigration` 为 true 就是在提醒这件事。
+
+**Q：我的启动脚本里有 `PI_BOT_HOME` / `PI_BOT_TOKEN`，会怎样？**
+
+2.0 读不到它们 —— 服务端会用默认目录、App 会当没填 token。改成 `ORBIS_HOME` / `ORBIS_TOKEN`
+即可（1.7.1 起两种名字都能用，正好在旧版本上先改）。
+
+**Q：证书会不会重签？配对要不要重做？**
+
+不会。2.0 不改证书身份（CN 仍是 `pi-bot`、旧 SAN `pi-bot.local` 保留，只新增 `orbis.local`），
+已配对的设备继续按原指纹认这台机器。
+
+**Q：自己编译的 Windows 沙箱启动器呢？**
+
+用 `scripts/build-sandbox-win.ps1` 重新生成，产物已经是 `orbis-sandbox.exe`；
+`PIBOT_SANDBOX_EXE` 还能指一个周期，命中时日志里会提醒改名。
+
+### 回滚到 1.7（零数据损失）
+
+`orbis migrate` **只复制不删除**，1.7 的数据目录原样还在，所以回滚就是「装回 1.7.1 + 不碰新目录」：
+
+1. 停掉 2.0 服务端；
+2. 装回 1.7.1（安装器的 AppId 不变，只替换安装目录；用户数据不在安装目录里，不受影响）。
+   Windows 安装器会先按 `server.pid` 停掉在跑的 `node.exe`，2.0 的 `orbis` 与 1.7 的 `pi-bot`
+   两个数据目录都会看 —— 否则 node.exe 锁着安装目录，[Files] 拷贝会失败；
+3. 1.7.1 从 `<数据根>/pi-bot/data` 启动，看到的是**升级前**的数据。
+
+⚠️ 这里说的是「不丢数据」，不是「带上新数据」：2.0 期间产生的消息写在 `<数据根>/orbis/data`，
+回滚后 1.7 读不到。要它也要，就手工把 `state.json`（以及附件目录）从新目录复制回旧目录，
+或者干脆回到 2.0 —— 两个目录互不覆盖，来回切换永远不删东西。
 
 ### 预发布版的三个“不能用完整版本号”的地方
 

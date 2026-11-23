@@ -60,7 +60,7 @@ v1.0.3 / v1.0.5 / v1.0.6 与 1.4.1 实测都是它，所以老用户能原地升
 - 真要换成正式 keystore（上应用市场那种），改 `scripts/pack-android.mjs` 里的
   `EXPECTED_SIGNER_SHA256`，并在发布说明里写一句"老用户需先卸载旧版"。
 
-`applicationId` 是 `com.orbis.orbis`，同理不能改；`versionCode` 取 `pubspec.yaml`
+`applicationId` 是 `com.pibot.pi_bot`，同理不能改；`versionCode` 取 `pubspec.yaml`
 的 `+N`，**只增不减**（当前 19）。
 
 ## 手机怎么找电脑：附近的电脑 → 电脑上点允许
@@ -214,7 +214,7 @@ UDP 8788 三个都要放行**（允许的是同一个程序，通常一次就够
 
 ```bash
 adb install -r dist/orbis-android-v1.7.0.apk
-adb shell am start -n com.orbis.orbis/.MainActivity
+adb shell am start -n com.pibot.pi_bot/.MainActivity
 ```
 
 | # | 项 | 怎么算过 | 状态 |
