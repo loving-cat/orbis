@@ -37,7 +37,31 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('workspace'), findsWidgets, reason: '要提醒旧目录仍然不能删');
-    expect(find.byType(FilledButton), findsWidgets, reason: '要有「重新检查」按钮');
+    expect(find.textContaining('我已手动迁移'), findsOneWidget, reason: '要有「重新检查」入口');
+  });
+
+  testWidgets('★ 桌面本机模式：主按钮是「一键迁移并重启」', (tester) async {
+    final state = _State()
+      ..localMode = true
+      ..migrationStatus = const MigrationStatus(
+        needed: true,
+        legacyDataDir: '/old/legacy/data',
+        targetDataDir: '/new/orbis/data',
+        command: '"node" "index.js" migrate --from "/old/legacy/data" --to "/new/orbis/data"',
+      );
+    addTearDown(state.dispose);
+    await tester.pumpWidget(
+      AppScope(
+        state: state,
+        child: const MaterialApp(home: MigrationGateScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('一键迁移并重启'), findsOneWidget, reason: '桌面用户要能一键跑（没有 orbis 在 PATH 上）');
+    expect(find.text('复制'), findsWidgets);
+    expect(find.textContaining('我已手动迁移'), findsOneWidget);
+    expect(find.textContaining('"node" "index.js" migrate'), findsOneWidget);
   });
 
   testWidgets('recheckMigration 在没有连接时什么都不做（返回 false，不抛）', (tester) async {

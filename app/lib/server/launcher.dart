@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'health.dart';
@@ -112,6 +113,53 @@ class LocalServerLauncher {
 
   /// 本机地址（统一用回环地址，换端口只影响端口部分）。
   String _urlFor(int port) => 'http://127.0.0.1:$port';
+
+  /// 一键迁移：用内置 node 跑 `server/src/index.js migrate --from … --to …`。
+  ///
+  /// ★ 为什么不能指望 `orbis migrate`：Windows 安装包与 macOS `.app` 都没把
+  ///   `orbis` 放进 PATH，桌面老用户根本敲不了（P0-1）。
+  ///
+  /// 待迁移模式下服务端不占目标目录里的任何文件，所以**不需要先停它**。
+  ///
+  /// @returns `{ok, output, error}`；`output` 是 migrate 的完整 stdout/stderr。
+  Future<({bool ok, String output, String error})> runMigration({
+    required String from,
+    required String to,
+    Duration timeout = const Duration(minutes: 10),
+  }) async {
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final entryProblem = _resolveEntry(exeDir);
+    if (entryProblem != null) {
+      return (ok: false, output: '', error: entryProblem.error ?? '找不到服务端程序');
+    }
+    final nodeProblem = await _resolveNode(exeDir);
+    if (nodeProblem != null) {
+      return (ok: false, output: '', error: nodeProblem.error ?? '找不到 node');
+    }
+    final entry = _entryPath;
+    final node = _nodePath;
+    if (entry == null || node == null) {
+      return (ok: false, output: '', error: '找不到内置 node 或服务端程序');
+    }
+    try {
+      final result = await Process.run(
+        node,
+        [entry, 'migrate', '--from', from, '--to', to],
+        workingDirectory: serverDir,
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      ).timeout(timeout);
+      final output = '${result.stdout}${result.stderr}'.trim();
+      final ok = result.exitCode == 0;
+      return (
+        ok: ok,
+        output: output,
+        error: ok ? '' : (output.isEmpty ? '迁移失败（退出码 ${result.exitCode}）' : output),
+      );
+    } catch (err) {
+      return (ok: false, output: '', error: '迁移没跑起来：$err');
+    }
+  }
 
   /// 服务端目录（`.../server`）。界面展示手动启动命令时使用真实路径。
   String? get serverDir {

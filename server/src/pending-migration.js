@@ -10,6 +10,7 @@
 import httpMod from 'node:http';
 
 import { log } from './util.js';
+import { buildMigrateCommand } from './migrate-command.js';
 import { VERSION } from './version.js';
 
 /**
@@ -32,7 +33,8 @@ import { VERSION } from './version.js';
 export async function servePendingMigrationMode(cfg, { installSignalHandlers = true } = {}) {
   const legacy = cfg.legacyDataDir;
   const target = cfg.dataDir;
-  const command = `orbis migrate --from "${legacy}" --to "${target}"`;
+  // ★ 真实可执行的完整命令（桌面安装包没有 `orbis` 在 PATH 上，见 migrate-command.js）
+  const command = buildMigrateCommand({ legacy, target });
 
   const health = () => ({
     ok: true,
@@ -44,7 +46,9 @@ export async function servePendingMigrationMode(cfg, { installSignalHandlers = t
     needsMigration: true,
     legacyDataDir: legacy,
     targetDataDir: target,
-    hint: '旧数据还在旧目录里。先停掉服务端，运行上面的 orbis migrate，再重新启动。',
+    // App 的「一键迁移并重启」直接执行这条；手抄也保证能跑
+    migrateCommand: command,
+    hint: '旧数据还在旧目录里。点「一键迁移并重启」，或手动执行上面那条命令后再启动。',
   });
 
   const page = `<!doctype html><html lang="zh"><meta charset="utf-8">

@@ -35,7 +35,7 @@ async function test(name, fn) {
 }
 
 // ---------------------------------------------------------------- 纯参数
-test('启动参数里必须有 --headless（这就是"不弹窗"的本体）', () => {
+await test('启动参数里必须有 --headless（这就是"不弹窗"的本体）', () => {
   const args = headlessArgs({ port: 1234, userDataDir: 'D:/tmp/prof' });
   assert.ok(args.includes('--headless=new'));
   assert.ok(args.includes('--remote-debugging-port=1234'));
@@ -47,7 +47,7 @@ test('启动参数里必须有 --headless（这就是"不弹窗"的本体）', (
   assert.ok(args.includes('--disable-gpu'));
 });
 
-test('★ 岛模式**不加** --headless（要真窗口，只是开在另一张桌面上）', () => {
+await test('★ 岛模式**不加** --headless（要真窗口，只是开在另一张桌面上）', () => {
   const island = headlessArgs({ port: 1, mode: 'island' });
   assert.ok(!island.some((a) => a.startsWith('--headless')), '岛模式要真窗口：无头会被站点识别成机器人');
   assert.ok(island.includes('--remote-debugging-port=1'), '驱动靠 CDP，端口必须有');
@@ -55,17 +55,17 @@ test('★ 岛模式**不加** --headless（要真窗口，只是开在另一张�
   assert.ok(headless.includes('--headless=new'));
 });
 
-test('没有 profile 目录时不写 --user-data-dir（用浏览器自己的默认）', () => {
+await test('没有 profile 目录时不写 --user-data-dir（用浏览器自己的默认）', () => {
   const args = headlessArgs({ port: 1 });
   assert.ok(!args.some((a) => a.startsWith('--user-data-dir=')));
 });
 
-test('只认能当浏览器的可执行体', () => {
+await test('只认能当浏览器的可执行体', () => {
   assert.deepEqual(Object.keys(BROWSER_APPS).sort(), ['chrome.exe', 'chromium', 'google-chrome', 'msedge.exe']);
   assert.equal(locateBrowser({ app: 'notepad.exe' }).ok, false);
 });
 
-test('找不到浏览器时如实报错（不猜路径）', () => {
+await test('找不到浏览器时如实报错（不猜路径）', () => {
   const r = locateBrowser({ app: 'chrome.exe', platform: 'win32', exists: () => false });
   assert.equal(r.ok, false);
   assert.match(r.error, /没找到/);

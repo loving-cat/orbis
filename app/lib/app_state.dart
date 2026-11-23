@@ -931,6 +931,31 @@ class AppState extends ChangeNotifier {
   ///
   /// 服务端一般信任本机（不带 token）；开了服务器模式（设了 ORBIS_TOKEN）时本机也要带，
   /// 这时用用户在连接页填的 [localToken]。
+  /// 桌面端「一键迁移并重启」：内置 node 跑 migrate，成功后停掉待迁移进程并重启。
+  ///
+  /// 返回空串 = 成功；否则是给用户看的错误（含 migrate 的输出尾部）。
+  Future<String> runAutoMigration() async {
+    final status = migrationStatus;
+    if (!status.needed) return '';
+    if (!(localMode && isHostPlatform)) return '只有桌面本机模式可以一键迁移';
+    try {
+      final result = await serverLauncher.runMigration(
+        from: status.legacyDataDir,
+        to: status.targetDataDir,
+      );
+      if (!result.ok) {
+        final tail = result.output.trim();
+        final detail = result.error.trim();
+        return detail.isNotEmpty ? detail : (tail.isNotEmpty ? tail : '迁移失败');
+      }
+      // 迁移完：停掉待迁移进程 → 重新拉起 → 连上（recheckMigration 内部就是这套）
+      await recheckMigration();
+      return migrationStatus.needed ? '迁移命令跑完了，但服务端还在待迁移模式' : '';
+    } catch (err) {
+      return '迁移没跑起来：$err';
+    }
+  }
+
   /// 用户说「我迁好了」：重新检查（本机模式还会重启服务端进程）。
   ///
   /// ★ 本机模式必须**重启**：待迁移模式下的那个进程不会自己发现迁移完成

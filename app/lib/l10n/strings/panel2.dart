@@ -100,6 +100,7 @@ const areaPanel2 = StringArea(
     'decision.probeFail': '连不上',
     'decision.pickModel': '选择模型',
     'decision.saved': '已保存',
+    'decision.keyCleared': '已切换模式或地址，旧 API Key 已清空 —— 请重新填写新服务商的 Key',
     'limits.title': '群聊轮次',
     // 这五个数原来叫「老大最多几轮 / 成员最多几轮 / 一条消息最多跑几次 /
     // 单次最多来回几轮 / 单轮最长几分钟」—— 名字抽象、彼此重叠，
@@ -125,7 +126,7 @@ const areaPanel2 = StringArea(
     'limits.allow': '允许',
     'limits.ask': '需批准',
     'limits.deny': '只读',
-    'limits.policyHint': '需批准 = 每次改文件/跑命令都要你确认。只读 = 不给这些工具。',
+    'limits.policyHint': '需批准 = 成员和部门 bot 每次改文件/跑命令都要你确认；助手是可信宿主、不受此档限制，要限制助手请选「只读」。',
     'limits.requireProof': '交付要附证据',
     'limits.requireProofHint': '交活时必须带上命令输出 / 文件路径 / 测试结果，不许只说"改好了"',
 
@@ -535,6 +536,7 @@ const areaPanel2 = StringArea(
     'decision.probeFail': 'Cannot connect',
     'decision.pickModel': 'Pick a model',
     'decision.saved': 'Saved',
+    'decision.keyCleared': 'Mode or endpoint changed, so the old API key was cleared. Please enter the new provider key.',
     'limits.title': 'Group turns',
     'limits.intro': 'Keeps bots from chatting forever. These numbers cap how much they can spend.',
     'limits.groupPerBot': 'How long one bot can run',
@@ -557,7 +559,7 @@ const areaPanel2 = StringArea(
     'limits.allow': 'Allow',
     'limits.ask': 'Ask first',
     'limits.deny': 'Read-only',
-    'limits.policyHint': 'Ask first = confirm every file edit and command. Read-only = these tools are withheld.',
+    'limits.policyHint': 'Ask first = member & department bots need confirmation for file edits and commands; the assistant is a trusted host (use Read-only to restrict it).',
     'limits.requireProof': 'Deliver with evidence',
     'limits.requireProofHint': 'Finished work must include command output, file paths or test results — "it works now" is not enough',
 

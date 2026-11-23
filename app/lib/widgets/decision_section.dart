@@ -64,6 +64,9 @@ class _DecisionSectionState extends State<DecisionSection> {
   bool get _custom => isCustomDecisionMode(_cfg);
 
   Future<void> _patch(Map<String, dynamic> patch) async {
+    // 换模式 / 换地址时服务端会清掉旧 key（不把旧服务商的密钥发给新目标）。
+    // 这里必须告诉用户，否则他会以为"留空还在用旧 key"。
+    final hadKey = _hasKey;
     setState(() => _saving = true);
     final state = AppScope.read(context);
     final saved = await state.saveDecision(patch);
@@ -72,9 +75,13 @@ class _DecisionSectionState extends State<DecisionSection> {
       _saving = false;
       _dirty = false;
     });
-    if (saved != null) {
-      toast(context, L10n.s(context).t('decision.saved'), kind: ToastKind.success);
+    if (saved == null) return;
+    final stillHasKey = state.decision['hasApiKey'] == true;
+    if (hadKey && !stillHasKey) {
+      toast(context, L10n.s(context).t('decision.keyCleared'), kind: ToastKind.error);
+      return;
     }
+    toast(context, L10n.s(context).t('decision.saved'), kind: ToastKind.success);
   }
 
   Future<void> _save() async {

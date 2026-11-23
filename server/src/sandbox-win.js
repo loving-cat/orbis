@@ -27,7 +27,7 @@ import { noticeBrandDeprecation, readBrandEnv } from './brand.js';
 import { fileURLToPath } from 'node:url';
 
 /** 这份 Node 代码期望的启动器版本（与 native/orbis-sandbox/Cargo.toml 一致）。 */
-export const LAUNCHER_VERSION = '0.1.0';
+export const LAUNCHER_VERSION = '0.2.0';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 

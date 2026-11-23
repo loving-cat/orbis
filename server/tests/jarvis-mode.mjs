@@ -412,6 +412,25 @@ await test('对话式系统管家：定时任务 / 形象形状颜色 / 用户�
   );
   const lsList = await call(chiefToolsMap, 'manage_knowledge', { op: 'list_lessons' });
   assert.match(lsList.text, /改完配置后/);
+
+  // ★ 已生效经验的内容也不许主控改（P2-1）：
+  //   否则"候选→生效"那道人工门禁可以被一次 update_lesson 绕过去。
+  store.updateLesson(addLs.details.lesson.id, { status: 'active', evidence: [{ quote: '用户批准' }] });
+  const activeLesson = store.lessonLibrary().find((l) => l.id === addLs.details.lesson.id);
+  assert.equal(activeLesson?.status, 'active', '用户路径能把它启用');
+  const rewrite = await call(chiefToolsMap, 'manage_knowledge', {
+    op: 'update_lesson',
+    id: addLs.details.lesson.id,
+    cue: '被模型偷偷改写的情境',
+  });
+  assert.equal(rewrite.isError, true, '已生效经验的内容不许主控改写');
+  assert.match(rewrite.text, /设置页|归档/);
+  assert.equal(
+    store.lessonLibrary().find((l) => l.id === addLs.details.lesson.id)?.cue,
+    '改完配置后',
+    '库里内容必须原样',
+  );
+
   await call(chiefToolsMap, 'manage_knowledge', { op: 'delete_lesson', id: addLs.details.lesson.id });
 
   // 本机导入（skill + mcp）

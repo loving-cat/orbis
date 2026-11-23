@@ -62,6 +62,11 @@ test('/health：needsMigration + 两个真实路径 + 版本/身份', async () =
   assert.equal(body.tls, null, '待迁移模式不签证书');
   assert.ok(String(body.version ?? '').length > 0);
   assert.ok(String(body.serverName ?? '').length > 0);
+  // P0-1：/health 要把真实可执行命令带下来，App 的「一键迁移」直接用它
+  assert.match(String(body.migrateCommand ?? ''), /index\.js/, 'migrateCommand 要含真实入口路径');
+  assert.match(String(body.migrateCommand ?? ''), /migrate --from/, '要含 migrate --from');
+  assert.ok(String(body.migrateCommand).includes(legacy), '命令里要有旧目录');
+  assert.ok(String(body.migrateCommand).includes(target), '命令里要有新目录');
 });
 
 test('/health 不带 stats / model（没有 runner，别假装自己在干活）', async () => {
@@ -75,7 +80,9 @@ test('任意其它路径给一页人话（含可复制命令）', async () => {
   assert.equal(res.status, 200);
   assert.match(String(res.headers.get('content-type')), /text\/html/);
   const html = await res.text();
-  assert.ok(html.includes('orbis migrate --from'), '页面里要有可复制的命令');
+  assert.ok(html.includes('migrate --from'), '页面里要有可复制的命令');
+  // ★ 必须是**真的能跑**的形态：node + server/src/index.js（安装包里没有 orbis 在 PATH 上）
+  assert.match(html, /index\.js" migrate/, '页面里的命令要带真实入口');
   assert.ok(html.includes(legacy), '要写出旧目录');
   assert.ok(html.includes(target), '要写出新目录');
   assert.ok(html.includes('workspace'), '要提醒 workspace 不会复制、旧目录不能删');

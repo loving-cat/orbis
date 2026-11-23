@@ -369,6 +369,18 @@ export function buildJarvisTools({
           if (String(params.status ?? '').trim() === 'active') {
             return fail('不能由主控把经验设为「生效」：candidate → active 必须由用户在设置页手动启用。');
           }
+          // ★ 已生效经验的内容也不许主控改。
+          //
+          //   `add_lesson` 已经强制 candidate（人工门禁），但如果能随手改一条
+          //   active 的 cue/lesson/verdict，等于绕过那道门：用户批准过的经验被替换成
+          //   模型想写的内容，界面上还是「已启用」。内容要改就请用户先归档。
+          const current = services.capabilities.listLessons?.()?.find((l) => l.id === id) ?? null;
+          const rewritesContent = ['cue', 'lesson', 'verdict'].some(
+            (k) => params[k] !== undefined && String(params[k] ?? '').trim() !== String(current?.[k] ?? '').trim(),
+          );
+          if (current?.status === 'active' && rewritesContent) {
+            return fail('已生效的经验不能由主控直接改写内容：请让用户在设置页编辑，或先归档再加一条候选。');
+          }
           const patch = {};
           for (const k of ['roomId', 'dept', 'cue', 'lesson', 'verdict', 'status', 'evidence']) {
             if (params[k] !== undefined) patch[k] = params[k];

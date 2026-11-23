@@ -54,16 +54,27 @@ class MigrationStatus {
     required this.needed,
     this.legacyDataDir = '',
     this.targetDataDir = '',
+    this.command = '',
   });
 
   final bool needed;
   final String legacyDataDir;
   final String targetDataDir;
 
+  /// 服务端给的真实可执行命令（`"node" "server/src/index.js" migrate …`）。
+  ///
+  /// ★ 桌面安装包没有把 `orbis` 放进 PATH，旧的回退拼接在桌面端**跑不了** ——
+  ///   服务端从 `/health` 里把真实命令带下来，App 只负责展示/执行它。
+  final String command;
+
   static const none = MigrationStatus(needed: false);
 
-  /// 可以直接粘进终端的迁移命令（两个路径都加引号：Windows 上有空格）。
+  /// 可以直接粘进终端的迁移命令。
+  ///
+  /// 优先用服务端下发的 `command`；老服务端没有这个字段时回退到旧拼接
+  /// （CLI / npm 安装的用户可以用 `orbis migrate`）。
   String get migrateCommand {
+    if (command.trim().isNotEmpty) return command;
     final from = legacyDataDir.isEmpty ? '' : '--from "$legacyDataDir" ';
     final to = targetDataDir.isEmpty ? '' : '--to "$targetDataDir"';
     return 'orbis migrate $from$to'.trim();
@@ -77,10 +88,12 @@ class MigrationStatus {
       if (!needed) return none;
       final legacy = value['legacyDataDir'];
       final target = value['targetDataDir'];
+      final command = value['migrateCommand'];
       return MigrationStatus(
         needed: true,
         legacyDataDir: legacy is String ? legacy : '',
         targetDataDir: target is String ? target : '',
+        command: command is String ? command : '',
       );
     } on FormatException {
       return none;

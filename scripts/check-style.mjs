@@ -175,7 +175,24 @@ function fakeGreenCases() {
     const body = raw.slice(open, end);
     const awaited = /await\s+fn\s*\(/.test(body) || /then\s*\(/.test(body);
     const queued = /\.push\s*\(/.test(body); // fn 存进队列，文件末尾统一 await
-    if (awaited || queued) continue;
+    // 队列 / Promise 链型（`tests = tests.then(...)`）都在内部串行 await：
+    // 调用方写 `test(...)` 就够了，不需要 `await`。
+    const chained = /\.then\s*\(/.test(body);
+    if (queued || chained) continue;
+
+    const asyncRunner = /async\s+function\s+test\s*\(/.test(raw)
+      || /const\s+test\s*=\s*async\b/.test(raw);
+    if (awaited || asyncRunner) {
+      // ★ 异步 runner：每次 `test(...)` 调用都必须带 `await`。
+      //   漏一个就是那条用例"发出去了但没人等"—— 失败只会变成未处理的拒绝。
+      for (const m of raw.matchAll(/^[ \t]*(?:await[ \t]+)?test\s*\(/gm)) {
+        if (/await\s+test\s*\(/.test(m[0])) continue;
+        const line = raw.slice(0, m.index).split('\n').length;
+        problems.push(`${file}:${line} 的 test(...) 没有 await（异步 runner 下这条会被漏跑）`);
+      }
+      continue;
+    }
+
     // 同步 runner：任何 async 用例都是假绿
     for (const m of raw.matchAll(/\btest\s*\(\s*(?:[\r\n]\s*)?['"`]/g)) {
       const head = raw.slice(m.index, m.index + 240).split(/\r?\n/).slice(0, 4).join('\n');

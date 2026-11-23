@@ -309,7 +309,16 @@ orbis migrate             # 只复制、不删除
 
 2.0 起服务端**只认新目录**（`<数据根>/orbis/data`）。命令本身只有三步
 （`--dry-run` 看一遍 → `orbis migrate` → 重启，报告在
-`<数据根>/orbis/data/migration-report.json`），容易踩的是下面几条：
+`<数据根>/orbis/data/migration-report.json`）。
+
+**桌面端（Windows 安装包 / macOS `.app`）不要手敲命令**：安装包里没有把 `orbis`
+放进 `PATH`，`orbis.exe` 也是 GUI 入口、不认 CLI 参数。2.0 的迁移门禁页上有一个
+**「一键迁移并重启」**按钮，它会用发行包里自带的 node 跑
+`server/src/index.js migrate --from … --to …`，跑完自动重启成迁移后的 2.0。
+门禁页同时把这条**真实可执行**的完整命令露出来（可复制），纯 CLI / npm 安装的
+用户可以直接 `orbis migrate`。
+
+容易踩的是下面几条：
 
 - **先起过一次 2.0 也没关系**：2.0 的待迁移模式不会建密钥/证书，但如果你之前用的是
   beta 版（它当时会建），迁移会把那套 `secret.key` / `tls/` / 空 `state.json` 挪到

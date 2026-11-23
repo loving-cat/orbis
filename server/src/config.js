@@ -12,6 +12,7 @@ import { BRAND_NAME, noticeBrandDeprecation, readBrandEnv } from './brand.js';
 import {
   NEEDS_MIGRATION_MARKER, migrateLegacyData, migratedWorkspace, repairSessionRefs, SERVER_BOOT,
 } from './data-migration.js';
+import { buildMigrateCommand } from './migrate-command.js';
 
 const pkgRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -85,8 +86,8 @@ export function noticeLegacyDataIfAny({ home, base = userDataBaseDir(), log = ()
       `          旧：${legacyDir}`,
       `          新：${home}`,
       '        2.0 不再自动读旧目录。请先停掉服务端，然后运行：',
-      `          orbis migrate --from "${legacyDir}" --to "${home}"`,
-      '        （只复制、不删除；旧目录原样保留，确认没问题后再自己删）',
+      `          ${buildMigrateCommand({ legacy: legacyDir, target: home })}`,
+      '        （只复制、不删除；若旧目录里有 workspace 会继续沿用，切勿删除旧目录）',
       '',
     ].join(os.EOL));
     try {

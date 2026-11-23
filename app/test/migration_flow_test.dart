@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_bot/app_state.dart';
 import 'package:pi_bot/models.dart';
+import 'package:pi_bot/server/health.dart';
 
 class _State extends AppState {}
 
@@ -64,6 +65,25 @@ void main() {
     needed = false;
     expect(await state.recheckMigration(), isTrue, reason: '迁完后要能进入正常界面');
     expect(state.migrationNeeded, isFalse);
+  });
+
+  test('★ runAutoMigration：定位不到内置服务端时返回可读错误（不抛）', () async {
+    final state = _State()
+      ..localMode = true
+      ..migrationStatus = const MigrationStatus(
+        needed: true,
+        legacyDataDir: '/old/legacy/data',
+        targetDataDir: '/new/orbis/data',
+      );
+    addTearDown(state.dispose);
+    final err = await state.runAutoMigration();
+    expect(err, isNotEmpty, reason: '失败必须把原因交回界面');
+  });
+
+  test('runAutoMigration：不需要迁移时直接返回空串（幂等，不误跑）', () async {
+    final state = _State();
+    addTearDown(state.dispose);
+    expect(await state.runAutoMigration(), isEmpty);
   });
 
   test('recheckMigration：连不上时按"不需要迁移"处理（不把用户锁在阻断页）', () async {

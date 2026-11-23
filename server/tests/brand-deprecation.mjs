@@ -143,7 +143,9 @@ await test('BD-7 只有旧目录有数据：不再回退，但护栏必须给出
   const found = noticeLegacyDataIfAny({ home, base, log: (m) => lines.push(m) });
   assert.equal(path.basename(path.dirname(found)), LEGACY_DIR, '应指出旧数据目录');
   const text = lines.join('\n');
-  assert.match(text, /orbis migrate/, '必须给出可复制执行的命令');
+  // 命令是真实可执行形态（node + server/src/index.js migrate），不再要求恰好是 `orbis migrate`
+  assert.match(text, /migrate --from/, '必须给出可复制执行的命令');
+  assert.match(text, /index\.js/, '命令要指向真实入口（桌面安装包没有 orbis 在 PATH 上）');
   assert.match(text, /旧：/, '要说清旧目录在哪');
   assert.match(text, /新：/, '要说清新目录在哪');
   assert.ok(fs.existsSync(path.join(home, '.needs-migration.json')), '标记文件要给 /health 用');

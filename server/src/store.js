@@ -73,6 +73,7 @@ import { mcpNameError } from './mcp.js';
 import * as mcpLibraryDomain from './mcp-library.js';
 import { assertMcpCredentialsSealed } from './mcp-credentials.js';
 import { normalizeSite } from './sites.js';
+import { endpointTarget } from './model-endpoints.js';
 import { CHIEF_MODEL_POLICY } from './model-dispatch.js';
 import { encrypt, decrypt, isEncrypted } from './secrets.js';
 import { sealedDecisionKey } from './decision-credentials.js';
@@ -2139,12 +2140,29 @@ export class Store {
   updateDecision(patch = {}) {
     const prev = this.decision();
     const next = normalizeDecision(patch, prev);
+    // ★ 换模式 / 换目标地址必须清掉旧 key —— 和 `updateSite` 同一条安全规则。
+    //
+    //   否则把「决策路由」从 TypeSafe 切到某个第三方中转站、或者把 custom 的
+    //   baseUrl 改成另一台服务器时，旧服务商的 key 会被原样发过去：
+    //   用户只是改了地址，却把自己的密钥交给了陌生人。
+    const modeOf = (d) => (d.mode === 'custom' ? 'custom' : 'typesafe');
+    const targetOf = (d) => {
+      const mode = modeOf(d);
+      if (mode !== 'custom') return 'typesafe';
+      const url = String(d.baseUrl ?? '').trim();
+      return endpointTarget(url) ?? url; // 规范化不了就按 trim 后的字符串比
+    };
+    const targetChanged = modeOf(prev) !== modeOf(next) || targetOf(prev) !== targetOf(next);
+    const newKeyProvided = patch.apiKey !== undefined && String(patch.apiKey ?? '').trim() !== '';
+    const clearKey = targetChanged && !newKeyProvided;
+    if (clearKey) next.apiKey = '';
     const stored = {
       ...next,
       apiKey: sealedDecisionKey({
         previous: this.state.decision?.apiKey,
         value: next.apiKey,
-        provided: patch.apiKey !== undefined,
+        // 清空也要显式"提供"一次，否则 sealedDecisionKey 会保留旧密文
+        provided: patch.apiKey !== undefined || clearKey,
         key: this.secretsKey,
       }),
     };

@@ -166,6 +166,34 @@ test('★ probeDecision：已保存 typesafe（baseUrl 为空）→ 用 custom +
   store.updateDecision({ mode: 'custom', baseUrl: saved.base, apiKey: JEV_KEY });
 });
 
+// ---------------------------------------------------------------- 决策路由（Jev）
+
+test('★ updateDecision：typesafe → custom 且没给新 key → 清掉旧 key', () => {
+  store.updateDecision({ mode: 'typesafe', baseUrl: '', apiKey: JEV_KEY });
+  assert.equal(store.decision().apiKey, JEV_KEY);
+  const next = store.updateDecision({ mode: 'custom', baseUrl: 'https://relay.example.net/v1' });
+  assert.equal(next.apiKey, '', '切到自定义中转站时必须清掉 TypeSafe 的 key');
+  assert.equal(store.decision().apiKey, '', '落库也不能留着旧 key');
+  assert.equal(store.state.decision?.apiKey ?? '', '', '存储里那份密文也要清掉');
+});
+
+test('★ updateDecision：custom A → custom B 且没给新 key → 清掉旧 key', () => {
+  store.updateDecision({ mode: 'custom', baseUrl: 'https://a.example.com/v1', apiKey: JEV_KEY });
+  assert.equal(store.decision().apiKey, JEV_KEY);
+  const next = store.updateDecision({ baseUrl: 'https://b.example.com/v1' });
+  assert.equal(next.apiKey, '', '换了服务器不能带着旧 key');
+  assert.equal(store.decision().apiKey, '');
+});
+
+test('updateDecision：同一目标改别的字段 → 旧 key 保留', () => {
+  store.updateDecision({ mode: 'custom', baseUrl: 'https://a.example.com/v1', apiKey: JEV_KEY });
+  const next = store.updateDecision({ model: 'jev-other' });
+  assert.equal(next.apiKey, JEV_KEY, '没换目标就不该清 key');
+  // 显式给新 key 时照常更新
+  const withNew = store.updateDecision({ baseUrl: 'https://b.example.com/v1', apiKey: 'jev-new-key' });
+  assert.equal(withNew.apiKey, 'jev-new-key');
+});
+
 // ---------------------------------------------------------------- 站点改域名
 
 const PASSWORD = 'password';

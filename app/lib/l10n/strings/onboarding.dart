@@ -32,7 +32,10 @@ const areaOnboarding = StringArea(
     'migrate.newDir': '新数据目录',
     'migrate.step': '停掉服务端后，在终端执行：',
     'migrate.copied': '命令已复制',
-    'migrate.recheck': '我迁好了，重新检查',
+    'migrate.recheck': '我已手动迁移，重新检查',
+    'migrate.auto': '一键迁移并重启',
+    'migrate.autoRunning': '正在迁移…',
+    'migrate.autoFailed': '迁移没成功：',
     'migrate.stillNeeded': '服务端还在待迁移状态：先停掉它、跑完迁移命令，再启动一次。',
     'migrate.workspace': '迁移不复制 workspace：旧目录里的 workspace 会继续被使用，'
         '所以迁移完成后旧目录仍然不能删。',
@@ -73,7 +76,10 @@ const areaOnboarding = StringArea(
     'migrate.newDir': 'New data dir',
     'migrate.step': 'Stop the server, then run:',
     'migrate.copied': 'Command copied',
-    'migrate.recheck': 'I migrated — check again',
+    'migrate.recheck': 'I migrated manually — check again',
+    'migrate.auto': 'Migrate and restart',
+    'migrate.autoRunning': 'Migrating…',
+    'migrate.autoFailed': 'Migration failed:',
     'migrate.stillNeeded': 'The server is still in migrate-first mode: stop it, run the command, then start it again.',
     'migrate.workspace': 'Migration does not copy the workspace: the old one keeps being used, '
         'so the old directory still cannot be deleted afterwards.',

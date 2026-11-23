@@ -38,53 +38,53 @@ async function test(name, fn) {
   }
 }
 
-test('老大最后说话 → 不用收尾', () => {
+await test('老大最后说话 → 不用收尾', () => {
   // 0 用户、1 成员、2 老大
   const r = planClosing({ leadSpokeThisRound: true, memberSpokeAfterLead: false });
   assert.equal(r.needed, false);
   assert.match(r.why, /收口/);
 });
 
-test('老大说完之后还有成员交作业 → 需要收尾', () => {
+await test('老大说完之后还有成员交作业 → 需要收尾', () => {
   const r = planClosing({ leadSpokeThisRound: true, memberSpokeAfterLead: true });
   assert.equal(r.needed, true);
   assert.match(r.why, /汇总收口/);
 });
 
-test('老大这一轮没发过言 → 不触发收尾', () => {
+await test('老大这一轮没发过言 → 不触发收尾', () => {
   const r = planClosing({ leadSpokeThisRound: false, memberSpokeAfterLead: true });
   assert.equal(r.needed, false);
   assert.match(r.why, /还没发过言/);
 });
 
-test('老大从没发过言（-1）→ 不触发', () => {
+await test('老大从没发过言（-1）→ 不触发', () => {
   const r = planClosing({ leadSpokeThisRound: false, memberSpokeAfterLead: true });
   assert.equal(r.needed, false);
 });
 
-test('一轮产出很多条（超过旧的 50 条窗口）也不能漏判', () => {
+await test('一轮产出很多条（超过旧的 50 条窗口）也不能漏判', () => {
   // 老大在第 10 条说的，成员一路说到第 80 条 —— 用窗口取最近 50 条会看不到老大
   const r = planClosing({ leadSpokeThisRound: true, memberSpokeAfterLead: true });
   assert.equal(r.needed, true, '长回合必须仍能判定出要收尾');
 });
 
-test('上一轮老大说过、本轮只有成员说话 → 不误判', () => {
+await test('上一轮老大说过、本轮只有成员说话 → 不误判', () => {
   // 上一轮老大在位置 5 收口；本轮从位置 6 开始，只有成员说到 9
   const r = planClosing({ leadSpokeThisRound: false, memberSpokeAfterLead: true });
   assert.equal(r.needed, false, '上一轮的老大发言不该触发本轮的收尾');
 });
 
-test('空房间（位置都是 -1）→ 不触发', () => {
+await test('空房间（位置都是 -1）→ 不触发', () => {
   const r = planClosing({ leadSpokeThisRound: false, memberSpokeAfterLead: false });
   assert.equal(r.needed, false);
 });
 
-test('老大和成员都没说话 → 不触发', () => {
+await test('老大和成员都没说话 → 不触发', () => {
   const r = planClosing({ leadSpokeThisRound: false, memberSpokeAfterLead: false });
   assert.equal(r.needed, false);
 });
 
-test('收尾轮不受 maxRuns 截断', () => {
+await test('收尾轮不受 maxRuns 截断', () => {
   const capped = shouldStopRound({ queueLen: 2, pendingLen: 0, runs: 10, maxRuns: 10 });
   assert.equal(capped.stop, true, '普通情况到上限要停');
 
@@ -98,7 +98,7 @@ test('收尾轮不受 maxRuns 截断', () => {
   assert.equal(closing.stop, false, '收尾轮要放行');
 });
 
-test('用户中止时收尾轮也不放行', () => {
+await test('用户中止时收尾轮也不放行', () => {
   const r = shouldStopRound({
     queueLen: 1,
     runs: 10,
