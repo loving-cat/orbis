@@ -116,12 +116,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait 
 ; and is intentionally left behind so a reinstall keeps pairings and history.
 
 [Code]
-const
-  SERVER_PID_NAMES = 'orbis\server.pid;pi-bot\server.pid'; // legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
-
-{ Stop the local server recorded in %LOCALAPPDATA%\orbis\server.pid (2.0),
-  or the 1.7 one, which lives in %LOCALAPPDATA%\pi-bot\server.pid. legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
-  Both must be stopped before the upgrade overwrites the install dir.
+{ Stop a local server recorded in a pid file.
 
   The GUI spawns node through a helper script and does not own the child
   process: quitting orbis.exe leaves node running, and node.exe sits inside
@@ -135,19 +130,14 @@ const
   generated batch file instead of redirecting into a temp file. Passing
   "cmd /c <quoted path> <args> > <quoted file>" instead would hit cmd's quote
   stripping (it drops the first and last quote, eating the redirection). }
-procedure StopBundledServer();
+procedure StopServerAt(const PidPath: String);
 var
-  PidPath: String;
   PidText: AnsiString;
   Pid: Integer;
   ScriptPath: String;
   Script: String;
   ResultCode: Integer;
 begin
-  { 2.0 只写 orbis 目录；1.7 的用户还在 pi-bot 目录，升级时那个服务端也要停。 legacy-guard-ok: 安装器要停掉 1.7 的 node.exe }
-  PidPath := ExpandConstant('{localappdata}') + '\orbis\server.pid';
-  if not FileExists(PidPath) then
-    PidPath := ExpandConstant('{localappdata}') + '\pi-bot\server.pid'; // legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
   if not FileExists(PidPath) then
     exit;
   if not LoadStringFromFile(PidPath, PidText) then
@@ -172,6 +162,17 @@ begin
     DeleteFile(ScriptPath);
   end;
 end;
+
+{ ★ 两个数据目录**都试**，不是 if-else：
+    1.7 的服务端 pid 在 %LOCALAPPDATA%\pi-bot，2.0 的在 %LOCALAPPDATA%\orbis。 legacy-guard-ok: 安装器要停掉 1.7 的 node.exe
+    升级时两边都可能有一个 node.exe 在跑（比如先装过 2.0、又退回 1.7），
+    只停其中一个，另一个会继续锁着安装目录，[Files] 拷贝直接失败。 }
+procedure StopBundledServer();
+begin
+  StopServerAt(ExpandConstant('{localappdata}') + '\orbis\server.pid');
+  StopServerAt(ExpandConstant('{localappdata}') + '\pi-bot\server.pid'); { legacy-guard-ok: 安装器要停掉 1.7 的 node.exe }
+end;
+
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin

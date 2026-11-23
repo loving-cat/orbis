@@ -43,3 +43,47 @@ bool healthRequiresToken(String body) {
     return false;
   }
 }
+
+/// 服务端的「待迁移」状态（`/health` 的 `needsMigration` / 两个目录）。
+///
+/// 服务端发现「1.7 旧目录有数据、新目录还没有」时会以**待迁移模式**启动：
+/// 它只回 `/health`，不建空库、不生成密钥与证书。这时 App 不该让用户进到
+/// 一页空聊天里以为数据丢了，而要把命令摆在他面前。
+class MigrationStatus {
+  const MigrationStatus({
+    required this.needed,
+    this.legacyDataDir = '',
+    this.targetDataDir = '',
+  });
+
+  final bool needed;
+  final String legacyDataDir;
+  final String targetDataDir;
+
+  static const none = MigrationStatus(needed: false);
+
+  /// 可以直接粘进终端的迁移命令（两个路径都加引号：Windows 上有空格）。
+  String get migrateCommand {
+    final from = legacyDataDir.isEmpty ? '' : '--from "$legacyDataDir" ';
+    final to = targetDataDir.isEmpty ? '' : '--to "$targetDataDir"';
+    return 'orbis migrate $from$to'.trim();
+  }
+
+  static MigrationStatus fromHealth(String body) {
+    try {
+      final value = jsonDecode(body);
+      if (value is! Map<String, dynamic>) return none;
+      final needed = value['needsMigration'] == true;
+      if (!needed) return none;
+      final legacy = value['legacyDataDir'];
+      final target = value['targetDataDir'];
+      return MigrationStatus(
+        needed: true,
+        legacyDataDir: legacy is String ? legacy : '',
+        targetDataDir: target is String ? target : '',
+      );
+    } on FormatException {
+      return none;
+    }
+  }
+}

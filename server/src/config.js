@@ -176,7 +176,7 @@ export function createConfig(overrides = {}) {
     ? path.resolve(overrideWorkspace)
     : wsEnv
       ? path.resolve(wsEnv)
-      : (migratedWorkspace(home) ?? path.join(home, 'workspace'));
+      : (migratedWorkspace(home, { log: warn }) ?? path.join(home, 'workspace'));
 
   if (ensureDirs !== false) {
     for (const dir of [home, dataDir, workspace, path.join(dataDir, 'rooms'), path.join(dataDir, 'sessions')]) {

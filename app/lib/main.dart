@@ -16,6 +16,7 @@ import 'frame_log.dart';
 import 'widgets/avatar_life.dart';
 import 'notify.dart';
 import 'scope.dart';
+import 'screens/migration_gate.dart';
 import 'screens/pair_screen.dart';
 import 'platform.dart';
 import 'widgets/desktop_window_frame.dart';
@@ -561,6 +562,9 @@ class _Root extends StatelessWidget {
     if (!state.ready) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    // ★ 服务端只以「待迁移模式」在跑时，进去只会看到一页空聊天。
+    //   必须先说清楚：数据在旧目录里、这是迁移命令（见 MigrationGateScreen）。
+    if (state.migrationNeeded) return const MigrationGateScreen();
     // 桌面端是宿主：永远不显示手机那套配对界面。
     //
     // ★ "本机服务端" 这条路要有三个状态：

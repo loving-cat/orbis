@@ -110,6 +110,13 @@ export async function runMigrateCli(argv = []) {
 
   if (result.already) {
     process.stdout.write(`✓ 已经迁移过，什么都没做（报告：${result.reportFile}）\n`);
+    if (result.workspace) {
+      process.stdout.write(
+        `⚠ 工作目录仍在旧目录：${result.workspace}\n`
+        + '  2.0 还在用它（不复制是因为里面有 .venv / node_modules，复制过去反而是坏的）。\n'
+        + '  请勿删除旧目录。\n',
+      );
+    }
     return 0;
   }
 
@@ -118,13 +125,35 @@ export async function runMigrateCli(argv = []) {
       `（dry-run）会复制：${result.copied.join('、') || '（无）'}\n`
       + `（dry-run）新目录已有、会保留：${result.kept.join('、') || '（无）'}\n`,
     );
+    if (result.quarantined?.length) {
+      process.stdout.write(
+        `（dry-run）会先挪走 2.0 首启生成的：${result.quarantined.join('、')}（让 1.7 的密钥与证书进来）\n`,
+      );
+    }
+    if (result.workspace) {
+      process.stdout.write(`（dry-run）工作目录会继续用旧目录里的：${result.workspace}\n`);
+    }
     return 0;
   }
 
   process.stdout.write(
     `✓ 迁移完成：${result.from} → ${result.to}\n`
-    + `  报告：${result.reportFile}\n`
-    + '  旧目录一个字节没动；确认新目录能正常启动后，可以自行删除旧目录。\n',
+    + `  报告：${result.reportFile}\n`,
   );
+  if (result.quarantined?.length) {
+    process.stdout.write(
+      `  已把 2.0 首启生成的 ${result.quarantined.join('、')} 挪到 ${result.quarantineDir}（密钥与证书指纹按 1.7 的原件保留）\n`,
+    );
+  }
+  if (result.workspace) {
+    // ★ 这里**绝对不能**说"可以删旧目录"：workspace 没复制，2.0 继续用旧目录。
+    process.stdout.write(
+      `⚠ 工作目录仍在旧目录：${result.workspace}\n`
+      + '  2.0 会继续用它（workspace 里有 .venv / node_modules，复制过去是坏的）。\n'
+      + '  **请勿删除旧目录**：删了这一整个工作目录就没了。\n',
+    );
+  } else {
+    process.stdout.write('  旧目录一个字节没动；确认新目录能正常启动后，可以自行删除旧目录。\n');
+  }
   return 0;
 }

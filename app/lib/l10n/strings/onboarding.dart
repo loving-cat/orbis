@@ -24,6 +24,18 @@ const areaOnboarding = StringArea(
     'onboard.hintTitle': '还没有模型组',
     'onboard.hintBody': '配好之后 bot 才能回话。',
     // ---- 首次授权页（规格 §13.2）----
+    // ---- 待迁移阻断页（P0-2）----
+    'migrate.title': '先迁移数据，再使用 Orbis',
+    'migrate.body': '发现 1.7 的数据，但新目录里还没有。为了不弄坏密钥与证书指纹，'
+        '服务端这次没有创建任何文件，只在这里等你迁移。',
+    'migrate.oldDir': '旧数据目录',
+    'migrate.newDir': '新数据目录',
+    'migrate.step': '停掉服务端后，在终端执行：',
+    'migrate.copied': '命令已复制',
+    'migrate.recheck': '我迁好了，重新检查',
+    'migrate.stillNeeded': '服务端还在待迁移状态：先停掉它、跑完迁移命令，再启动一次。',
+    'migrate.workspace': '迁移不复制 workspace：旧目录里的 workspace 会继续被使用，'
+        '所以迁移完成后旧目录仍然不能删。',
     'perm.title': '先划定它能碰到的范围',
     'perm.project': '负责人项目',
     'perm.gitScope': '普通 Git 动作范围',
@@ -52,6 +64,19 @@ const areaOnboarding = StringArea(
     'onboard.hintTitle': 'No model group yet',
     'onboard.hintBody': 'Bots can only reply once a model is configured.',
     // ---- First-run authorization page (spec §13.2) ----
+    // ---- migration gate (P0-2) ----
+    'migrate.title': 'Migrate your data before using Orbis',
+    'migrate.body': 'Found 1.7 data, but the new directory is still empty. '
+        'To avoid replacing the encryption key and the TLS certificate, the server '
+        'created nothing this time and is waiting for you to migrate.',
+    'migrate.oldDir': 'Old data dir',
+    'migrate.newDir': 'New data dir',
+    'migrate.step': 'Stop the server, then run:',
+    'migrate.copied': 'Command copied',
+    'migrate.recheck': 'I migrated — check again',
+    'migrate.stillNeeded': 'The server is still in migrate-first mode: stop it, run the command, then start it again.',
+    'migrate.workspace': 'Migration does not copy the workspace: the old one keeps being used, '
+        'so the old directory still cannot be deleted afterwards.',
     'perm.title': 'Set the bounds it can reach',
     'perm.project': 'Owning project',
     'perm.gitScope': 'Ordinary Git actions',

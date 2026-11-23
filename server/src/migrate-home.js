@@ -51,6 +51,39 @@ function writeJsonAtomic(file, data) {
   fs.renameSync(tmp, file);
 }
 
+/**
+ * 新目录是不是「2.0 首启留下的空壳」。
+ *
+ * ★ 为什么需要它：1.7 用户升级后如果**先起过一次 2.0**（看到提示才知道要迁移），
+ *   那次启动已经生成了新的 `secret.key`、`tls/` 自签证书和一份空初始 `state.json`。
+ *   之后的迁移会因为「目标已有状态」被拒绝（或者 `--force` 也保留旧文件），
+ *   结果就是：**站点口令解不开、手机上的证书指纹全失效、每台设备都要重配对**。
+ *
+ * 判定标准（必须全部满足，宁可不动也不能误清用户真数据）：
+ *   · `state.json` 里没有自定义 bot（只剩主控）、没有设备、没有额外房间、没有任务；
+ *   · 没有 `migration-report.json`（那是"已经迁过"的证据，走幂等分支）。
+ *
+ * @param {string} dir 目标数据目录
+ * @returns {boolean}
+ */
+export function isPristineTarget(dir) {
+  if (fs.existsSync(path.join(dir, MIGRATION_REPORT))) return false;
+  const state = readJson(path.join(dir, 'state.json'));
+  if (!state) return true; // 连状态都没有：顶多有几个空目录，随便动
+  const bots = Object.values(state.bots ?? {});
+  if (bots.some((b) => b && b.role !== 'main')) return false;
+  if (Object.keys(state.devices ?? {}).length > 0) return false;
+  const rooms = Object.values(state.rooms ?? {});
+  if (rooms.some((r) => r && r.kind !== 'dm')) return false;
+  if (Array.isArray(state.tasks) && state.tasks.length > 0) return false;
+  if (Array.isArray(state.automations) && state.automations.length > 0) return false;
+  if (Object.keys(state.sessions ?? {}).length > 0) return false;
+  return true;
+}
+
+/** 2.0 首启会自动生成、但迁移时**必须让位给 1.7 原件**的东西。 */
+export const PRE_MIGRATE_ARTIFACTS = Object.freeze(['secret.key', 'tls', 'state.json']);
+
 /** 目录里有没有"值得迁移的东西"（只看 ENTRIES 与要改名的配置） */
 export function hasLegacyData(dir) {
   if (!dir) return false;
@@ -145,6 +178,29 @@ export function migrateHome({ from, to, force = false, dryRun = false, log = () 
     };
   }
 
+  // ★ 先处理「先起过一次 2.0 再迁移」：那次启动写下的 secret.key / tls / 空 state.json
+  //   必须让位给 1.7 的原件，否则站点口令解不开、证书指纹全变（见 isPristineTarget）。
+  const quarantined = [];
+  let quarantineDir = null;
+  const needsMigration = fs.existsSync(path.join(base.to, NEEDS_MIGRATION_MARKER));
+  if (needsMigration && isPristineTarget(base.to)) {
+    const present = PRE_MIGRATE_ARTIFACTS.filter((name) => fs.existsSync(path.join(base.to, name)));
+    if (present.length) {
+      quarantineDir = path.join(base.to, `.pre-migrate-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`);
+      if (!dryRun) {
+        fs.mkdirSync(quarantineDir, { recursive: true });
+        for (const name of present) {
+          fs.renameSync(path.join(base.to, name), path.join(quarantineDir, name));
+        }
+      }
+      quarantined.push(...present);
+      log(
+        `[migrate] 新目录里有一套 2.0 首启自己生成的 ${present.join('、')}；`
+          + `已挪到 ${dryRun ? '（dry-run 不实际移动）' : quarantineDir}，让 1.7 的原件进来`,
+      );
+    }
+  }
+
   const targetHasState = fs.existsSync(path.join(base.to, 'state.json'));
   if (targetHasState && !force) {
     return fail(
@@ -206,6 +262,9 @@ export function migrateHome({ from, to, force = false, dryRun = false, log = () 
     workspace,
     legacyUntouched: true,
     notCopied: [...new Set(extra)],
+    // 被让位的 2.0 首启产物（密钥 / 证书 / 空 state.json）与它们的暂存目录
+    quarantined,
+    quarantineDir,
   };
 
   if (!dryRun) {
@@ -227,7 +286,10 @@ export function migrateHome({ from, to, force = false, dryRun = false, log = () 
       `[migrate] 已复制 ${copied.length} 项：${base.from} → ${base.to}\n` +
         `         保留（新目录已有）：${kept.join('、') || '（无）'}\n` +
         `         旧目录没有：${skipped.join('、') || '（无）'}\n` +
-        (workspace ? `         工作目录没搬，继续用：${workspace}\n` : '') +
+        (workspace
+          ? `         工作目录没搬，继续用：${workspace}\n`
+            + '         ★ 请勿删除旧目录：这个工作目录还在里面。\n'
+          : '') +
         '         旧目录一个字节没动。',
     );
   }

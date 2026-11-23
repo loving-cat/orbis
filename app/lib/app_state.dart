@@ -22,6 +22,7 @@ import 'onboarding_model.dart';
 import 'native.dart';
 import 'notify.dart';
 import 'platform.dart';
+import 'server/health.dart';
 import 'server/launcher.dart';
 import 'server/local_token.dart';
 import 'server/options.dart';
@@ -710,6 +711,13 @@ class AppState extends ChangeNotifier {
 
   /// 已配对的远程设备（设置页用）
   List<Map<String, dynamic>> devices = const [];
+
+  /// 服务端的「待迁移」状态（`/health` 的 `needsMigration`）。
+  ///
+  /// true 时服务端只以「待迁移模式」在跑：它不建库、不签证书，进去只会看到一页空。
+  /// 界面据此**阻断**并给出 `orbis migrate` 命令（见 _Root 的 MigrationGateScreen）。
+  MigrationStatus migrationStatus = MigrationStatus.none;
+  bool get migrationNeeded => migrationStatus.needed;
   Map<String, dynamic>? pairing;
 
   /// 待批的连接请求（只有宿主端会用到：手机点"连接"之后，这里弹窗问允许）
@@ -923,6 +931,22 @@ class AppState extends ChangeNotifier {
   ///
   /// 服务端一般信任本机（不带 token）；开了服务器模式（设了 ORBIS_TOKEN）时本机也要带，
   /// 这时用用户在连接页填的 [localToken]。
+  /// 用户说「我迁好了」：重读一次 /health 并刷新界面。
+  ///
+  /// 只读、不发写请求；迁完重启服务端之后这里会自然变成 false。
+  Future<bool> recheckMigration() async {
+    final base = serverUrl;
+    if (base == null || base.isEmpty) return false;
+    try {
+      final body = await fetchHealthBody(base);
+      migrationStatus = body == null ? MigrationStatus.none : MigrationStatus.fromHealth(body);
+    } catch (_) {
+      migrationStatus = MigrationStatus.none;
+    }
+    _notify();
+    return !migrationStatus.needed;
+  }
+
   Future<void> connectLocal({String? url}) async {
     localMode = true;
     serverUrl = url ?? localUrl;
@@ -941,6 +965,19 @@ class AppState extends ChangeNotifier {
     //
     //   本机信任模式下才读 local-token 文件。
     localNeedsToken = await localServerRequiresToken(serverUrl!);
+    // ★ 顺手把「待迁移」状态读回来：服务端可能只以这一支在跑，连上也是空的。
+    //   失败不抛（判不出来就当不需要迁移，正常流程继续）。
+    MigrationStatus? status;
+    try {
+      final body = await fetchHealthBody(serverUrl!);
+      status = body == null ? MigrationStatus.none : MigrationStatus.fromHealth(body);
+    } catch (_) {
+      status = MigrationStatus.none;
+    }
+    if (status != migrationStatus) {
+      migrationStatus = status;
+      _notify();
+    }
     if (!localNeedsToken) {
       // ★ 每次都重读（不是只在空的时候读）：服务端重启会换 token，
       //   留着旧的会让后面所有重连都 401（见 refreshLocalTokenFromDisk）。

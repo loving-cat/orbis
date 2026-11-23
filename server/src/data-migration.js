@@ -79,15 +79,21 @@ export function markServerBoot() {
  * @param {string} dataDir
  * @returns {string|null} 旧工作目录（仍然存在时），否则 null
  */
-export function migratedWorkspace(dataDir) {
+export function migratedWorkspace(dataDir, { log = () => {} } = {}) {
   const marker = readJson(path.join(dataDir, MIGRATION_MARKER));
   const ws = typeof marker?.workspace === 'string' ? marker.workspace : null;
   if (!ws) return null;
   try {
-    return fs.statSync(ws).isDirectory() ? ws : null;
-  } catch {
-    return null;
-  }
+    if (fs.statSync(ws).isDirectory()) return ws;
+  } catch { /* 下面统一告警 */ }
+  // ★ 不能静默退回 <数据目录>/workspace：那等于把用户原来的项目目录换成
+  //   一个空目录，而 bot 会以为自己"什么都没做过"。旧目录被删/被挪时用户必须知道。
+  log(
+    `[Orbis] ⚠️  迁移时记下的工作目录已经不存在：${ws}\n`
+      + '        本次会退回 <数据目录>/workspace（原来那里的文件不会被读到了）。\n'
+      + '        如果旧工作目录还在别的位置，请用 ORBIS_WORKSPACE 指回去。',
+  );
+  return null;
 }
 
 const lower = (p) => path.resolve(p).toLowerCase();

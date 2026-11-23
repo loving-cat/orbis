@@ -13,6 +13,7 @@ import { issueLocalToken, clearLocalToken } from './local-token.js';
 import { markRetiredPresets } from './mcp-presets.js';
 import { attachWs } from './ws.js';
 import { log } from './util.js';
+import { servePendingMigrationMode } from './pending-migration.js';
 import { shells } from './shells.js';
 import { createAutomationScheduler } from './automations.js';
 import { createTaskHost } from './bootstrap/task-host.js';
@@ -100,6 +101,12 @@ async function main() {
   process.on('exit', (code) => {
     log(`服务端进程退出 code=${code}`);
   });
+
+  // ★ 待迁移模式：必须在碰任何持久化状态之前返回（见 servePendingMigrationMode）。
+  if (config.legacyDataDir) {
+    await servePendingMigrationMode(config);
+    return;
+  }
 
   const reaped = store.reapStaleStreaming();
   if (reaped) log(`清理了 ${reaped} 条上次遗留的 streaming 消息`);

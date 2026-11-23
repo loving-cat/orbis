@@ -152,6 +152,20 @@ test('对照：probeDecision 目标没变 → 用已保存的 key', async () => 
   assert.equal(saved.seen[0].authorization, `Bearer ${JEV_KEY}`);
 });
 
+test('★ probeDecision：已保存 typesafe（baseUrl 为空）→ 用 custom + 新地址绝不外发旧 key', async () => {
+  // 这是批次 A 的漏口：`savedBaseUrl` 为空时 `!savedBaseUrl` 让 sameTarget 为真，
+  // 跨模式（typesafe → custom）的探测会把 typesafe 的 key 发给一个陌生地址。
+  const TYPESAFE_KEY = 'jev-typesafe-key';
+  store.updateDecision({ mode: 'typesafe', baseUrl: '', apiKey: TYPESAFE_KEY });
+  attacker.reset();
+  const r = await service.probeDecision({ mode: 'custom', baseUrl: attacker.base });
+  assert.equal(attacker.seen.length, 0, '没有可用 key 时不该向新地址发请求');
+  assert.equal(r.ok, false);
+  assert.equal(attacker.seen.some((h) => h.authorization === `Bearer ${TYPESAFE_KEY}`), false);
+  // 恢复 custom 配置给后面的用例收尾用
+  store.updateDecision({ mode: 'custom', baseUrl: saved.base, apiKey: JEV_KEY });
+});
+
 // ---------------------------------------------------------------- 站点改域名
 
 const PASSWORD = 'password';

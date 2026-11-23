@@ -260,6 +260,56 @@ await test('★ 目录合并对 dry-run 也成立（要能提前看清会补哪�
   assert.ok(r.merged.includes('rooms'), `dry-run 应报"合并 rooms"，实际 ${JSON.stringify(r.merged)}`);
 });
 
+await test('★ 先起过一次 2.0 再迁移：2.0 自己生成的密钥/证书/空 state 必须让位给 1.7 的原件', () => {
+  const { dataDir } = makeLegacy('after-boot');
+  // 1.7 的原件：站点口令靠它解密，手机固定的是这张证书的指纹
+  fs.writeFileSync(path.join(dataDir, 'secret.key'), 'LEGACY-KEY');
+  fs.mkdirSync(path.join(dataDir, 'tls'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'tls', 'cert.pem'), 'LEGACY-CERT');
+
+  // 用户先起过一次 2.0：目标里已经有一套新生成的密钥 / 证书 / 空初始 state
+  const to = target('after-boot');
+  fs.mkdirSync(path.join(to, 'tls'), { recursive: true });
+  fs.writeFileSync(path.join(to, 'secret.key'), 'FRESH-2.0-KEY');
+  fs.writeFileSync(path.join(to, 'tls', 'cert.pem'), 'FRESH-2.0-CERT');
+  fs.writeFileSync(
+    path.join(to, 'state.json'),
+    JSON.stringify({ version: 4, bots: { b_main: { id: 'b_main', role: 'main' } }, rooms: {}, sessions: {}, devices: {} }),
+  );
+  fs.writeFileSync(path.join(to, NEEDS_MIGRATION_MARKER), '{"from":"x"}');
+
+  const r = migrateHome({ from: dataDir, to });
+  assert.equal(r.ok, true, r.error);
+  assert.deepEqual([...r.quarantined].sort(), ['secret.key', 'state.json', 'tls'], '三件都要让位');
+  assert.equal(fs.readFileSync(path.join(to, 'secret.key'), 'utf8'), 'LEGACY-KEY', '★ 密钥必须是 1.7 那份');
+  assert.equal(
+    fs.readFileSync(path.join(to, 'tls', 'cert.pem'), 'utf8'),
+    'LEGACY-CERT',
+    '★ 证书必须是 1.7 签的那张（否则手机上的指纹全失效）',
+  );
+  assert.ok(fs.existsSync(path.join(to, 'rooms', 'dm.json')), '聊天记录来自 1.7');
+  assert.ok(fs.existsSync(path.join(to, 'model-groups.json')), '模型组来自 1.7');
+  // 被让位的旧文件进暂存目录，不删（用户还能自查）
+  assert.ok(r.quarantineDir && fs.existsSync(r.quarantineDir));
+  assert.equal(fs.readFileSync(path.join(r.quarantineDir, 'secret.key'), 'utf8'), 'FRESH-2.0-KEY');
+  assert.equal(fs.existsSync(path.join(to, NEEDS_MIGRATION_MARKER)), false, '迁完标记要清掉');
+});
+
+await test('★ 目标里已经有用户自己的 bot → 没有护栏标记时绝不隔离，照旧拒绝覆盖', () => {
+  const { dataDir } = makeLegacy('after-boot-user');
+  const to = target('after-boot-user');
+  fs.mkdirSync(to, { recursive: true });
+  fs.writeFileSync(path.join(to, 'secret.key'), 'USER-KEY');
+  fs.writeFileSync(
+    path.join(to, 'state.json'),
+    JSON.stringify({ version: 4, bots: { b_mine: { id: 'b_mine', role: 'member' } }, rooms: {}, sessions: {}, devices: {} }),
+  );
+  const r = migrateHome({ from: dataDir, to });
+  assert.equal(r.ok, false, '用户真数据不能被迁移流程清掉');
+  assert.equal(r.code, 'TARGET_HAS_DATA');
+  assert.equal(fs.readFileSync(path.join(to, 'secret.key'), 'utf8'), 'USER-KEY');
+});
+
 await test('★ 配置迁移后落在 dataDir 里，providers 优先读新名字那份', async () => {
   const { dataDir } = makeLegacy('provider-config');
   const to = target('provider-config');

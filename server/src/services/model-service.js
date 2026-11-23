@@ -83,8 +83,13 @@ export function createModelService({ store, runner = null, modelGroups = default
       //   把 saved.apiKey 带过去，等于用户点一次「测试连接」就把密钥交给那台机器。
       const askedBaseUrl = String(input.baseUrl ?? '').trim();
       const savedBaseUrl = String(saved?.baseUrl ?? '').trim();
-      const sameTarget = !askedBaseUrl || !savedBaseUrl
-        || endpointTarget(askedBaseUrl) === endpointTarget(savedBaseUrl);
+      // ★ 只要显式给了新地址，就必须**证明**它和已保存目标是同一台：
+      //   没有保存过地址（savedBaseUrl 为空）时不能当成"同一个" —— 那是"没得比"，
+      //   不是"比过了相等"。规范化失败（endpointTarget 为 null）同理。
+      const askedTarget = askedBaseUrl ? endpointTarget(askedBaseUrl) : null;
+      const sameTarget = !askedBaseUrl
+        || (Boolean(savedBaseUrl) && askedTarget !== null
+          && askedTarget === endpointTarget(savedBaseUrl));
       return testModelGroup({
         baseUrl: askedBaseUrl || savedBaseUrl,
         apiKey: input.apiKey || (sameTarget ? saved?.apiKey : ''),
@@ -120,12 +125,21 @@ export function createModelService({ store, runner = null, modelGroups = default
 
     async probeDecision(input = {}) {
       const cfg = store.decision();
-      const mode = input.mode === 'custom' || cfg.mode === 'custom' ? 'custom' : 'typesafe';
+      const savedMode = cfg.mode === 'custom' ? 'custom' : 'typesafe';
+      const mode = input.mode === 'custom' || savedMode === 'custom' ? 'custom' : 'typesafe';
       const askedBaseUrl = mode === 'custom' ? String(input.baseUrl ?? '').trim() : '';
-      const savedBaseUrl = mode === 'custom' ? String(cfg.baseUrl ?? '').trim() : '';
-      // ★ 同 testGroup：自己填一个新地址去「试一下」时，不能顺手把已保存的密钥发过去。
-      const sameTarget = !askedBaseUrl || !savedBaseUrl
-        || endpointTarget(askedBaseUrl) === endpointTarget(savedBaseUrl);
+      const savedBaseUrl = savedMode === 'custom' ? String(cfg.baseUrl ?? '').trim() : '';
+      // ★ 同 testGroup，还要多一条：**跨模式不复用**。
+      //   已保存的是 typesafe（地址为空、key 是 typesafe 的），现在用
+      //   `mode: 'custom'` + 新地址去探测 —— 这台新服务器和 typesafe 毫无关系，
+      //   把它当成"没换目标"就会把 typesafe 的 key 发给一个陌生地址。
+      const crossMode = mode !== savedMode;
+      const askedTarget = askedBaseUrl ? endpointTarget(askedBaseUrl) : null;
+      const sameTarget = !crossMode && (
+        !askedBaseUrl
+          || (Boolean(savedBaseUrl) && askedTarget !== null
+            && askedTarget === endpointTarget(savedBaseUrl))
+      );
       return jevProbe({
         baseUrl: mode === 'custom' ? (askedBaseUrl || savedBaseUrl) : 'https://api.typesafe.ai',
         apiKey: input.apiKey || (sameTarget ? cfg.apiKey : ''),

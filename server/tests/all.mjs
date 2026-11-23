@@ -169,6 +169,7 @@ const TESTS = [
   'audit-query',
   'department-preview',
   'migrate-home',
+  'pending-migration',
   'user-dirs',
   'storage-retention',
   'storage-housekeeping',

@@ -24,33 +24,21 @@ import 'supervisor.dart';
 const stateDirNameNew = 'orbis';
 const stateDirNameLegacy = 'pi-bot';
 
-/// 选一个状态目录名：新版优先，旧版只在「新版目录还不存在、旧版存在」时沿用。
+/// 选一个状态目录名：**2.0 起固定用新名**。
 ///
-/// ★ 为什么不自动迁移：迁移半途失败（磁盘满 / 权限 / 进程被结束）会让用户
-///   失去 pid 记录 —— 而 pid 丢了会导致「服务端在跑、App 以为没起过」。
-///   沿用旧目录零风险；想换目录的用户可以手动搬。
+/// ★ 为什么不再"旧目录存在就沿用"：
+///   服务端 2.0 已经删掉了旧数据目录的回退（见 `config.js` 的 `resolveHomeDir`），
+///   数据统一在 `<数据根>/orbis/data`，由 `orbis migrate` 复制过来。
+///   App 侧如果还留在旧目录，就会出现"App 的日志/pid 在旧目录、
+///   服务端的数据在新目录"的分叉 —— 排查时最费事的那种。
+///
+///   旧目录里的 pid 仍然有用：**安装器**升级时会读
+///   `%LOCALAPPDATA%\pi-bot\server.pid` 停掉 1.7 还在跑的 node.exe（见 orbis.iss）， // legacy-guard-ok: 讲安装器为什么要读旧目录
+///   那跟 App 自己的状态目录是两件事。
 ///
 /// @param base 父目录（如 `~/Library/Application Support`）
-/// @param exists 目录存在性判定，测试可注入
+/// @param exists 保留参数（老调用点传了也不报错；2.0 不再用它做判断）
 String resolveStateDirName(String base, {bool Function(String path)? exists}) {
-  final sep = Platform.pathSeparator;
-  bool check(String name) {
-    final path = '$base$sep$name';
-    if (exists != null) return exists(path);
-    try {
-      return Directory(path).existsSync();
-    } catch (_) {
-      return false;
-    }
-  }
-
-  try {
-    if (!check(stateDirNameNew) && check(stateDirNameLegacy)) {
-      return stateDirNameLegacy;
-    }
-  } catch (_) {
-    // 判不出来就按新版走（建目录时会把错误暴露出来）
-  }
   return stateDirNameNew;
 }
 
@@ -537,6 +525,12 @@ Future<bool> serverAlive(
   return body != null && isOrbisHealthResponse(body);
 }
 
+/// 读一次 `/health` 正文（给待迁移判定用）。
+Future<String?> fetchHealthBody(
+  String baseUrl, {
+  Duration timeout = const Duration(seconds: 2),
+}) => _healthBody(baseUrl, timeout);
+
 /// 本机服务端是否开了服务器模式（本机请求也要带 token）。连不上或旧版服务端都算「不要」。
 Future<bool> localServerRequiresToken(
   String baseUrl, {
@@ -549,6 +543,8 @@ Future<bool> localServerRequiresToken(
 }
 
 /// 读 `/health` 正文（带大小上限和超时）；任何失败都返回 null。
+///
+/// 公开给 AppState 用：待迁移状态就在这份正文里（见 health.dart 的 MigrationStatus）。
 Future<String?> _healthBody(String baseUrl, Duration timeout) async {
   final client = HttpClient()..connectionTimeout = timeout;
   try {
