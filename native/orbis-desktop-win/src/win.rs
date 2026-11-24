@@ -220,13 +220,28 @@ pub fn list_windows(limit: usize) -> Vec<WindowRow> {
         EnumWindows(Some(enum_proc), &mut rows as *mut Vec<WindowRow> as LPARAM);
     }
     // 只留能截的：有标题、有面积、没最小化
-    let mut out: Vec<WindowRow> = rows
+    let out: Vec<WindowRow> = rows
         .into_iter()
         .filter(|w| w.width > 0 && w.height > 0 && !w.minimized)
         .filter(|w| !w.title.is_empty() || !w.app.is_empty())
         .collect();
-    out.truncate(limit.max(1));
-    out
+    sort_and_limit(out, limit)
+}
+
+/// 按面积降序取前 N 个。
+///
+/// ★ 必须**先排序再截断**：以前是 `EnumWindows` 的枚举顺序先截 40 个、再排序，
+///   于是"最大的窗口"完全取决于系统枚举顺序 —— 用户看到的列表里可能没有
+///   那个铺满屏幕的窗口，而多了一堆小的。
+/// ★ 面积用 i64 算：`width * height` 在 i32 上做，遇到 8K 级的虚拟屏或
+///   敌对/异常窗口矩形会溢出成负数，排序直接反过来。
+pub fn sort_and_limit(mut rows: Vec<WindowRow>, limit: usize) -> Vec<WindowRow> {
+    rows.sort_by(|a, b| {
+        let area = |w: &WindowRow| (w.width as i64) * (w.height as i64);
+        area(b).cmp(&area(a))
+    });
+    rows.truncate(limit.max(1));
+    rows
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {

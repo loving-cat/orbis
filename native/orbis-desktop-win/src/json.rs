@@ -97,12 +97,19 @@ fn write_str(s: &str, out: &mut String) {
     out.push('"');
 }
 
+/// 允许的最大嵌套深度。
+///
+/// 协议本身只有两层（`{plan:{point:{x,y}}}`），给 32 已经很宽松了。
+/// 没有上限的话，一个 `[[[[…]]]]` 的恶意/损坏输入会把递归解析打成栈溢出 ——
+/// 那是**进程崩溃**，不是"返回一个错误"，调用方连 catch 的机会都没有。
+const MAX_DEPTH: usize = 32;
+
 /// 解析一个 JSON 文档；任何非法输入都返回 `None`（调用方当成空对象）。
 pub fn parse(text: &str) -> Option<Json> {
     let bytes: Vec<char> = text.chars().collect();
     let mut i = 0usize;
     skip_ws(&bytes, &mut i);
-    let value = parse_value(&bytes, &mut i)?;
+    let value = parse_value(&bytes, &mut i, 0)?;
     Some(value)
 }
 
@@ -112,14 +119,17 @@ fn skip_ws(b: &[char], i: &mut usize) {
     }
 }
 
-fn parse_value(b: &[char], i: &mut usize) -> Option<Json> {
+fn parse_value(b: &[char], i: &mut usize, depth: usize) -> Option<Json> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
     skip_ws(b, i);
     if *i >= b.len() {
         return None;
     }
     match b[*i] {
-        '{' => parse_obj(b, i),
-        '[' => parse_arr(b, i),
+        '{' => parse_obj(b, i, depth),
+        '[' => parse_arr(b, i, depth),
         '"' => parse_str(b, i).map(Json::Str),
         't' => {
             eat(b, i, "true")?;
@@ -151,7 +161,7 @@ fn eat(b: &[char], i: &mut usize, word: &str) -> Option<()> {
     Some(())
 }
 
-fn parse_obj(b: &[char], i: &mut usize) -> Option<Json> {
+fn parse_obj(b: &[char], i: &mut usize, depth: usize) -> Option<Json> {
     *i += 1; // {
     let mut pairs: Vec<(String, Json)> = Vec::new();
     skip_ws(b, i);
@@ -167,7 +177,7 @@ fn parse_obj(b: &[char], i: &mut usize) -> Option<Json> {
             return None;
         }
         *i += 1;
-        let value = parse_value(b, i)?;
+        let value = parse_value(b, i, depth + 1)?;
         pairs.push((key, value));
         skip_ws(b, i);
         if *i >= b.len() {
@@ -186,7 +196,7 @@ fn parse_obj(b: &[char], i: &mut usize) -> Option<Json> {
     }
 }
 
-fn parse_arr(b: &[char], i: &mut usize) -> Option<Json> {
+fn parse_arr(b: &[char], i: &mut usize, depth: usize) -> Option<Json> {
     *i += 1; // [
     let mut items: Vec<Json> = Vec::new();
     skip_ws(b, i);
@@ -195,7 +205,7 @@ fn parse_arr(b: &[char], i: &mut usize) -> Option<Json> {
         return Some(Json::Arr(items));
     }
     loop {
-        let value = parse_value(b, i)?;
+        let value = parse_value(b, i, depth + 1)?;
         items.push(value);
         skip_ws(b, i);
         if *i >= b.len() {
@@ -312,6 +322,15 @@ mod tests {
     fn parses_strings_with_escapes() {
         let v = parse(r#"{"title":"a\"b\\c\nd 中文"}"#).unwrap();
         assert_eq!(v.get("title"), Some(&Json::Str("a\"b\\c\nd 中文".into())));
+    }
+
+    #[test]
+    fn rejects_deeply_nested_input_instead_of_overflowing() {
+        // 一万层嵌套数组：没有深度上限就是栈溢出（进程直接死）
+        let deep = format!("{}1{}", "[".repeat(10_000), "]".repeat(10_000));
+        assert_eq!(parse(&deep), None);
+        // 正常的两三层仍然能过
+        assert!(parse(r#"{"plan":{"point":{"x":1}}}"#).is_some());
     }
 
     #[test]

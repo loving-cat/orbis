@@ -104,6 +104,45 @@ export function parseHelperOutput(raw) {
  * 可能没有清单；**但只要有清单就必须对得上**。
  */
 export function verifyHelper(exePath, { run = defaultRun } = {}) {
+  // ★ 顺序很重要：**先验哈希，再执行**。
+  //
+  //   先 `run(exe, ['version'])` 等于「把一份可能被替换过的可执行文件先跑起来」——
+  //   版本自检本身就是执行它，篡改过的 exe 已经跑完了再报"哈希不符"毫无意义。
+  //   所以清单存在时，必须先算摘要比对通过，才允许 spawn。
+  const manifest = path.join(path.dirname(exePath), 'orbis-desktop-win.sha256');
+  let manifestText = null;
+  try {
+    manifestText = fs.readFileSync(manifest, 'utf8');
+  } catch (err) {
+    // 只有"清单不存在"才算没有清单（本地开发直接拷 cargo 产物就是这种）；
+    // 其它读失败（权限/IO）一律 fail-closed —— 读不到清单就没法证明 exe 没被换过。
+    if (err?.code !== 'ENOENT') {
+      return { ok: false, reason: 'manifest_unreadable', detail: String(err?.message || err).slice(0, 200) };
+    }
+  }
+  if (manifestText != null) {
+    let want = '';
+    try {
+      want = String(manifestText).trim().split(/\s+/)[0].toLowerCase();
+    } catch {
+      want = '';
+    }
+    let got = '';
+    try {
+      got = crypto.createHash('sha256').update(fs.readFileSync(exePath)).digest('hex');
+    } catch (err) {
+      return { ok: false, reason: 'hash_unreadable', detail: String(err?.message || err).slice(0, 200) };
+    }
+    if (!want) {
+      return { ok: false, reason: 'manifest_unreadable', detail: '清单里没有哈希' };
+    }
+    if (want !== got) {
+      // ★ 到这里就返回：**绝不执行**一个对不上清单的 exe
+      return { ok: false, reason: 'hash_mismatch', detail: `${want} != ${got}` };
+    }
+  }
+
+  // 哈希过关（或本来就没有清单）之后，才允许执行版本自检。
   let raw;
   try {
     raw = run(exePath, ['version'], '{}', { timeoutMs: 10_000 });
@@ -112,7 +151,7 @@ export function verifyHelper(exePath, { run = defaultRun } = {}) {
   }
   let parsed;
   try {
-    parsed = JSON.parse(String(raw ?? '').trim().split('\n').filter(Boolean).pop() || '');
+    parsed = JSON.parse(String(raw ?? '').trim().split(String.fromCharCode(10)).filter(Boolean).pop() || '');
   } catch {
     return { ok: false, reason: 'broken', detail: '版本输出不是 JSON' };
   }
@@ -133,17 +172,6 @@ export function verifyHelper(exePath, { run = defaultRun } = {}) {
       detail: `期望 ${HELPER_PROTOCOL}，实际 ${parsed.protocol}`,
     };
   }
-  // 清单里的哈希（可选）。有就必须对得上。
-  const manifest = path.join(path.dirname(exePath), 'orbis-desktop-win.sha256');
-  try {
-    if (fs.statSync(manifest).isFile()) {
-      const want = fs.readFileSync(manifest, 'utf8').trim().split(/\s+/)[0].toLowerCase();
-      const got = crypto.createHash('sha256').update(fs.readFileSync(exePath)).digest('hex');
-      if (want && want !== got) {
-        return { ok: false, reason: 'hash_mismatch', detail: `${want} != ${got}` };
-      }
-    }
-  } catch { /* 没有清单就不校验 */ }
   return { ok: true, version: String(parsed.version) };
 }
 

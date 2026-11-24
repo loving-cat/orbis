@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f));
@@ -89,13 +90,42 @@ await test('verifyHelper：跑不起来 / 输出不是 JSON → broken（不抛�
   assert.equal(helper.verifyHelper(exe, { run: garbage }).reason, 'broken');
 });
 
-await test('verifyHelper：有 sha256 清单就必须对得上', () => {
+await test('verifyHelper：有 sha256 清单就必须对得上，且**对不上就不许执行**', () => {
   const good = fakeExe();
   const wrong = path.join(good.dir, 'orbis-desktop-win.sha256');
   fs.writeFileSync(wrong, `${'0'.repeat(64)}  orbis-desktop-win.exe`, 'utf8');
+  const before = good.calls.length;
   const v = helper.verifyHelper(good.exe, { run: good.run });
   assert.equal(v.ok, false);
   assert.equal(v.reason, 'hash_mismatch');
+  // ★ 顺序断言：一份对不上清单的 exe，连"版本自检"都不该跑起来
+  assert.equal(good.calls.length - before, 0, '哈希不符时 run 调用次数必须为 0');
+});
+
+await test('verifyHelper：先验哈希、后执行（顺序不可颠倒）', () => {
+  const good = fakeExe();
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(good.exe)).digest('hex');
+  fs.writeFileSync(path.join(good.dir, 'orbis-desktop-win.sha256'),
+    `${hash}  orbis-desktop-win.exe`, 'utf8');
+  const order = [];
+  const run = (file, args, input) => {
+    order.push('exec:version');
+    return JSON.stringify({ ok: true, version: helper.DESKTOP_HELPER_VERSION, protocol: 1 });
+  };
+  const v = helper.verifyHelper(good.exe, { run });
+  assert.equal(v.ok, true);
+  assert.deepEqual(order, ['exec:version'], '哈希通过之后才允许执行一次版本自检');
+});
+
+await test('verifyHelper：清单读不出来（非 ENOENT）→ fail-closed，不执行', () => {
+  const good = fakeExe();
+  const manifestPath = path.join(good.dir, 'orbis-desktop-win.sha256');
+  fs.mkdirSync(manifestPath); // 目录代替文件：读会 EISDIR
+  const before = good.calls.length;
+  const v = helper.verifyHelper(good.exe, { run: good.run });
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, 'manifest_unreadable');
+  assert.equal(good.calls.length - before, 0);
 });
 
 await test('helperState：ORBIS_DESKTOP_WIN_IMPL=powershell 强制旧实现', () => {
@@ -173,10 +203,19 @@ await test('★ 真机：version / env / cursor / foreground / windows 的形状
   const { listWindows } = await import(src('desktop-observe.js'));
 
   const env = probeEnvironment();
+  // ★ 锁屏 / 远程会话断开 / CI 的无头桌面上 `session` 是 false：
+  //   那时**不该**要求光标与窗口列表有值（它们本来就取不到），
+  //   但 `env` 必须如实返回 `session:false`，而不是假装成功。
+  if (env.ok === true && env.session !== true) {
+    console.log('    （跳过 cursor/windows：当前没有可交互桌面，session=false）');
+    assert.ok(env.screen.width > 0 && env.screen.height > 0, '锁屏时虚拟屏矩形仍应可读');
+    assert.ok(Number(env.dpi) >= 96);
+    return;
+  }
   assert.equal(env.ok, true, JSON.stringify(env));
   assert.ok(env.screen.width > 0 && env.screen.height > 0);
   assert.ok(Number(env.dpi) >= 96);
-  assert.equal(typeof env.session, 'boolean');
+  assert.equal(env.session, true);
 
   const cursor = cursorPosition();
   assert.equal(cursor.ok, true);
@@ -199,14 +238,25 @@ await test('★ 真机：version / env / cursor / foreground / windows 的形状
   }
 });
 
-await test('★ 真机：perform(move) 走到位，且不点击', async () => {
+await test('★ 真机：perform(move) 走到位，且不点击（默认不抢用户鼠标）', async () => {
   if (!hasReal) {
     console.log('    （跳过：本机没有可用的桌面助手）');
+    return;
+  }
+  // ★ 这条会**真的移动用户鼠标**。默认不跑：`tests/all.mjs` 是开发者和 CI 天天跑的，
+  //   不该在有人正用电脑时把光标抢走，也不该在无头环境里报错。
+  //   想验这一项：`ORBIS_TEST_REAL_MOUSE=1 node tests/desktop-helper-win.mjs`
+  if (process.env.ORBIS_TEST_REAL_MOUSE !== '1') {
+    console.log('    （跳过：会真实移动鼠标，设 ORBIS_TEST_REAL_MOUSE=1 才跑）');
     return;
   }
   helper.resetHelperState();
   const { probeEnvironment, perform, cursorPosition } = await import(src('desktop-input-win.js'));
   const env = probeEnvironment();
+  if (env.ok === true && env.session !== true) {
+    console.log('    （跳过：没有可交互桌面，session=false）');
+    return;
+  }
   assert.equal(env.ok, true);
   const target = {
     x: Math.round(env.screen.x + env.screen.width / 2),

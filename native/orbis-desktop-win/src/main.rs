@@ -191,7 +191,7 @@ fn cmd_perform(aware: bool, req: &Json) -> Json {
     // ① 移动 + 复核（偏差在容差内才算到位；**到位之前绝不点击**）
     let mut last = (0i32, 0i32);
     let mut ok = false;
-    for _ in 0..MOVE_ATTEMPTS {
+    for attempt in 0..MOVE_ATTEMPTS {
         match win::move_to(tx, ty) {
             Some(at) => {
                 last = at;
@@ -201,6 +201,11 @@ fn cmd_perform(aware: bool, req: &Json) -> Json {
                 }
             }
             None => return fail("call_failed", "SetCursorPos 失败"),
+        }
+        // 只有"没到位、而且还有下一次"才等这一下：一次到位就零额外延迟。
+        // （以前每次循环都睡，等于把一次成功的移动硬生生拖慢 40 ms。）
+        if attempt + 1 < MOVE_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(40));
         }
     }
     if !ok {
@@ -275,9 +280,8 @@ fn cmd_windows(aware: bool, req: &Json) -> Json {
         return fail("not_aware", "声明不了 DPI 感知，窗口矩形不可信");
     }
     let limit = int_field(req, "limit").unwrap_or(MAX_WINDOWS as i64).clamp(1, MAX_WINDOWS as i64) as usize;
-    let mut rows = win::list_windows(MAX_WINDOWS);
-    rows.sort_by(|a, b| (b.width * b.height).cmp(&(a.width * a.height)));
-    rows.truncate(limit);
+    // 排序与截断都在 win::sort_and_limit 里（先全域排序，再取前 N）
+    let rows = win::list_windows(limit);
     let list = rows
         .into_iter()
         .map(|w| {
@@ -337,12 +341,62 @@ mod tests {
         assert_eq!(PROTOCOL, 1);
     }
 
+    fn code_of(out: &Json) -> String {
+        match out.get("code") {
+            Some(Json::Str(code)) => code.clone(),
+            other => panic!("期望失败码，实际 {:?}", other),
+        }
+    }
+
     #[test]
-    fn plan_validation_rejects_missing_point() {
+    fn missing_point_is_invalid_when_aware() {
         let req = json::parse(r#"{"plan":{"action":"click"}}"#).unwrap();
-        let out = cmd_perform(false, &req);
-        // 未声明感知时先返回 not_aware —— 这里只验证不会 panic 且是失败对象
-        assert_eq!(out.get("ok").and_then(|v| match v { Json::Bool(b) => Some(*b), _ => None }), Some(false));
+        assert_eq!(code_of(&cmd_perform(true, &req)), "invalid");
+    }
+
+    #[test]
+    fn unaware_short_circuits_before_validation() {
+        let req = json::parse(r#"{"plan":{"action":"click"}}"#).unwrap();
+        // 声明不了感知时连参数都不该走到"发输入"那一步
+        assert_eq!(code_of(&cmd_perform(false, &req)), "not_aware");
+    }
+
+    #[test]
+    fn window_list_sorts_by_area_before_truncating() {
+        let row = |width: i32, height: i32| win::WindowRow {
+            handle: 0,
+            title: format!("{}x{}", width, height),
+            app: "app".to_string(),
+            class: "cls".to_string(),
+            pid: 1,
+            x: 0,
+            y: 0,
+            width,
+            height,
+            minimized: false,
+        };
+        // 输入顺序是"小、大、中、微、巨大"：先截断会拿错人
+        let rows = vec![row(10, 10), row(300, 30), row(100, 20), row(1, 1), row(1000, 100)];
+        let top2 = win::sort_and_limit(rows, 2);
+        assert_eq!(top2.len(), 2);
+        assert_eq!(top2[0].width, 1000, "最大的应该排第一");
+        assert_eq!(top2[1].width, 300, "第二大的应该留下");
+    }
+
+    #[test]
+    fn window_list_area_does_not_overflow_i32() {
+        // 8K 级虚拟屏：20000 x 20000 = 4e8 还在 i32 内，但 40000 x 40000 = 1.6e9 已溢出 i32 的正数边界
+        let big = win::WindowRow {
+            handle: 0, title: "big".into(), app: "a".into(), class: "c".into(), pid: 1,
+            x: 0, y: 0, width: 40000, height: 40000, minimized: false,
+        };
+        let normal = win::WindowRow {
+            handle: 0, title: "normal".into(), app: "a".into(), class: "c".into(), pid: 1,
+            x: 0, y: 0, width: 2560, height: 1440, minimized: false,
+        };
+        let top = win::sort_and_limit(vec![normal, big], 1);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].width, 40000, "溢出成负数会把最大的排到最后");
     }
 
     #[test]

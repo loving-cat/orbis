@@ -519,7 +519,6 @@ Write-Output 'result=sent'
   return { ok: true, at: null, foreground };
 }
 
-/** 拖拽时每段最多走几站。段内一次 PS 调用，段间回 Node 判一次中断。 */
 /**
  * 原生助手的 `perform`：移动（最多 3 次复核）+ 点击都在**同一个进程**里完成。
  *
@@ -548,6 +547,7 @@ function performNative(plan, foreground) {
   };
 }
 
+/** 拖拽时每段最多走几站。段内一次 PS 调用，段间回 Node 判一次中断。 */
 const DRAG_BATCH = 4;
 
 /**
