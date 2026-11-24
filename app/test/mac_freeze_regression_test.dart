@@ -227,7 +227,10 @@ void main() {
     expect(state.notifyCalls, 1);
     await tester.pump();
     expect(state.activeStreamTickCount, 1);
-    expect(find.textContaining('首字▍'), findsOneWidget);
+    // 光标现在是**独立叶节点**（WidgetSpan + 自己的动画），不再拼进正文：
+    // 所以正文里只有「首字」，『▍』要单独找。
+    expect(find.textContaining('首字'), findsOneWidget);
+    expect(find.text('▍'), findsWidgets);
 
     // 后续增量：不再 notifyListeners，仅通过该消息专属 streamTick 局部刷新
     state.notifyCalls = 0;
@@ -239,7 +242,8 @@ void main() {
     });
     expect(state.notifyCalls, 0);
     await tester.pump();
-    expect(find.textContaining('首字第二段▍'), findsOneWidget);
+    expect(find.textContaining('首字第二段'), findsOneWidget);
+    expect(find.text('▍'), findsWidgets);
 
     // 完成收尾：注销 streamTick 并渲染终态正文
     state.handleFrameForTest({

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
@@ -33,6 +35,7 @@ class MdText extends StatefulWidget {
     this.linkColor,
     this.mentionOf,
     this.streamingCursorColor,
+    this.streamingCursorPulse,
   });
 
   final String text;
@@ -46,6 +49,9 @@ class MdText extends StatefulWidget {
 
   /// 流式输出尾标颜色（非 null 时不拼接进原始 Markdown 字符串，直接画在末块末尾）。
   final Color? streamingCursorColor;
+
+  /// 光标闪烁动画：只驱动末尾那个 `▍`，**不**触发 [MdText] 重建。
+  final Animation<double>? streamingCursorPulse;
 
   /// 要高亮的名字（不含 @）—— 部门成员。agent 之间用 @ 派活，高亮后一眼看得出谁被点名了。
   final List<String> mentions;
@@ -98,7 +104,6 @@ class _MdTextState extends State<MdText> {
   /// 流式追加时只有**最后一块**在变，前面的块每帧重建纯属浪费：
   /// 那就是"帧开销随消息长度线性增长"的来源。
   List<Widget> _stableWidgets = const [];
-  int _stableWidgetCount = 0;
   String _widgetKey = '';
 
   List<_Block> _blocksFor(String text) {
@@ -110,14 +115,19 @@ class _MdTextState extends State<MdText> {
   }
 
   /// 影响块渲染外观的全部输入 —— 任一变化都必须让块缓存整体失效。
-  String _widgetCacheKey(BuildContext context, TextStyle base, TextStyle code) {
+  String _widgetCacheKey(BuildContext context, TextStyle base, TextStyle code, int generation) {
     final colors = PB.colors(context);
     return [
       base.hashCode,
       code.hashCode,
       widget.mono.hashCode,
       widget.linkColor?.toARGB32() ?? 0,
-      widget.mentions.hashCode,
+      // ★ 用**值签名**而不是 `mentions.hashCode`：父级每帧传一个新的字面量列表
+      //   （内容一样、对象不同）时，引用哈希每次都变 → 缓存每帧失效、退化成全量重建。
+      widget.mentions.join(String.fromCharCode(0)),
+      widget.compact ? 1 : 0,
+      // 前缀重置（编辑/回滚）也必须让缓存整体失效
+      generation,
       colors.accent.toARGB32(),
       Theme.of(context).brightness.index,
       // 流式结束 false→true：可选中渲染是**另一棵树**，必须失效
@@ -203,22 +213,35 @@ class _MdTextState extends State<MdText> {
     // ★ 缓存键必须把所有影响**渲染外观**的东西都算进来，少一个就会
     //   在"开了选中复制 / 系统改了字号 / 换主题"之后复用一批旧配置画出来的 widget：
     //   表现是选中不了、字号不跟系统走，而且不报错。
-    final key = _widgetCacheKey(context, base, code);
+    // ★ 前缀重置（编辑/回滚/换条）时必须整体失效：块结构可能完全不同，
+    //   复用旧消息的 widget 会在界面上残留上一版正文。
+    final generation = _incremental.generation;
+    final key = _widgetCacheKey(context, base, code, generation);
     final stableCount = _incremental.stableCount.clamp(0, blocks.length);
+    // ★ 带光标的末块**永不进缓存**：它每帧都在变（追加字 / 光标动画），
+    //   缓存它会把光标字符固化进正文（空白尾再追加内容的场景尤其明显）。
+
+    final stableLimit = cursorColor != null
+        ? math.min(stableCount, math.max(0, blocks.length - 1))
+        : stableCount;
     if (key != _widgetKey) {
       _stableWidgets = const [];
-      _stableWidgetCount = 0;
       _widgetKey = key;
     }
     final children = <Widget>[];
     if (blocks.isEmpty && cursorColor != null) {
-      children.add(Text('▍', style: base.copyWith(color: cursorColor)));
+      children.add(_StreamingCursor(
+        color: cursorColor,
+        style: base,
+        pulse: widget.streamingCursorPulse,
+      ));
     } else {
-      // 稳定块：实例直接复用（Flutter 会跳过完全相同的 widget 子树）
-      for (var i = 0; i < stableCount && i < _stableWidgets.length; i += 1) {
+      // 已缓存的稳定块：实例直接复用（Flutter 会跳过完全相同的 widget 子树）
+      final reuse = math.min(stableLimit, _stableWidgets.length);
+      for (var i = 0; i < reuse; i += 1) {
         children.add(_stableWidgets[i]);
       }
-      final rebuilt = <Widget>[];
+      final nextStable = <Widget>[..._stableWidgets.take(reuse)];
       for (var i = children.length; i < blocks.length; i += 1) {
         final w = _renderBlock(
           context,
@@ -226,13 +249,16 @@ class _MdTextState extends State<MdText> {
           base,
           code,
           cursorColor: i == blocks.length - 1 ? cursorColor : null,
+          cursorPulse: i == blocks.length - 1 ? widget.streamingCursorPulse : null,
         );
         children.add(w);
-        if (i < stableCount) rebuilt.add(w);
+        // ★ 必须**追加**到已有缓存，不能整体替换：一次新闭合 2 段以上时，
+        //   替换会把已经在缓存里的前几段丢掉 —— 界面上表现为第 1 段凭空消失、
+        //   后面的段落前移并重复渲染。
+        if (i < stableLimit) nextStable.add(w);
       }
-      if (rebuilt.length > _stableWidgetCount) {
-        _stableWidgets = rebuilt;
-        _stableWidgetCount = rebuilt.length;
+      if (nextStable.length != _stableWidgets.length || nextStable.isNotEmpty) {
+        _stableWidgets = nextStable;
       }
     }
 
@@ -269,6 +295,7 @@ class _MdTextState extends State<MdText> {
     TextStyle base,
     TextStyle code, {
     Color? cursorColor,
+    Animation<double>? cursorPulse,
   }) {
     switch (block) {
       case _Heading(:final level, :final text):
@@ -302,7 +329,7 @@ class _MdTextState extends State<MdText> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             line,
-            Text('▍', style: base.copyWith(color: cursorColor)),
+            _StreamingCursor(color: cursorColor, style: base, pulse: cursorPulse),
           ],
         );
 
@@ -312,6 +339,7 @@ class _MdTextState extends State<MdText> {
           code: code_,
           style: code,
           cursorColor: cursorColor,
+          cursorPulse: cursorPulse,
         );
 
       case _Quote(:final text):
@@ -379,13 +407,13 @@ class _MdTextState extends State<MdText> {
             table,
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text('▍', style: base.copyWith(color: cursorColor)),
+              child: _StreamingCursor(color: cursorColor, style: base, pulse: cursorPulse),
             ),
           ],
         );
 
       case _Para(:final text):
-        return _rich(text, base, code, cursorColor: cursorColor);
+        return _rich(text, base, code, cursorColor: cursorColor, cursorPulse: cursorPulse);
     }
   }
 
@@ -395,6 +423,7 @@ class _MdTextState extends State<MdText> {
     TextStyle code, {
     bool quote = false,
     Color? cursorColor,
+    Animation<double>? cursorPulse,
   }) {
     final spans = _inline(
       source,
@@ -403,12 +432,14 @@ class _MdTextState extends State<MdText> {
       linkColor: quote ? PB.colors(context).link : widget.linkColor,
     );
     if (cursorColor != null) {
-      spans.add(
-        TextSpan(
-          text: '▍',
-          style: base.copyWith(color: cursorColor),
-        ),
-      );
+      // ★ 用 WidgetSpan 而不是 TextSpan：光标是**独立小部件**，
+      //   闪烁动画只重绘它自己（不带 baseline 对齐会改变行高/换行行为，
+      //   所以 alignment/baseline 显式给上，语义与原来的文字光标一致）。
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: _StreamingCursor(color: cursorColor, style: base, pulse: cursorPulse),
+      ));
     }
     // 选中交给最外层那一个 SelectionArea（见 build），这里只画文本。
     // 不用 SelectableText.rich：它不支持 WidgetSpan，而 @提及 要画头像 chip。
@@ -622,9 +653,16 @@ class _IncrementalMarkdown {
   /// 已闭合（不会再变）的块数 —— 块 Widget 缓存只对前缀这部分有效。
   int get stableCount => _stable.length;
 
+  int _generation = 0;
+
+  /// 前缀重置次数：每次「整段重来」+1，块 Widget 缓存据此整体失效。
+  int get generation => _generation;
+
   List<_Block> blocksFor(String text) {
     // 不是「上一段的前缀」：编辑/回滚/换消息，整段重来
     if (!text.startsWith(_src)) {
+      // 编辑 / 回滚 / 换条消息：块结构可能完全不同，缓存必须整体失效
+      _generation += 1;
       _src = text;
       _offset = _stableStart(text);
       _stable = _parse(text.substring(0, _offset));
@@ -873,12 +911,14 @@ class _CodeBlock extends StatelessWidget {
     required this.code,
     required this.style,
     this.cursorColor,
+    this.cursorPulse,
   });
 
   final String language;
   final String code;
   final TextStyle style;
   final Color? cursorColor;
+  final Animation<double>? cursorPulse;
 
   @override
   Widget build(BuildContext context) {
@@ -1145,6 +1185,38 @@ class MentionInfo {
 ///   · 鼠标移上去变手型，看着像"可以拖"
 ///   · 而它比点击只多了"提前看到一句话简介"这点信息 —— 不划算
 /// 所以去掉了。要看他是谁，点进去就是了。
+/// 流式光标：**独立小部件**，闪烁只重绘它自己（SPEC-PERF-V1 §7.2 第 3 条）。
+///
+/// 为什么不是把 `▍` 拼进正文：那样光标颜色一变（每帧的闪烁相位）就得重建
+/// 整条 `MdText` —— 长消息上等于每帧全量重排。做成叶节点之后，
+/// 稳定块走缓存、光标走自己的动画，`MdText.build` 一帧都不必跑。
+///
+/// 换行语义：在 `Text.rich` 里用 WidgetSpan + baseline 对齐，
+/// 与原来的 `TextSpan('▍')` 完全一致（不会把光标挤到下一行或改变行高）。
+class _StreamingCursor extends StatelessWidget {
+  const _StreamingCursor({required this.color, required this.style, this.pulse});
+
+  final Color color;
+  final TextStyle style;
+  final Animation<double>? pulse;
+
+  @override
+  Widget build(BuildContext context) {
+    final glyph = Text('▍', style: style.copyWith(color: color));
+    final animation = pulse;
+    if (animation == null) return glyph;
+    return AnimatedBuilder(
+      animation: animation,
+      // child 是静态的：每帧只重建这层 Opacity，不碰 MdText
+      builder: (context, child) => Opacity(
+        opacity: 0.28 + animation.value * 0.67,
+        child: child,
+      ),
+      child: glyph,
+    );
+  }
+}
+
 class _MentionChip extends StatelessWidget {
   const _MentionChip({required this.name, this.info, this.onTap});
 

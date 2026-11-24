@@ -62,6 +62,8 @@ List<String> _chunks(String text, Random rnd) {
   return chunks;
 }
 
+String plain(Text w) => w.data ?? w.textSpan?.toPlainText() ?? '';
+
 void main() {
   // ---- 解析层 ----
   test('属性：随机文本 + 随机切点，增量解析与整段解析逐块相等', () {
@@ -141,12 +143,21 @@ void main() {
     String text, {
     bool selectable = false,
     double scale = 1.0,
+    List<String>? mentions,
+    Color? cursor,
   }) async {
     await tester.pumpWidget(MaterialApp(
       home: MediaQuery(
         data: MediaQueryData(textScaler: TextScaler.linear(scale)),
         child: Scaffold(
-          body: SingleChildScrollView(child: MdText(text, selectable: selectable)),
+          body: SingleChildScrollView(
+            child: MdText(
+              text,
+              selectable: selectable,
+              mentions: mentions ?? const [],
+              streamingCursorColor: cursor,
+            ),
+          ),
         ),
       ),
     ));
@@ -171,6 +182,97 @@ void main() {
     final after = await pumpMd(tester, text, selectable: true);
     expect(find.byType(SelectionArea), findsOneWidget);
     expect(identical(before[0], after[0]), false, reason: '换了渲染树，块缓存必须整体失效');
+  });
+
+  // ---- 直接回归 P0/P1（旧实现会画面错乱的几种写法） ----
+
+  testWidgets('多段渐进闭合：每段文字完整出现、无重复，已闭合段 identical 复用', (tester) async {
+    final nl = String.fromCharCode(10) + String.fromCharCode(10);
+    String doc(List<String> parts) => parts.join(nl);
+    final steps = [
+      <String>["P1", "P2"],
+      <String>["P1", "P2", "P3"],
+      <String>["P1", "P2", "P3", "P4", "P5"],
+      <String>["P1", "P2", "P3", "P4", "P5!"],
+    ];
+    List<Text>? prev;
+    // 上一帧里"已经闭合"的段数（末段还在流式写入，本来就不该被缓存）
+    var prevStable = 0;
+    for (final parts in steps) {
+      final widgets = await pumpMd(tester, doc(parts));
+      final joined = widgets.map(plain).join('|');
+      // 每一段都必须**完整出现且只出现一次**（旧实现会丢掉 P1、或重复渲染后段）
+      for (final piece in parts) {
+        final key = piece.replaceAll('!', '');
+        final hits = widgets.where((w) => plain(w).contains(key)).length;
+        expect(hits, 1, reason: '$key 应恰好出现一次（实际 $joined）');
+      }
+      expect(joined.contains('P1P1'), false, reason: '重复渲染（实际 $joined）');
+      if (prev != null) {
+        for (final i in [for (var k = 0; k < prevStable; k += 1) k]) {
+          if (i >= prev.length || i >= widgets.length) continue;
+          expect(identical(prev[i], widgets[i]), true,
+              reason: '已闭合的第 ${i + 1} 段应复用同一个 Widget（旧实现会丢掉 P1）');
+        }
+      }
+      prev = widgets;
+      prevStable = parts.length - 1;
+    }
+  });
+
+  testWidgets('前缀不成立（换正文）：旧内容不残留', (tester) async {
+    final nl = String.fromCharCode(10) + String.fromCharCode(10);
+    String doc(List<String> parts) => parts.join(nl);
+    await pumpMd(tester, doc(["旧A", "旧B"]));
+    final after = await pumpMd(tester, doc(["新A", "新B"]));
+    final joined = after.map(plain).join('|');
+    expect(joined.contains('旧A'), false, reason: '旧内容必须消失（实际 $joined）');
+    expect(joined.contains('旧B'), false, reason: '旧内容必须消失（实际 $joined）');
+    expect(joined.contains('新A'), true);
+    expect(joined.contains('新B'), true);
+  });
+
+  testWidgets('空白尾之后追加：P1 里不能残留光标字符', (tester) async {
+    final nl = String.fromCharCode(10) + String.fromCharCode(10);
+    String doc(List<String> parts) => parts.join(nl);
+    await pumpMd(tester, doc(["P1", "   "]), cursor: const Color(0xFF000000));
+    final after = await pumpMd(tester, doc(["P1", "   ", "P2"]), cursor: const Color(0xFF000000));
+    final p1 = after.where((w) => plain(w).contains('P1')).toList();
+    expect(p1.length, 1);
+    expect(plain(p1.first).contains('▍'), false, reason: '光标不能被固化进正文');
+  });
+
+  testWidgets('每帧传内容相同的新 mentions 列表：稳定块仍 identical', (tester) async {
+    final nl = String.fromCharCode(10) + String.fromCharCode(10);
+    String doc(List<String> parts) => parts.join(nl);
+    final before = await pumpMd(tester, doc(["@botA 你好", "第二段"]), mentions: ['botA']);
+    final after = await pumpMd(tester, doc(["@botA 你好", "第二段！"]), mentions: ['botA']);
+    expect(identical(before.first, after.first), true,
+        reason: '内容相同的 mentions 不该让缓存失效');
+  });
+
+  testWidgets('光标动画推进时不重建 MdText', (tester) async {
+    final controller = AnimationController(vsync: const TestVSync(), duration: const Duration(seconds: 1));
+    addTearDown(controller.dispose);
+    var builds = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Builder(builder: (context) {
+          builds += 1;
+          return MdText(
+            '一段正文',
+            streamingCursorColor: const Color(0xFF000000),
+            streamingCursorPulse: controller,
+          );
+        }),
+      ),
+    ));
+    final baseline = builds;
+    controller.value = 0.5;
+    await tester.pump();
+    controller.value = 0.9;
+    await tester.pump();
+    expect(builds, baseline, reason: '闪烁只该重绘光标叶节点，不该重建 MdText');
   });
 
   testWidgets('系统字号变化时缓存同样失效', (tester) async {
