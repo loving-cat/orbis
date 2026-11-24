@@ -452,14 +452,18 @@ export class ShellRegistry {
     const entry = this.shells.get(id);
     if (!entry) return { ok: true, running: false, timedOut: false };
     const stop = entry.stopping ?? this.#terminateEntry(entry);
+    let timer = null;
     const timedOut = await Promise.race([
       Promise.resolve(stop).then(() => false),
       new Promise((resolve) => {
         // ★ 这个定时器**不能 unref**：等待期间它往往是唯一压住事件循环的东西，
         //   unref 掉会让 Node 直接退出（测试里就是 "unsettled top-level await"）。
-        setTimeout(() => resolve(true), Math.max(50, Number(timeoutMs) || KILL_TREE_TIMEOUT_MS));
+        //   但**抢赢之后必须清掉**：不清就是"进程树已经收干净了，还白等 5 秒"，
+        //   短命进程/测试会被它拖住退出。
+        timer = setTimeout(() => resolve(true), Math.max(50, Number(timeoutMs) || KILL_TREE_TIMEOUT_MS));
       }),
     ]);
+    if (timer) clearTimeout(timer);
     return { ok: !entry.running, running: entry.running, timedOut };
   }
 
@@ -498,11 +502,15 @@ export class ShellRegistry {
     clearInterval(this.timer);
     if (!entries.length) return Promise.resolve({ ok: true, stopped: 0 });
     const all = Promise.allSettled(entries.map((entry) => this.#terminateEntry(entry)));
-    // 同理：收尾等待的兜底定时器不 unref（有界 3 s，不能让它被"没事可做"吞掉）
+    // 同理：收尾等待的兜底定时器不 unref（有界 3 s，不能让它被"没事可做"吞掉），
+    // 但收干净之后要清掉 —— 否则服务端"收完了还要再站 3 秒才退"。
+    let timer = null;
     const timeout = new Promise((resolve) => {
-      setTimeout(() => resolve('timeout'), STOP_ALL_TIMEOUT_MS);
+      timer = setTimeout(() => resolve('timeout'), STOP_ALL_TIMEOUT_MS);
     });
-    return Promise.race([all, timeout]).then(() => ({ ok: true, stopped: entries.length }));
+    return Promise.race([all, timeout])
+      .then(() => ({ ok: true, stopped: entries.length }))
+      .finally(() => { if (timer) clearTimeout(timer); });
   }
 
   /**
@@ -541,6 +549,10 @@ export class ShellRegistry {
         if (process.platform === 'win32') {
           await this.#taskkillTree(entry);
           try { entry.child.kill(); } catch { /* 已退出 */ }
+          // ★ 再等一下 `exit`：`taskkill` 的退出码只说明"它跑完了"，
+          //   不保证 Node 这边的 `child.on('exit')` 已经执行过 —— 不等的话
+          //   `waitExit()` 可能带着 `running=true` 返回（调用方以为没杀干净）。
+          await this.#waitChildExit(entry, 1_000);
           return;
         }
         // POSIX：先整组 SIGTERM，给一点时间；不退再 SIGKILL 整组

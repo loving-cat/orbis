@@ -79,6 +79,63 @@ await test('RunTiming：TTFT 样本 / 工具期暂停 / SDK 重试等待 / 失�
   assert.deepEqual(snap.failKinds, { transient: 2 });
 });
 
+await test('endedBy：stall / abort / auth / quota 按真实结局分桶（不再全坍缩）', () => {
+  // 这些是执行器**当场就知道**的事实，必须优先于 kind 的兜底分类
+  assert.equal(endedByOf({ ok: false, timedOut: true }), ENDED_BY.stall);
+  assert.equal(endedByOf({ ok: false, aborted: true }), ENDED_BY.abort);
+  assert.equal(endedByOf({ ok: false, auth: true }), ENDED_BY.auth);
+  assert.equal(endedByOf({ ok: false, quota: true }), ENDED_BY.quota);
+  // 优先级：让出/步数上限 > 停滞 > 中止 > 鉴权 > 欠费 > 成功 > 重试用尽
+  assert.equal(endedByOf({ ok: false, timedOut: true, auth: true }), ENDED_BY.stall);
+  assert.equal(endedByOf({ ok: false, aborted: true, auth: true }), ENDED_BY.abort);
+  assert.equal(endedByOf({ ok: false, auth: true, quota: true }), ENDED_BY.auth);
+  assert.equal(endedByOf({ ok: true, timedOut: true }), ENDED_BY.stall, '超时优先于成功');
+  assert.equal(endedByOf({ ok: true, kind: 'step-cap', timedOut: true }), ENDED_BY.slice);
+  // 兜底：只有真的什么都不知道，才落到 retry-exhausted
+  assert.equal(endedByOf({ ok: false, kind: 'error' }), ENDED_BY.retryExhausted);
+});
+
+await test('onSdkRetry：锚点挪到睡醒之后，退避睡眠不重复算进 TTFT', () => {
+  const t = new RunTiming();
+  t.beginWait(1000);
+  // 模型想了 400 ms 还没出字，SDK 决定重试（2000 ms 退避）
+  t.onSdkRetry(2000, 1400);
+  assert.equal(t.sdkRetryWaitMs, 2000);
+  assert.deepEqual(t.failKinds, { 'sdk-retry': 1 });
+  assert.equal(t.waitStartedAt, 3400, '锚点必须被强制重置到 1400 + 2000');
+
+  // 睡醒后 800 ms 才出首字：样本应该是 800，而不是含退避的 3200
+  t.markProgress(4200);
+  assert.deepEqual(t.ttftSamples, [800], `实际 ${JSON.stringify(t.ttftSamples)}`);
+
+  // 老实现用 beginWait()（带 `== null` 守卫）：锚点不会被挪，样本就会虚高
+  const broken = new RunTiming();
+  broken.beginWait(1000);
+  broken.beginWait(3400); // 守卫拦掉，等于没挪
+  broken.markProgress(4200);
+  assert.deepEqual(broken.ttftSamples, [3200], '（对照）旧写法会把 2 s 退避算进 TTFT');
+});
+
+await test('并发工具：全部结束才起表，工具耗时不算进模型 TTFT', () => {
+  // 复刻执行器的规则：tool_execution_start 暂停、tool_execution_end 时
+  // **只有 toolsRunning === 0** 才 beginWait()。
+  const t = new RunTiming();
+  let toolsRunning = 0;
+  const onToolStart = () => { toolsRunning += 1; t.pauseWait(); };
+  const onToolEnd = () => { toolsRunning = Math.max(0, toolsRunning - 1); if (toolsRunning === 0) t.beginWait(); };
+
+  t.beginWait(0);        // 请求发出
+  onToolStart();         // 工具 A 开始（暂停）
+  onToolStart();         // 工具 B 并发开始
+  onToolEnd();           // A 结束，B 还在跑 → 不能起表
+  assert.equal(t.waitStartedAt, null, '并发工具还在跑时不许起表');
+  onToolEnd();           // B 结束 → 起表
+  assert.ok(t.waitStartedAt != null, '全部工具结束才起表');
+  const startedAt = t.waitStartedAt;
+  t.markProgress(startedAt + 300);
+  assert.deepEqual(t.ttftSamples, [300], '样本只含「最后一个工具结束 → 首字」这段');
+});
+
 // ---------------------------------------------------------------------------
 // 2. 记录与聚合
 // ---------------------------------------------------------------------------
@@ -92,6 +149,10 @@ await test('makeRecord：直接吃 RunTiming，字段落齐且只留类别', () 
 
   const record = makeRecord({ ok: false, kind: 'retrying', timing, roomId: 'r1', botId: 'b1' });
   assert.equal(record.endedBy, ENDED_BY.retryExhausted);
+  // 执行器显式给的 endedBy 优先（它知道 timedOut / aborted 这些 kind 表达不了的事实）
+  assert.equal(makeRecord({ ok: false, kind: 'retrying', endedBy: 'stall' }).endedBy, ENDED_BY.stall);
+  assert.equal(makeRecord({ ok: false, kind: 'error', endedBy: '不是枚举值' }).endedBy,
+    ENDED_BY.retryExhausted, '非法值不能落进记录');
   assert.equal(record.ttftMsMax, 700);
   assert.equal(record.sdkRetryWaitMs, 5000);
   assert.deepEqual(record.failKinds, { auth: 1 });

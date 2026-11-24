@@ -42,6 +42,10 @@ function parseRows(stdout) {
 export async function findProcesses(marker) {
   const tag = String(marker ?? '').trim();
   if (!tag) throw new Error('proc-scan 需要一个标记');
+  // ★ fail-closed：查询本身失败时**绝不**返回空数组。
+  //
+  //   返回 [] 看起来像「零残留，通过」—— 那是最坏的一种假绿：扫表功能坏了，
+  //   泄漏的进程再也不会让测试变红。这里直接抛，由 `waitGone` 重试到超时再如实报错。
   if (process.platform === 'win32') {
     // 标记只含字母数字与短横线，拼进 PowerShell 单引号里是安全的
     const script = [
@@ -49,44 +53,41 @@ export async function findProcesses(marker) {
       `Get-CimInstance Win32_Process -Filter "Name='node.exe' or Name='cmd.exe' or Name='sh' or Name='bash'" |`,
       `  Where-Object { $_.CommandLine -like '*${tag}*' } |`,
       '  ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }',
-    ].join('\n');
-    try {
-      const { stdout } = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        windowsHide: true,
-        timeout: 20_000,
-        maxBuffer: 4 * 1024 * 1024,
-      });
-      return parseRows(stdout).filter((row) => row.command.includes(tag));
-    } catch {
-      // 查询失败就别把测试搞红（拿不到证据 ≠ 有残留），由调用方按超时处理
-      return [];
-    }
-  }
-  try {
-    const { stdout } = await run('ps', ['-A', '-o', 'pid=', '-o', 'command='], {
+    ].join(String.fromCharCode(10));
+    const { stdout } = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true,
       timeout: 20_000,
-      maxBuffer: 8 * 1024 * 1024,
+      maxBuffer: 4 * 1024 * 1024,
     });
-    return parseRows(stdout).filter((row) => row.command.includes(tag));
-  } catch {
-    return [];
+    return parseRows(stdout).filter((row) => row.command.includes(tag) && row.pid !== process.pid);
   }
+  const { stdout } = await run('ps', ['-A', '-o', 'pid=', '-o', 'command='], {
+    timeout: 20_000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  // 排除扫描器自己：`node -e "...Orbis-shells-..."` 这类命令行也带标记，
+  // 不排掉就会把自己当成残留（假红），或者在"扫表失败"的诊断里刷屏。
+  return parseRows(stdout).filter((row) => row.command.includes(tag) && row.pid !== process.pid);
 }
 
-/**
- * 等到扫描不到任何带标记的进程（或在超时后如实返回残留）。
- *
- * @param {string} marker
- * @param {{timeoutMs?:number, intervalMs?:number}} [opts]
- * @returns {Promise<{ok:boolean, remaining:ProcRow[]}>}
- */
 export async function waitGone(marker, { timeoutMs = 5_000, intervalMs = 200 } = {}) {
   const deadline = Date.now() + Math.max(200, Number(timeoutMs) || 5_000);
   let remaining = [];
+  let lastError = null;
   for (;;) {
-    remaining = await findProcesses(marker);
-    if (!remaining.length) return { ok: true, remaining };
-    if (Date.now() > deadline) return { ok: false, remaining };
+    try {
+      remaining = await findProcesses(marker);
+      lastError = null;
+      if (!remaining.length) return { ok: true, remaining };
+    } catch (err) {
+      // 查询失败重试到超时：**不能**当成「没残留」（那是假绿）
+      remaining = [];
+      lastError = err;
+    }
+    if (Date.now() > deadline) {
+      if (lastError) throw new Error(`进程表扫描失败（无法证明零残留）：${lastError?.message || lastError}`);
+      return { ok: false, remaining };
+    }
     await new Promise((r) => setTimeout(r, Math.max(50, Number(intervalMs) || 200)));
   }
 }

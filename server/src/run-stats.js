@@ -102,17 +102,29 @@ const ENDED_BY_VALUES = new Set(Object.values(ENDED_BY));
  * @param {{ok?:boolean, kind?:string}} p
  * @returns {string} `ENDED_BY` 之一
  */
-export function endedByOf({ ok = true, kind = '' } = {}) {
+export function endedByOf({
+  ok = true,
+  kind = '',
+  // 执行器**当场就知道**的事实，比 `kind` 可靠得多：
+  // 以前这里只认 kind，结果"超时/被终止/鉴权失败/欠费"全坍缩成 retry-exhausted，
+  // 报告里看不出失败到底是什么类型。
+  timedOut = false,
+  aborted = false,
+  auth = false,
+  quota = false,
+} = {}) {
   const k = String(kind ?? '').trim().toLowerCase();
+  // 1) 明确「这一轮被收住/让出」：不是失败
   if (k === 'step-cap' || k === 'slice' || k === 'yielded') return ENDED_BY.slice;
   if (k === 'model-idle') return ENDED_BY.modelIdle;
-  if (k === 'stall') return ENDED_BY.stall;
-  if (k === 'auth' || k === 'unauthorized') return ENDED_BY.auth;
-  if (k === 'quota') return ENDED_BY.quota;
-  if (k === 'aborted' || k === 'abort') return ENDED_BY.abort;
+  // 2) 按真实结局排优先级（谁先发生谁更可信）
+  if (timedOut || k === 'stall' || k === 'timeout') return ENDED_BY.stall;
+  if (aborted || k === 'aborted' || k === 'abort' || k === 'cancelled') return ENDED_BY.abort;
+  if (auth || k === 'auth' || k === 'unauthorized') return ENDED_BY.auth;
+  if (quota || k === 'quota') return ENDED_BY.quota;
+  // 3) 最后才是「成了 / 重试用尽」
   if (ok) return ENDED_BY.ok;
-  // 其它失败（error / empty / retrying / 未知）：按「重试用尽」记，
-  // 因为到了这一步本轮确实没成，且 decision 已经走完
+  // 其它失败（error / empty / retrying / 未知）：本轮确实没成，decision 已走完
   return ENDED_BY.retryExhausted;
 }
 
@@ -161,6 +173,28 @@ export class RunTiming {
   addSdkRetryWait(ms) {
     const n = count(ms);
     if (n != null && n > 0) this.sdkRetryWaitMs += Math.round(n);
+  }
+
+  /**
+   * SDK 要重试了（`auto_retry_start`）。
+   *
+   * ★ 两个细节：
+   *   1. `auto_retry_start` 在 SDK **Sleep 之前**触发，所以这段等待要记进
+   *      `sdkRetryWaitMs`，但不能算成「模型没出字」—— 那是可控的退避，不是挂死。
+   *   2. 因此把等模型的锚点**强制**挪到「睡醒之后」（`at + delayMs`）：
+   *      `beginWait()` 有 `waitStartedAt == null` 守卫，直接用它会因为已有锚点而无效，
+   *      于是 SDK 睡眠时间会被重复算进 TTFT（样本虚高，还会误导 modelIdle 的收紧决策）。
+   */
+  onSdkRetry(delayMs, at = Date.now()) {
+    const delay = Math.max(0, count(delayMs) ?? 0);
+    this.addSdkRetryWait(delay);
+    this.countFail('sdk-retry');
+    this.waitStartedAt = at + delay;
+  }
+
+  /** 强制清掉等待锚点（`auto_retry_end` / 工具开始等其他"现在不算等模型"的时机）。 */
+  resetWait() {
+    this.waitStartedAt = null;
   }
 
   /** 记一次失败分类（只留类别名，不留正文）。 */

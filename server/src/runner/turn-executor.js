@@ -540,11 +540,14 @@ async function runWithLease(
         break;
       case 'auto_retry_start':
         meter.retry();
-        // SDK 内部重试：这段等待是**可控的**，不是挂死 ——
-        // 既要如实计入 sdkRetryWaitMs，也要把 modelIdle 的锚点往后挪
-        timing.addSdkRetryWait(event.delayMs ?? event.delay ?? event.retryAfterMs ?? 0);
-        timing.countFail('sdk-retry');
-        timing.beginWait();
+        // SDK 内部重试：这段等待是**可控的**，不是挂死。
+        // 事件在 SDK Sleep **之前**触发，所以锚点要挪到"睡醒之后"，
+        // 否则退避睡眠会被重复算进 TTFT（见 RunTiming.onSdkRetry 的注释）。
+        timing.onSdkRetry(event.delayMs ?? event.delay ?? event.retryAfterMs ?? 0);
+        break;
+      case 'auto_retry_end':
+        // SDK 说重试结束了：不管成不成，等模型的计时从现在重新起算
+        timing.resetWait();
         break;
       case 'message_end':
         if (event.message?.role === 'assistant') {
@@ -602,8 +605,10 @@ async function runWithLease(
           step.durationMs = event.durationMs ?? Date.now() - step.startedAt;
         }
         pushSteps();
-        // 工具回来了 → 下一次请求马上发出，从这里重新开始算等模型
-        timing.beginWait();
+        // 工具回来了 → 下一次请求马上发出，从这里重新开始算等模型。
+        // ★ 只在**所有**工具都结束时才起表：并发工具还在跑时起表，
+        //   会把后面那个工具的执行时间算进"模型多久没出字"。
+        if (Number(entry.toolsRunning) === 0) timing.beginWait();
         break;
       }
       case 'queue_update':
@@ -1113,10 +1118,28 @@ async function runWithLease(
       detail: diagDetail,
       ms: Date.now() - started,
     });
+    // 失败分类：`responseFailure` 已经在 message_end 计过（auth/quota/aborted/model），
+    // 只有"抛出来的异常"这一条路还没计 —— 补上，否则 failKinds 永远只有 sdk-retry。
+    const stalled = timedOut || failure.timedOut === true;
+    const wasAborted = !stalled && (keepAborted || failure.aborted === true);
+    if (!responseFailure) {
+      timing.countFail(stalled ? 'stall' : wasAborted ? 'abort'
+        : failure.auth ? 'auth' : failure.quota ? 'quota'
+          : recoverable ? 'transient' : 'error');
+    }
     runner.recordRun({
       roomId, botId, startedAt: started, ok: false, usage: meter.snapshot(),
       taskRunId, attemptIndex, sdkRetries: meter.retries, timing,
       kind: recoverable ? 'retrying' : 'error',
+      // kind 保持兼容（外面还在按它判 retrying/error），真实结局单独给它
+      endedBy: endedByOf({
+        ok: false,
+        kind: recoverable ? 'retrying' : 'error',
+        timedOut: stalled,
+        aborted: wasAborted,
+        auth: failure.auth === true,
+        quota: failure.quota === true,
+      }),
     });
     return withAttempt({
       ok: false,
