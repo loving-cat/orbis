@@ -15,6 +15,7 @@ import { isMainChatBusy } from './chief-summary-runner.js';
 import { shouldMirrorProgress, mirrorProgress, MIRROR_SKIPPED_NO_DM } from '../dm.js';
 import { settleRetryMessage } from '../retry-messages.js';
 import { decideRetry, failureNote, retryHint, transientBackoffMs } from '../retry-policy.js';
+import { continuationPrompt } from '../turn-continuation.js';
 import {
   canRequest as breakerAllows,
   breakerNote,
@@ -194,7 +195,8 @@ async function awaitPending(pending, stale, { graceMs = 5000, pollMs = 100 } = {
 
 function shouldBotReplySync(runner, { room, roomId, item, bot, isOpening = false }) {
   if (runner.aborting.has(roomId)) return false;
-  if (Boolean(item?.fromId) || isOpening) return true;
+  // 续段：它上一段自己说了还没做完，不需要再判「该不该发言」
+  if (Boolean(item?.fromId) || isOpening || Number(item?.continuation) > 0) return true;
 
   const settings = (() => {
     try { return runner.store.decisionRoute(); } catch { return {}; }
@@ -580,6 +582,8 @@ export async function executeGroupRound(
       userAddressed: !item.fromId,
     });
     if (attachmentContext) prompt = `${attachmentContext}\n\n${prompt}`;
+    // 续段：告诉它从断点接着做，不要把整件事从头再来
+    if (Number(item.continuation) > 0) prompt = `${continuationPrompt({ n: item.continuation })}\n\n${prompt}`;
 
     pending.push(
       (async () => {
@@ -855,6 +859,26 @@ export async function executeGroupRound(
             queued.add(id);
             called.add(id);
           }
+          // ★ 这一段到点让出、还没做完：把它自己重新排进本轮队列，接着做下一段。
+          //
+          //   以前一到上限就是「已收住；要它继续做完就在私聊里派活」——
+          //   活停在半路，等用户自己去私聊里再派一遍。
+          //   续段占它自己的发言预算（leadTurns / memberTurns）和本轮总次数（maxRuns），
+          //   所以有界；派活人沿用原来那条（权限与「用户点名」语义不变）。
+          if (res.continuation && !stale() && !runner.aborting.has(roomId)
+              && !queue.some((q) => q.botId === bot.id)) {
+            const segment = Number(item.continuation ?? 0) + 1;
+            queue.push({
+              botId: bot.id,
+              reason: '接着做上一段没做完的',
+              fromId: item.fromId ?? null,
+              fromName: item.fromName,
+              fromText: item.fromText,
+              sourceMessageId: item.sourceMessageId ?? null,
+              continuation: segment,
+            });
+            log(`【${room.name}】${bot.name} 这一段到点了、还没做完 → 排下一段（续段 ${segment}）`);
+          }
         } finally {
           runner.dispatching.delete(dispatchKey);
         }
@@ -897,7 +921,8 @@ export async function executeGroupRound(
           leadId,
           closing: true,
         });
-        const res = await runner.run(roomId, lead.id, prompt, { groupTurn: true });
+        // 收尾轮本来就是「最后一条消息」：不催继续、不自动续段
+        const res = await runner.run(roomId, lead.id, prompt, { groupTurn: true, noContinueGuard: true });
         closingResult = res;
         if (res.ok && res.text.trim()) {
           log(`【${room.name}】✅ 收尾完成（${res.text.trim().length} 字）`);

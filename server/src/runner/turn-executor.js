@@ -5,7 +5,8 @@
  *   1. 受管上下文校验与报告 scope 生命周期绑定；
  *   2. 获取运行槽位与主动压缩检查；
  *   3. 技能按需增量注入（压缩后自动失效重注）、经验注入、旁路备忘消费；
- *   4. 流式事件订阅（delta / steps / compaction_end）、空回复三层恢复、产物收集与统计落盘。
+ *   4. 流式事件订阅（delta / steps / compaction_end）、空回复三层恢复、产物收集与统计落盘；
+ *   5. 长任务：软截止分段（到点先收尾再让出）、回合收尾续跑守卫、非受管私聊自动续段。
  */
 import { log, newId } from '../util.js';
 import { isMainChatBusy } from './chief-summary-runner.js';
@@ -28,6 +29,13 @@ import { selectLessonsFor, lessonsPromptLines, resolveModelFamilyForModel } from
 import { resolveManagedContext, planAttemptEvent, adaptRunOutcome, MANAGED } from '../tasks/task-progress.js';
 import { createReportCollector } from '../tasks/task-report.js';
 import { STOP } from '../tasks/task-contract.js';
+import { autonomyByDefault } from '../tasks/task-autonomy.js';
+import {
+  CONTINUE_NOTE, NUDGE_NOTE, extractContinuation, wantsAskFirst, wrapUpPrompt,
+} from '../turn-continuation.js';
+import {
+  STEP_CAP_GRACE, isBlockingAsk, managedIsAutonomous, runContinuationGuard, scheduleDmContinuation, softDeadlineTimeout,
+} from './turn-slicing.js';
 import { emitContext, sessionKey, summarizeArgs, textOf, throttle } from './runner-utils.js';
 
 /** 执行一次 bot 会话回合（带 provider 配置更新租约与受管报告通道作用域） */
@@ -67,6 +75,11 @@ async function runWithLease(
     managedContext = null,
     reportCollector = null,
     summaryTurn = false,
+    /**
+     * 关掉回合收尾的续跑守卫与自动续段（收尾轮、汇总轮这类「本来就该停在这里」的回合）。
+     * 守卫本身还会看：纯聊天回合、用户要求先确认时不催（见 turn-continuation.js）。
+     */
+    noContinueGuard = false,
   } = {},
 ) {
   const started = Date.now();
@@ -174,6 +187,21 @@ async function runWithLease(
   const effectiveTimeout = groupTurn ? Math.min(timeoutMs || capMs, capMs) : timeoutMs;
   const deadline = effectiveTimeout > 0 ? started + effectiveTimeout : 0;
   let timedOut = false;
+  // ★ 软截止（长任务）：单轮到点不再直接砍断，而是先请模型收尾、写进度，
+  //   宽限期内自己收住就算「这一段让出」，由推进器/续段接着跑下一段。
+  //   以前到点即 abort，记成「失败」只重试一次 —— 跑了 71 步的活被拦腰截断、
+  //   半截成果没有检查点，重试又要在同样的 10 分钟里从头做。
+  const graceMs = Math.max(0, Number(runner.config.turnGraceMs ?? 180_000) || 0);
+  const hardCapMs = effectiveTimeout > 0
+    ? Math.max(effectiveTimeout + graceMs, Number(runner.config.turnHardMaxMs) || effectiveTimeout * 3)
+    : 0;
+  /** 已经发过收尾通知（时间到或步数到） */
+  let sliceEnding = false;
+  /** 非受管会话能不能自动续段（`autoContinueMax` = 0 时关闭，SDK 默认关） */
+  const autoContinueOn = Math.max(0, Number(runner.config.autoContinueMax ?? 12) || 0) > 0
+    && !noContinueGuard && !isSummaryTurn;
+  /** 模型调用（含续跑守卫的追加）已经结束：之后的定时器回调一律不再动会话 */
+  let runFinished = false;
 
   const room = runner.store.getRoom(roomId);
   if (!room) {
@@ -267,6 +295,8 @@ async function runWithLease(
   entry.startedAt = Date.now();
   entry.progressAt = entry.startedAt;
   entry.stallNotified = false;
+  // 此刻有几个工具在执行（看门狗据此放宽阈值：安静跑着的构建/测试不是卡死）
+  entry.toolsRunning = 0;
   const beat = () => {
     entry.progressAt = Date.now();
   };
@@ -401,6 +431,29 @@ async function runWithLease(
   let stepCapHit = false;
   const turnCap = groupTurn ? runner.store.groupLimits().maxSteps : 0;
   let turns = 0;
+  /** 这一轮一共调过几次工具（换条会清空 steps，这个不清） */
+  let toolCalls = 0;
+  /** 这一轮弹过「要停下来等」的卡片（blocking 询问 / 接入确认）：续跑守卫不能催 */
+  let askedUser = false;
+  /** 最后一条回复的正文（续跑守卫看它判断是不是「半路停下来问」） */
+  let lastAssistantText = '';
+
+  /**
+   * 软截止：请模型把手上这一步收尾、写进度（steer 在当前工具跑完、下次调模型前送达）。
+   * 同一轮只发一次；会话已经不在跑了就不发（否则会被留到下一轮开头误收）。
+   */
+  const beginWrapUp = (reason) => {
+    if (sliceEnding || runFinished) return false;
+    sliceEnding = true;
+    try {
+      if (entry.session?.isStreaming !== false && typeof entry.session?.steer === 'function') {
+        const text = wrapUpPrompt({ managed: isManaged, reason, canContinue: autoContinueOn });
+        void Promise.resolve(entry.session.steer(text)).catch(() => {});
+      }
+    } catch {}
+    log(`${bot.name} 这一段${reason === 'steps' ? '步数' : '时间'}快用完了 → 请它收尾、写进度（软截止）`);
+    return true;
+  };
 
   const onEvent = (event) => {
     switch (event.type) {
@@ -459,7 +512,12 @@ async function runWithLease(
           reseatAtBoundary(true);
           buffer = '';
           turns++;
-          if (turnCap > 0 && turns >= turnCap && !stepCapHit) {
+          // ★ 步数上限也按软截止处理：到上限先请它收尾，再多给几轮宽限，
+          //   宽限也用完才硬收住。以前一到上限当场 abort，正在写的东西直接断掉。
+          if (turnCap > 0 && turns >= turnCap && !sliceEnding && !stepCapHit) {
+            beginWrapUp('steps');
+          }
+          if (turnCap > 0 && turns >= turnCap + STEP_CAP_GRACE && !stepCapHit) {
             stepCapHit = true;
             log(`${bot.name} 在群里来回 ${turns} 轮，收住`);
             entry.session.abort().catch(() => {});
@@ -467,6 +525,8 @@ async function runWithLease(
         }
         break;
       case 'message_update':
+        // 模型在出东西（包括思考过程）就是活着：高思考档位的模型可能想很久才吐第一个字
+        beat();
         if (event.assistantMessageEvent?.type === 'text_delta') {
           buffer += event.assistantMessageEvent.delta;
           pushDelta();
@@ -488,6 +548,7 @@ async function runWithLease(
           }
           responseFailure = null;
           const finalText = textOf(event.message) || buffer;
+          lastAssistantText = finalText.trim();
           if (finalText.trim()) claimOrder();
           if (finalText.trim()) committed.push(finalText.trim());
           buffer = '';
@@ -498,6 +559,9 @@ async function runWithLease(
         }
         break;
       case 'tool_execution_start': {
+        entry.toolsRunning = (Number(entry.toolsRunning) || 0) + 1;
+        toolCalls += 1;
+        if (isBlockingAsk(event.toolName, event.args)) askedUser = true;
         steps.push({
           tool: event.toolName,
           detail: summarizeArgs(event.args),
@@ -507,7 +571,16 @@ async function runWithLease(
         pushSteps();
         break;
       }
+      case 'tool_execution_update':
+        // ★ 工具还在跑、并且在出输出（bash 的 stdout/stderr 流）：这就是"活着"。
+        //
+        //   以前不处理这个事件：一条持续打印日志的构建跑过 6 分钟，
+        //   在看门狗眼里就是"6 分钟没动静"，被判心跳断了、整轮中断。
+        //   只刷新进展时间，不推界面（输出可能非常频繁）。
+        beat();
+        break;
       case 'tool_execution_end': {
+        entry.toolsRunning = Math.max(0, (Number(entry.toolsRunning) || 0) - 1);
         const step = [...steps].reverse().find((s) => s.status === 'running' && s.tool === event.toolName);
         if (step) {
           step.status = event.isError ? 'error' : 'done';
@@ -545,6 +618,10 @@ async function runWithLease(
   };
 
   let timeoutHandle = null;
+  /** 这一轮收尾后要不要自动接着跑下一段（非受管私聊在 finally 里排续段） */
+  let continuationPlan = null;
+  // 用户终止会让这个代数 +1：续段排出去之前再核对一次，终止过就不续
+  const deliveryEpochAtStart = runner.directDeliveryEpochs?.get?.(roomId) ?? 0;
   try {
     checkCancelled();
     await runner.compactIfNeeded(entry, bot, roomId, { signal: turnController.signal, deadline });
@@ -669,17 +746,66 @@ async function runWithLease(
       }
     };
     if (deadline && Date.now() >= deadline) throw new Error('本轮等待超时，尚未发起模型请求');
-    const runPromise = runner.providerUpdates.withLease(startTurn, providerScope);
+
+    // ---- 续跑守卫（回合收尾处的 Stop hook，判定见 turn-continuation.js）
+    //
+    //   模型常用一句「需要我继续吗？」「接下来我会改 X。」收尾，这一轮就结束了 ——
+    //   用户不在旁边，长任务就停在那里。提示词压不住这个习惯，所以在收尾处判一次：
+    //   是「半路停下来问」就在同一会话里追加「继续执行」（有上限、有退出条件）。
+    const guardOn = !noContinueGuard && !isSummaryTurn && !meta?.opening
+      && runner.config.continueGuard !== false;
+    const guardMax = Math.max(0, Number(runner.config.continueGuardMax ?? 2) || 0);
+    const guardAutonomous = isManaged
+      ? managedIsAutonomous(runner, managed.context)
+      : autonomyByDefault();
+    const askFirstAtStart = guardOn && wantsAskFirst(prompt, String(meta?.text ?? ''));
+    const runWithGuard = async () => {
+      await runner.providerUpdates.withLease(startTurn, providerScope);
+      if (!guardOn || guardMax <= 0 || !guardAutonomous) return;
+      await runContinuationGuard({
+        max: guardMax,
+        isStopped: () => cancelled() || sliceEnding || stepCapHit || Boolean(responseFailure) || timedOut,
+        readInput: () => ({
+          text: lastAssistantText,
+          managed: isManaged,
+          workTurn: toolCalls > 0,
+          toolCalls,
+          completed: reports?.appliedCompletion?.() === true,
+          waiting: Boolean(
+            reportWaiting('need_approval') || reportWaiting('need_input')
+            || reportWaiting('waiting_dependency') || firstNewApproval() || askedUser,
+          ),
+          // 插话里说了「先别动 / 等我确认」也算
+          askFirst: askFirstAtStart || wantsAskFirst(entry.turnAmends ?? []),
+        }),
+        onNudge: (verdict, n) => {
+          log(`${bot.name} 收尾时在「${verdict.kind}」（${String(verdict.why).slice(0, 40)}）→ 自动继续（第 ${n} 次）`);
+          // 气泡里留一句：用户看得见这里是系统让它接着做，不是它自说自话
+          committed.push(NUDGE_NOTE);
+          pushDelta();
+        },
+        nudge: (text) => runner.providerUpdates.withLease(() => entry.session.prompt(text), providerScope),
+      });
+    };
+    const runPromise = runWithGuard().finally(() => { runFinished = true; });
+
     if (effectiveTimeout > 0) {
-      const timeout = new Promise((_, reject) => {
-        timeoutHandle = setTimeout(() => {
+      await Promise.race([runPromise, softDeadlineTimeout({
+        deadline, started, graceMs, hardCapMs,
+        isFinished: () => runFinished,
+        beginWrapUp: () => beginWrapUp('time'),
+        // 工具在跑、而且最近还在出结果：别把正在出结果的构建/测试砍在半路
+        toolAlive: (now) => Number(entry.toolsRunning) > 0
+          && now - (entry.progressAt ?? started) < Math.max(60_000, Number(runner.config.stallMs) || 360_000),
+        onExtend: (ms) => log(`${bot.name} 收尾宽限到了，但工具还在出结果 → 再等 ${Math.round(ms / 1000)}s`),
+        onHardTimeout: () => {
           timedOut = true;
           turnController.abort(new Error('模型请求超时'));
           entry.session.abort().catch(() => {});
-          reject(new Error(`超过 ${Math.round(effectiveTimeout / 1000)}s 未完成，已中断`));
-        }, Math.max(1, deadline - Date.now()));
-      });
-      await Promise.race([runPromise, timeout]);
+          return new Error(`超过 ${Math.round((Date.now() - started) / 1000)}s 未完成，已中断`);
+        },
+        track: (handle) => { timeoutHandle = handle; },
+      })]);
     } else {
       await runPromise;
     }
@@ -807,6 +933,18 @@ async function runWithLease(
     if (!finalText) finalText = '（在群里动手步数到上限，先收住）';
     if (emptyRecovered) finalText = `${finalText}\n\n_（原模型首次没出内容，已自动重试）_`;
 
+    // ★ 这一段是「让出待续」还是「做完了」：
+    //   · 受管：软截止后自己收住、又没申请完成 → 让出（推进器排下一段，不是失败）；
+    //   · 非受管：收尾通知后它写了续段标记、或者硬撞了步数上限 → 自动接着跑下一段。
+    const completedNow = reports?.appliedCompletion?.() === true;
+    const sliceYield = isManaged && sliceEnding && !stepCapHit && !completedNow;
+    const marked = extractContinuation(finalText);
+    if (marked.wanted) finalText = marked.text || '（这一段先做到这里）';
+    const continueWanted = !isManaged && autoContinueOn
+      && ((sliceEnding && marked.wanted) || stepCapHit);
+    const continuing = continueWanted || sliceYield || (isManaged && stepCapHit);
+    if (continueWanted) continuationPlan = { reason: stepCapHit ? 'steps' : 'time' };
+
     settleRunningSteps(steps, '本轮结束，这一步没有返回结果');
 
     const changed = changes();
@@ -814,14 +952,16 @@ async function runWithLease(
       roomId,
       botMsg.id,
       {
-        text: stepCapHit
-          ? `${finalText}\n\n_（部门里一次最多来回 ${turnCap} 轮，已收住；要它继续做完就在私聊里派活）_`
-          : finalText,
+        text: continuing
+          ? `${finalText}\n\n${CONTINUE_NOTE}`
+          : stepCapHit
+            ? `${finalText}\n\n_（部门里一次最多来回 ${turnCap} 轮，已收住；要它继续做完就在私聊里派活）_`
+            : finalText,
         status: 'done',
         steps,
         usage,
         attachments: produced,
-        meta: { ...(botMsg.meta ?? {}), ...(changed ? { changed } : {}) },
+        meta: { ...(botMsg.meta ?? {}), ...(changed ? { changed } : {}), ...(continuing ? { continuing: true } : {}) },
       },
       { silent: true },
     );
@@ -829,6 +969,7 @@ async function runWithLease(
     runner.recordRun({
       roomId, botId, startedAt: started, ok: true, usage: meter.snapshot(),
       taskRunId, attemptIndex, sdkRetries: meter.retries,
+      ...(sliceEnding ? { kind: 'slice' } : {}),
     });
     turnSucceeded = true;
     return withAttempt({
@@ -836,10 +977,13 @@ async function runWithLease(
       text: finalText,
       ms: Date.now() - started,
       messageId: botMsg.id,
+      // 这一段真实改动了几个文件：推进器据此区分「在干活」和「卡住了」
+      work: { files: Number(changed?.total ?? 0) },
+      ...(continuationPlan ? { continuation: continuationPlan } : {}),
     }, {
       usage: meter.snapshot(),
       artifacts: artifactPathsOf(produced),
-      stepCapHit,
+      stepCapHit: stepCapHit || sliceYield,
       needsApproval: firstNewApproval(),
     });
   } catch (err) {
@@ -854,14 +998,22 @@ async function runWithLease(
     const partial = render().trim();
     if (stepCapHit) {
       settleRunningSteps(steps, '步数到上限，这一步没有返回结果');
+      // 步数硬上限：受管由推进器按「让出」续跑；非受管（没关续段的）自动接着跑下一段
+      const capContinue = !isManaged && autoContinueOn && !cancelled();
+      if (capContinue) continuationPlan = { reason: 'steps' };
+      const capChanged = changes();
+      const capPartial = extractContinuation(partial).text;
       const msg = runner.store.updateMessage(
         roomId,
         botMsg.id,
         {
-          text: `${partial || '（在群里来回轮数到上限，先收住）'}\n\n_（部门里一次最多来回 ${turnCap} 轮，已收住）_`,
+          text: (isManaged || capContinue)
+            ? `${capPartial || '（这一段步数用完了）'}\n\n${CONTINUE_NOTE}`
+            : `${capPartial || '（在群里来回轮数到上限，先收住）'}\n\n_（部门里一次最多来回 ${turnCap} 轮，已收住）_`,
           status: 'done',
           steps,
           usage,
+          meta: { ...(botMsg.meta ?? {}), ...(capChanged ? { changed: capChanged } : {}) },
         },
         { silent: true },
       );
@@ -874,9 +1026,11 @@ async function runWithLease(
       turnSucceeded = true;
       return withAttempt({
         ok: true,
-        text: partial,
+        text: capPartial,
         ms: Date.now() - started,
         messageId: botMsg.id,
+        work: { files: Number(capChanged?.total ?? 0) },
+        ...(continuationPlan ? { continuation: continuationPlan } : {}),
       }, {
         usage: meter.snapshot(),
         artifacts: artifactPathsOf(collectedArtifacts),
@@ -959,6 +1113,8 @@ async function runWithLease(
       artifacts: artifactPathsOf(collectedArtifacts),
     });
   } finally {
+    // 定时器回调可能还挂着：标记结束，回调里一律不再动会话（不再 steer / abort）
+    runFinished = true;
     runner.releaseReportScope(scopeKey, reports);
     if (entry) entry.managedContext = null;
     if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -989,6 +1145,15 @@ async function runWithLease(
       }
     }
     setTimeout(() => { void runner.drainRequestQueue(roomId, botId); }, 0);
+    // ★ 非受管私聊：这一段到点让出、还没做完 → 自动接着跑下一段（有上限）。
+    //   群聊由编排器把它重新排进队列；受管任务由推进器按「让出」续跑。
+    if (continuationPlan && !groupTurn && !isManaged) {
+      scheduleDmContinuation(runner, roomId, botId, {
+        epoch: deliveryEpochAtStart,
+        n: Number(meta?.continuation ?? 0) + 1,
+        reason: continuationPlan.reason,
+      });
+    }
     // 这一轮结束后，把排队等发送的主控汇总消费掉（汇总轮自己不再触发，防递归）
     if (bot.role === 'main' && !isSummaryTurn) {
       setTimeout(() => { void runner.drainChiefSummaries?.().catch?.(() => {}); }, 0);
@@ -996,6 +1161,7 @@ async function runWithLease(
     entry.turnController = null;
     entry.liveMsgId = null;
     entry.startedAt = null;
+    entry.toolsRunning = 0;
     entry.goalText = '';
     entry.liveSteps = null;
     entry.liveDraft = null;

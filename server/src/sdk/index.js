@@ -75,6 +75,8 @@ import { clearSettleTimers } from '../runner/run-settled.js';
  * @property {boolean} [inheritHostProviders] 是否继承宿主 pi 的 provider
  * @property {boolean} [autoProbe] 是否自动探活模型端点
  * @property {boolean} [lessonReflect] 是否开启经验复盘
+ * @property {boolean} [continueGuard] 回合收尾半路停下来问「要不要继续」时是否自动催它继续（SDK 默认关）
+ * @property {number} [autoContinueMax] 单段到点后自动接着跑下一段的上限（SDK 默认 0 = 不自动续段）
  */
 
 /**
@@ -148,6 +150,10 @@ function resolveConfig(options, memory) {
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
     autoProbe: options.autoProbe ?? base.autoProbe ?? false,
     lessonReflect: options.lessonReflect ?? base.lessonReflect ?? false,
+    // 长任务的「自动催继续 / 自动续段」默认只在服务端开：嵌入方 await 完一次 run，
+    // 不该再冒出一轮它没发起的执行、或者多出几次它没算进去的模型调用。需要就显式打开。
+    continueGuard: options.continueGuard ?? base.continueGuard ?? false,
+    autoContinueMax: options.autoContinueMax ?? base.autoContinueMax ?? 0,
     // ★ `defaultModel` 必须在 `runner.init()` 之前就进 config：
     //   init 里“有没有默认模型”是拿 config.model / store 里的值判的。
     //   否则宿主传了 defaultModel 的第一次启动会先打一行
