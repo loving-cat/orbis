@@ -183,6 +183,26 @@ appliedCommands 与命令回执同键：requesterId + commandId + fingerprint �
 - 自主：把失败的分工**交回负责人**（`MAX_CHILD_HANDBACKS=2`，记 `childFailures`），由它重新安排；负责人提示词里会列出被收回的失败分工。
 - 旧代码这一段走不到，结果是根任务永远停在 `queued`。
 
+### 上游故障：不丢活（2.0 第二批）
+
+| 场景 | 规则 |
+|---|---|
+| 判定 | `retry-policy.js` 的 `isUpstreamTransient`：429 / 5xx / 熔断打开 / 网络瞬断算；401/403/402/额度/用户中止**不算**（等一下也不会好，早说清） |
+| 受管任务 | 快速重试（1.5–12s，最多 10 次）用尽 → `recoverableBlock: 'upstream'` + `retryAt`，阶梯 `1→2→5→10→15` 分钟、累计上限 2 小时；到期自动走 `unblocked` 清标记并续跑 |
+| 群聊 | 熔断/瞬试用尽 → 阶梯 `1→2→5→10` 分钟、累计上限 1 小时，**不持锁等待**（`roundLocks` 照常释放），到期复核 `aborting` / `roundEpoch` 后才续派 |
+| 作废 | 用户插话（`interruptRoundForUser`）、来新消息、`abort` 都会取消挂起的定时器；到期复核也自己挡一道 |
+| 到上限 | 摘掉可恢复标记，如实阻塞 + 说清累计等了多久，不再自动排 |
+| 恢复 | `recoverableBlock: 'upstream'` 且 `retryAt > now` → 只出 `deferUpstream`（挂定时器），**不许提前解阻** |
+
+### 重启后自动续跑（受管）
+
+一条尝试没留下结果记录（服务重启）时，按 `state.grantAudit` 判断那一段做过什么，**fail-closed**：
+
+1. 拿不到 `startedAt` → 保守阻塞；
+2. 那段期间、同 bot、同房间**放行过**不可逆动作（`capabilities.isIrreversible`）→ 保持「需人工确认」；
+   老审计记录没有 `roomId` 的按「可能命中」算；
+3. 证明没做过不可逆的事 → 结算成 `stop:'yielded'` +「服务重启，执行被中断」，推进器按让出续跑。
+
 ## 客户端协议
 
 | 项 | 规则 |
