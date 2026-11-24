@@ -447,7 +447,7 @@ async function main() {
   });
 
   let closing = false;
-  const shutdown = (signal) => {
+  const shutdown = async (signal) => {
     if (closing) return;
     closing = true;
     log(`${signal} → 收工`);
@@ -459,7 +459,13 @@ async function main() {
     scheduler.stop();
     clearInterval(housekeeping);
     runner.health?.stop();
-    shells.stopAll();
+    // ★ 等后台进程树真的收掉再继续（最多 3 s）。
+    //   以前是同步"发个 taskkill 就走"：服务端自己退了，taskkill 还没枚举完，
+    //   孙进程（dev server / watch）就留在机器上。真收尾是异步的，这里必须等。
+    await Promise.race([
+      shells.stopAll(),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
     taskHost.dispose();
     runner.disposeAll();
     store.saveNow();

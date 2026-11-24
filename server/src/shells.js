@@ -80,6 +80,15 @@ function hasMcpFor(botId) {
   }
 }
 
+/** Windows：等 `taskkill /T` 自己退出的上限。 */
+const KILL_TREE_TIMEOUT_MS = 5_000;
+
+/** POSIX：整组 SIGTERM 之后等多久再升到 SIGKILL。 */
+const GROUP_TERM_GRACE_MS = 1_500;
+
+/** `stopAll()` 收工总等待上限（server-main 还会再兜一层 3 s）。 */
+const STOP_ALL_TIMEOUT_MS = 3_000;
+
 export class ShellRegistry {
   constructor({ maxShells = MAX_SHELLS, maxBytes = MAX_BUFFER_BYTES, idleMs = IDLE_MS } = {}) {
     this.maxShells = maxShells;
@@ -226,6 +235,11 @@ export class ShellRegistry {
         windowsHide: true,
         // 沙箱包装已经带了 shell，不能再套一层
         shell: spawnShell,
+        // ★ POSIX 上让子进程当**进程组组长**（pid === pgid）。
+        //   `shell: true` 走的是 `/bin/sh -c`，真实命令是孙进程；
+        //   不建组就只能杀 sh，孙进程（dev server / watch）继续占着端口。
+        //   Windows 走 taskkill /T，不需要也不该建组。
+        detached: process.platform !== 'win32' && !needsSandbox,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -256,6 +270,8 @@ export class ShellRegistry {
       waiters: [],
       // Windows 沙箱的 cmd 文件清理函数（非 Windows / 无沙箱时为 null）
       sandboxCleanup,
+      // 正在收尾时挂着的 Promise（`kill()` 同步返回，真正的回收在这里等）
+      stopping: null,
     };
     this.shells.set(id, entry);
 
@@ -414,11 +430,37 @@ export class ShellRegistry {
     let n = 0;
     for (const [id, entry] of this.shells) {
       if (entry.roomId !== roomId) continue;
-      this.#terminateEntry(entry);
+      // 兜一层 catch：回收是异步的，谁都不想因为一个进程收不掉而炸掉调用方
+      Promise.resolve(this.#terminateEntry(entry)).catch(() => {});
       this.shells.delete(id);
       n++;
     }
     return n;
+  }
+
+  /**
+   * 等某个后台进程真的退出（含它的整棵进程树）。
+   *
+   * `kill()` 是同步返回的：它只保证"已经在收"，不保证"已经收干净"。
+   * 测试和收工流程需要后者。
+   *
+   * @param {string} id
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{ok:boolean, running:boolean, timedOut:boolean}>}
+   */
+  async waitExit(id, timeoutMs = KILL_TREE_TIMEOUT_MS) {
+    const entry = this.shells.get(id);
+    if (!entry) return { ok: true, running: false, timedOut: false };
+    const stop = entry.stopping ?? this.#terminateEntry(entry);
+    const timedOut = await Promise.race([
+      Promise.resolve(stop).then(() => false),
+      new Promise((resolve) => {
+        // ★ 这个定时器**不能 unref**：等待期间它往往是唯一压住事件循环的东西，
+        //   unref 掉会让 Node 直接退出（测试里就是 "unsettled top-level await"）。
+        setTimeout(() => resolve(true), Math.max(50, Number(timeoutMs) || KILL_TREE_TIMEOUT_MS));
+      }),
+    ]);
+    return { ok: !entry.running, running: entry.running, timedOut };
   }
 
   /** 清理空闲过久的进程 */
@@ -432,7 +474,9 @@ export class ShellRegistry {
         continue;
       }
       if (entry.running && at - entry.lastOutputAt > limit) {
-        this.#terminateEntry(entry);
+        // 异步回收：这里不等它退（剪枝是定时任务，不该被一个进程卡住），
+        // 但必须兜住 rejection —— 否则一个收不掉的进程会变成 unhandled rejection。
+        Promise.resolve(this.#terminateEntry(entry)).catch(() => {});
         this.shells.delete(id);
         n++;
         log(`后台进程空闲超时已结束：${entry.command.slice(0, 60)}`);
@@ -441,33 +485,134 @@ export class ShellRegistry {
     return n;
   }
 
+  /**
+   * 收工：收掉所有后台进程树。
+   *
+   * 返回 Promise（以前是同步返回 undefined）：真实收尾要等 `taskkill /T`
+   * 或进程组信号生效，不退也得退的时候由调用方（server-main）兜超时。
+   * 先快照再清 map —— 否则新起的进程会被漏掉，正在收的又会从 map 里消失。
+   */
   stopAll() {
-    for (const entry of this.shells.values()) {
-      this.#terminateEntry(entry);
-    }
+    const entries = [...this.shells.values()];
     this.shells.clear();
     clearInterval(this.timer);
+    if (!entries.length) return Promise.resolve({ ok: true, stopped: 0 });
+    const all = Promise.allSettled(entries.map((entry) => this.#terminateEntry(entry)));
+    // 同理：收尾等待的兜底定时器不 unref（有界 3 s，不能让它被"没事可做"吞掉）
+    const timeout = new Promise((resolve) => {
+      setTimeout(() => resolve('timeout'), STOP_ALL_TIMEOUT_MS);
+    });
+    return Promise.race([all, timeout]).then(() => ({ ok: true, stopped: entries.length }));
   }
 
   /**
-   * 结束一个后台进程。
+   * 结束一个后台进程（含整棵进程树）。
    *
-   * ★ Windows 上必须 taskkill /T：child.kill() 只杀直接子进程，孙子进程
-   *   （命令里起的 node / python / 构建工具）会留在后台继续跑 —— 用户看到的
-   *   是“进程结束了但风扇还在转”。沙箱内跑的不走这条路：沙箱用 Job Object
-   *   KILL_ON_JOB_CLOSE 收尾，外面再 taskkill 反而会打失败。
+   * ★ 顺序必须是「先树、后根」：
+   *
+   *   Windows 上 `child.kill()` 只杀直接子进程，孙子进程（命令里起的
+   *   node / python / 构建工具）会留在后台继续跑 —— 用户看到的是
+   *   "进程结束了但风扇还在转"。而 `taskkill /T` 是**按父子关系枚举**的：
+   *   如果先 `child.kill()` 把根干掉了，taskkill 再去找这个 PID 就找不到，
+   *   孙进程直接变孤儿（实测 3/3 存活）。所以必须**等 taskkill 跑完**再
+   *   `child.kill()` —— 但不能用 `spawnSync`（硬规矩 3：运行期不许同步阻塞）。
+   *
+   *   POSIX 同理：`/bin/sh -c` 之后真实命令是孙进程，只杀 sh 没用。
+   *   我们让子进程当了进程组组长（spawn 时 `detached: true`），
+   *   用 `process.kill(-pid, ...)` 整组发信号。
+   *
+   *   沙箱内跑的不走这条路：沙箱用 Job Object KILL_ON_JOB_CLOSE 收尾，
+   *   外面再 taskkill 反而会打失败。
+   *
+   * 返回 Promise：`kill()` 仍然同步返回 `{ok, wasRunning}`，真正等收干净
+   * 用 `waitExit(id, timeoutMs)`。
    */
   #terminateEntry(entry) {
-    if (!entry?.running) return;
-    if (process.platform === 'win32' && !entry.needsSandbox && entry.pid) {
+    if (!entry) return Promise.resolve();
+    if (entry.stopping) return entry.stopping;
+    if (!entry.running) return Promise.resolve();
+    entry.stopping = (async () => {
       try {
-        spawn('taskkill', ['/PID', String(entry.pid), '/T', '/F'], {
+        if (entry.needsSandbox || !entry.pid) {
+          // 沙箱：Job Object 会随句柄关闭整树收掉；这里只收直接子进程
+          try { entry.child.kill(); } catch { /* 已退出 */ }
+          return;
+        }
+        if (process.platform === 'win32') {
+          await this.#taskkillTree(entry);
+          try { entry.child.kill(); } catch { /* 已退出 */ }
+          return;
+        }
+        // POSIX：先整组 SIGTERM，给一点时间；不退再 SIGKILL 整组
+        this.#signalGroup(entry, 'SIGTERM');
+        const exited = await this.#waitChildExit(entry, GROUP_TERM_GRACE_MS);
+        if (!exited) {
+          this.#signalGroup(entry, 'SIGKILL');
+          await this.#waitChildExit(entry, 1_000);
+        }
+      } finally {
+        entry.stopping = null;
+      }
+    })().catch(() => {});
+    return entry.stopping;
+  }
+
+  /** Windows：起 `taskkill /T /F` 并等它自己退出（最多 5 s）。 */
+  #taskkillTree(entry) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      // 不 unref：taskkill 期间没有别的活，unref 掉会让收尾静默半途而废
+      const timer = setTimeout(done, KILL_TREE_TIMEOUT_MS);
+      try {
+        const killer = spawn('taskkill', ['/PID', String(entry.pid), '/T', '/F'], {
           windowsHide: true,
           stdio: 'ignore',
-        }).unref();
-      } catch { /* taskkill 不可用就退回 child.kill */ }
+        });
+        killer.once('exit', done);
+        killer.once('error', done);
+      } catch {
+        // taskkill 不可用（极简环境）：退回 child.kill()
+        done();
+      }
+    });
+  }
+
+  /** POSIX：给整组发信号；组已经不在了（ESRCH）就当它已经退干净。 */
+  #signalGroup(entry, signal) {
+    try {
+      process.kill(-entry.pid, signal);
+      return true;
+    } catch (err) {
+      if (err?.code === 'ESRCH') return false;
+      // 拿不到进程组（比如被外部改过），退回直接杀子进程
+      try { entry.child.kill(signal); } catch { /* 已退出 */ }
+      return false;
     }
-    try { entry.child.kill(); } catch {}
+  }
+
+  /** 等子进程 `exit`；超时返回 false。 */
+  #waitChildExit(entry, timeoutMs) {
+    if (!entry?.running) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        entry.child?.off?.('exit', onExit);
+        resolve(ok);
+      };
+      const onExit = () => done(true);
+      const timer = setTimeout(() => done(false), Math.max(50, Number(timeoutMs) || 1_000));
+      entry.child?.once?.('exit', onExit);
+      if (!entry.running) done(true);
+    });
   }
 
   #notify(entry) {
