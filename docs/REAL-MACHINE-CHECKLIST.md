@@ -148,6 +148,25 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/confirmation
 
 ---
 
+## 4b. 后台进程清理（P0-1 · 真机 · 约 3 分钟）
+
+自动化部分已经在 `server/tests/shells.mjs` 里（每条用例起「命令 + 孙进程」，
+`kill` / `killRoom` / `killByTask` / `stopAll` 之后 5 s 内扫进程表断言零存活）。
+真机这一条验的是**端口与进程表**，因为用户报的是"进程结束了但风扇还在转 / 端口还占着"。
+
+1. 让 bot 起一个开发服务器（`run_background` 里跑 `npm run dev` 或
+   `python -m http.server 8931`），确认端口在听：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8931/`。
+2. 用 `kill_shell` 结束它，**3 秒内**再打一次同一个地址 —— 期望连接被拒（不是超时）。
+3. 同时看进程表：Windows `Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*8931*' }`
+   应该为空；macOS / Linux `ps -A -o pid=,command= | grep 8931` 应该只剩 grep 自己。
+4. 再验一次服务端收工：Ctrl+C 停服务端，重复第 3 步的进程表检查（`shutdown` 现在会等
+   `shells.stopAll()` 最多 3 s）。
+
+**失败时看什么**：端口还在听 = 进程树没杀干净（回到 `shells.js` 的
+`#terminateEntry`：Windows 是否等到了 `taskkill /T` 退出，POSIX 是否用了进程组信号）。
+
+---
+
 ## 5. 回填对照表
 
 | # | 验收项 | `docs/acceptance-matrix.md` 的行 | 期望关键字 |

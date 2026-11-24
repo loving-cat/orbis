@@ -50,7 +50,7 @@
 | `group-round.js` | 群轮次决策：该跳过/排队/打断/派发、收尾轮判定（纯函数） |
 | `policy-version.js` | 部门规矩的版本标识与变更影响判定：哪些字段影响授权、变更该通知哪些在跑的活（纯函数） |
 | `run-slots.js` | 全局运行槽位：同时开跑上限、给人留保底位、等待超时与取消、释放幂等（纯逻辑） |
-| `run-stats.js` | 单次运行内汇总模型用量、重试及缺失字段；有界本地明细与按日统计，不保存提示词或凭据 |
+| `run-stats.js` | 单次运行内汇总模型用量、重试及缺失字段；有界本地明细与按日统计，不保存提示词或凭据。M1 起带长任务埋点：`endedBy`（ok / retry-exhausted / model-idle / stall / abort / auth / quota / slice）、`ttftMsP50/Max`、`sdkRetryWaitMs`、`failKinds`（`RunTiming`；旧记录缺字段照常聚合） |
 | `memory-digest.js` | 记忆材料筛选、输入裁剪及稳定消息 ID 增量游标；窗口滑动时不以数组长度替代进度。`buildSummarizePrompt` 拼递归更新提示词（有旧摘要时增量并入，不整份重写） |
 | `memory-sanitize.js` | 记忆摘要写入脱敏：抹掉邮箱、PEM 私钥块、Bearer 令牌、赋值式 key/secret；**不处理文件路径**，且不误伤「token 预算」这类正常用语（纯函数） |
 | `transcript-budget.js` | 群聊记录按字数预算裁剪、单条超长保留头尾（纯函数） |
@@ -128,6 +128,12 @@
 - 新的**执行期拦截**：走 `policy-hook.js` 这类 pi 内联扩展，不往 runner 里塞判断；
 - 新的**能产生副作用的动作**：在 `action-catalog.js` 登记（动作条目 + 工具映射 + 目标认法），
   否则网关看不见它。迁移授权的动作清单从目录推导，不用手改第二处。
+
+### 命令行工具 `server/tools`
+
+| 文件 | 讲什么 |
+|---|---|
+| `perf-report.mjs` | 只读性能报告：读 `run-stats.json` 与 `sessions/*.jsonl`，输出时间花在哪、失败运行时长占比与判定耗时、`endedBy` 分布、TTFT、缓存命中。**只打聚合**，不含正文 / 路径 / 供应商身份；`--data=DIR` 指定数据目录，`--json` 出机器可读结果 |
 
 ### 「一个事实只存一份」的几处约定
 

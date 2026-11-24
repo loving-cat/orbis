@@ -75,15 +75,140 @@ export class RunUsage {
   }
 }
 
+/**
+ * 这次运行为什么结束（`run-stats` 的 `endedBy`）。
+ *
+ * 只记**分类**，不记错误正文 —— 报告要能贴出去，正文里可能有路径与供应商信息。
+ */
+export const ENDED_BY = Object.freeze({
+  ok: 'ok',
+  retryExhausted: 'retry-exhausted',
+  modelIdle: 'model-idle',
+  stall: 'stall',
+  abort: 'abort',
+  auth: 'auth',
+  quota: 'quota',
+  slice: 'slice',
+});
+
+const ENDED_BY_VALUES = new Set(Object.values(ENDED_BY));
+
+/**
+ * 由「成功与否 + 现有 kind」推出 `endedBy`。
+ *
+ * 放在这里而不是塞进 `turn-executor.js`：那个文件有 1350 行预算，
+ * 而这是一条纯映射规则，正好属于统计层的职责。
+ *
+ * @param {{ok?:boolean, kind?:string}} p
+ * @returns {string} `ENDED_BY` 之一
+ */
+export function endedByOf({ ok = true, kind = '' } = {}) {
+  const k = String(kind ?? '').trim().toLowerCase();
+  if (k === 'step-cap' || k === 'slice' || k === 'yielded') return ENDED_BY.slice;
+  if (k === 'model-idle') return ENDED_BY.modelIdle;
+  if (k === 'stall') return ENDED_BY.stall;
+  if (k === 'auth' || k === 'unauthorized') return ENDED_BY.auth;
+  if (k === 'quota') return ENDED_BY.quota;
+  if (k === 'aborted' || k === 'abort') return ENDED_BY.abort;
+  if (ok) return ENDED_BY.ok;
+  // 其它失败（error / empty / retrying / 未知）：按「重试用尽」记，
+  // 因为到了这一步本轮确实没成，且 decision 已经走完
+  return ENDED_BY.retryExhausted;
+}
+
+/**
+ * 一次 run 的计时与失败分类。
+ *
+ * ## 计时边界（规格 §4.2 a，别改成 `message_start`）
+ *
+ * `message_start` 是上游**已经回应**之后才有的，用它当起点会把
+ * 「TCP 握手挂死、prefill 一直不出字」排除在统计外 —— 而那正是失败运行
+ * 要拖 6 分钟的主要来源。所以起点是**发请求的那一刻**（以及工具回来之后
+ * 重新发请求的 `tool_execution_end`），终点是该请求的第一个 `message_update`。
+ * 工具执行期 `pauseWait()`：跑工具不算模型没进展。
+ */
+export class RunTiming {
+  constructor() {
+    /** 每轮「发请求 → 首字」的样本（毫秒） */
+    this.ttftSamples = [];
+    /** SDK 内部重试的等待合计 */
+    this.sdkRetryWaitMs = 0;
+    /** 各类失败的计数：`{ transient: 3, auth: 1 }` */
+    this.failKinds = {};
+    /** 当前这一轮等模型的起点（null = 没在等） */
+    this.waitStartedAt = null;
+  }
+
+  /** 开始等模型（发请求 / 工具结束之后重新发请求）。 */
+  beginWait(at = Date.now()) {
+    if (this.waitStartedAt == null) this.waitStartedAt = at;
+  }
+
+  /** 工具在跑：暂停计时（不算模型没进展）。 */
+  pauseWait() {
+    this.waitStartedAt = null;
+  }
+
+  /** 收到首字（`message_update`）或思考增量：记一条 TTFT 样本。 */
+  markProgress(at = Date.now()) {
+    if (this.waitStartedAt == null) return;
+    const ms = Math.max(0, Number(at) - this.waitStartedAt);
+    this.waitStartedAt = null;
+    if (ms > 0) this.ttftSamples.push(Math.round(ms));
+  }
+
+  /** SDK 内部重试的等待（`auto_retry_start` 的延迟字段，缺省安全降级为 0）。 */
+  addSdkRetryWait(ms) {
+    const n = count(ms);
+    if (n != null && n > 0) this.sdkRetryWaitMs += Math.round(n);
+  }
+
+  /** 记一次失败分类（只留类别名，不留正文）。 */
+  countFail(kind) {
+    const key = String(kind ?? '').trim().slice(0, 24) || 'unknown';
+    this.failKinds[key] = (this.failKinds[key] ?? 0) + 1;
+  }
+
+  /** 落进 `run-stats` 记录里的字段。 */
+  snapshot() {
+    const samples = [...this.ttftSamples].sort((a, b) => a - b);
+    const pick = (q) => (samples.length
+      ? samples[Math.min(samples.length - 1, Math.floor(samples.length * q))]
+      : null);
+    return {
+      ttftMsP50: pick(0.5),
+      ttftMsMax: samples.length ? samples[samples.length - 1] : null,
+      sdkRetryWaitMs: this.sdkRetryWaitMs,
+      failKinds: { ...this.failKinds },
+    };
+  }
+}
+
 /** 每条记录对应一次 run；attemptIndex 标记外层尝试，sdkRetries 只计本次内部恢复。 */
 export function makeRecord({
   at = Date.now(), roomId = '', botId = '', model = '', provider = '', ms = 0,
   usage = null, attempts = 1, taskRunId = '', attemptIndex = 1, sdkRetries = null,
   ok = true, kind = '',
+  // ---- 长任务埋点（SPEC-PERF-V1 §4.2 a；旧记录没有这些字段也要能读） ----
+  endedBy = '', ttftMsP50 = null, ttftMsMax = null, sdkRetryWaitMs = null, failKinds = null,
+  // 执行器直接递 RunTiming 时，五个字段在这里一次性取齐
+  timing = null,
 } = {}) {
+  const measured = timing?.snapshot?.() ?? null;
+  if (measured) {
+    ttftMsP50 = ttftMsP50 ?? measured.ttftMsP50;
+    ttftMsMax = ttftMsMax ?? measured.ttftMsMax;
+    sdkRetryWaitMs = sdkRetryWaitMs ?? measured.sdkRetryWaitMs;
+    failKinds = failKinds ?? measured.failKinds;
+  }
   const normalized = normalizeUsage(usage);
   const innerRetries = sdkRetries == null ? positiveInt(attempts) - 1 : nonnegativeInt(sdkRetries);
   const index = positiveInt(attemptIndex);
+  const ended = ENDED_BY_VALUES.has(String(endedBy))
+    ? String(endedBy)
+    : endedByOf({ ok: ok !== false, kind });
+  const ttftP50 = count(ttftMsP50);
+  const ttftMax = count(ttftMsMax);
   return {
     at, roomId, botId, model, provider,
     ms: Math.round(count(ms) ?? 0),
@@ -99,6 +224,17 @@ export function makeRecord({
     retries: innerRetries + (index > 1 ? 1 : 0),
     ok: ok !== false,
     kind,
+    // 分类字段：只留类别与计数，不含任何正文
+    endedBy: ended,
+    ttftMsP50: ttftP50 == null ? null : Math.round(ttftP50),
+    ttftMsMax: ttftMax == null ? null : Math.round(ttftMax),
+    sdkRetryWaitMs: count(sdkRetryWaitMs) == null ? null : Math.round(count(sdkRetryWaitMs)),
+    failKinds: failKinds && typeof failKinds === 'object' && !Array.isArray(failKinds)
+      ? Object.fromEntries(Object.entries(failKinds)
+        .map(([k, v]) => [String(k).slice(0, 24), nonnegativeInt(v)])
+        .filter(([k, v]) => k && v > 0)
+        .slice(0, 12))
+      : {},
   };
 }
 
@@ -109,8 +245,13 @@ export function summarize(records = []) {
     ...Object.fromEntries(USAGE_FIELDS.map((field) => [field, null])),
     totalMs: 0, attempts: 0, retries: 0, retried: 0,
     unknownUsageRecords: 0, unknownCacheRecords: 0,
+    // 长任务埋点：只统计**有这些字段**的记录（旧记录不算 0，也不算未知）
+    endedBy: {}, sdkRetryWaitMs: null, failKinds: {},
+    ttftMsP50: null, ttftMsMax: null, timingRecords: 0,
   };
   const durations = [];
+  /** 每轮最坏 TTFT 的样本（用各记录自己的 ttftMsMax 再取中位数，见下方注释） */
+  const worstTtft = [];
   for (const record of records) {
     if (!record) continue;
     out.runs++;
@@ -131,6 +272,21 @@ export function summarize(records = []) {
     const ms = count(record.ms) ?? 0;
     out.totalMs += ms;
     if (ms > 0) durations.push(ms);
+
+    // ---- 埋点聚合（旧记录缺字段就跳过，不拉低也不伪造） ----
+    const ended = String(record.endedBy ?? '');
+    if (ENDED_BY_VALUES.has(ended)) out.endedBy[ended] = (out.endedBy[ended] ?? 0) + 1;
+    const wait = count(record.sdkRetryWaitMs);
+    const ttftMax = count(record.ttftMsMax);
+    if (wait != null || ttftMax != null) out.timingRecords++;
+    if (wait != null) out.sdkRetryWaitMs = (out.sdkRetryWaitMs ?? 0) + Math.round(wait);
+    if (ttftMax != null && ttftMax > 0) worstTtft.push(ttftMax);
+    if (record.failKinds && typeof record.failKinds === 'object' && !Array.isArray(record.failKinds)) {
+      for (const [k, v] of Object.entries(record.failKinds)) {
+        const n = nonnegativeInt(v);
+        if (n > 0) out.failKinds[String(k).slice(0, 24)] = (out.failKinds[String(k).slice(0, 24)] ?? 0) + n;
+      }
+    }
   }
   out.usageComplete = out.runs > 0 && out.unknownUsageRecords === 0;
   out.cacheHitRate = out.unknownCacheRecords ? null : cacheHitRate(out);
@@ -140,6 +296,13 @@ export function summarize(records = []) {
     ? durations[Math.min(durations.length - 1, Math.floor(durations.length * q))] : null;
   out.p50Ms = percentile(0.5);
   out.p90Ms = percentile(0.9);
+  // TTFT 的分位数口径：**每条记录先取自己的最坏一轮**，再在这些最坏值里取中位数/最大值。
+  // 拿全部样本混起来算 p50 会把「绝大多数轮都很快、偶尔有一轮挂死」抹平，
+  // 而我们要看的正是那个尾巴（它决定失败判定要等多久）。
+  worstTtft.sort((a, b) => a - b);
+  out.ttftMsP50 = worstTtft.length
+    ? worstTtft[Math.min(worstTtft.length - 1, Math.floor(worstTtft.length * 0.5))] : null;
+  out.ttftMsMax = worstTtft.length ? worstTtft[worstTtft.length - 1] : null;
   return out;
 }
 
@@ -172,6 +335,25 @@ function mergeStats(a, b) {
   merged.avgMs = merged.runs ? Math.round(merged.totalMs / merged.runs) : 0;
   merged.p50Ms = null;
   merged.p90Ms = null;
+  // 埋点字段：计数类可相加；TTFT 分位数不可合并（没有原始样本就不伪造），只留最大值
+  merged.endedBy = {};
+  for (const src of [a, b]) {
+    for (const [k, v] of Object.entries(src?.endedBy ?? {})) {
+      merged.endedBy[k] = (merged.endedBy[k] ?? 0) + (count(v) ?? 0);
+    }
+  }
+  merged.failKinds = {};
+  for (const src of [a, b]) {
+    for (const [k, v] of Object.entries(src?.failKinds ?? {})) {
+      merged.failKinds[k] = (merged.failKinds[k] ?? 0) + (count(v) ?? 0);
+    }
+  }
+  merged.sdkRetryWaitMs = (count(a.sdkRetryWaitMs) == null && count(b.sdkRetryWaitMs) == null)
+    ? null : (count(a.sdkRetryWaitMs) ?? 0) + (count(b.sdkRetryWaitMs) ?? 0);
+  merged.timingRecords = (count(a.timingRecords) ?? 0) + (count(b.timingRecords) ?? 0);
+  merged.ttftMsP50 = null;
+  const maxima = [count(a.ttftMsMax), count(b.ttftMsMax)].filter((v) => v != null);
+  merged.ttftMsMax = maxima.length ? Math.max(...maxima) : null;
   return merged;
 }
 

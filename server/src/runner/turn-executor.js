@@ -13,7 +13,7 @@ import { isMainChatBusy } from './chief-summary-runner.js';
 import { scheduleRunSettled } from './run-settled.js';
 import { readBrandEnv } from '../brand.js';
 import { readForModel, saveFromPath } from '../attachments.js';
-import { RunUsage } from '../run-stats.js';
+import { RunUsage, RunTiming, endedByOf } from '../run-stats.js';
 import { providerLeaseScope } from '../provider-updates.js';
 import {
   assistantFailure, fallbackModels, formatFailureDetail, modelFailure, recoverModelReply, withModelHint,
@@ -341,6 +341,10 @@ async function runWithLease(
   let buffer = '';
   let usage = null;
   const meter = new RunUsage();
+  // 长任务埋点（SPEC-PERF-V1 §4.2 a）：TTFT / SDK 重试等待 / 失败分类。
+  // 计时锚点是"发请求"和"工具结束之后再发请求"，不是 `message_start`
+  // （那个事件要等上游先回应，会把握手挂死排除在统计外）。
+  const timing = new RunTiming();
   let responseFailure = null;
   const steps = [];
 
@@ -527,6 +531,8 @@ async function runWithLease(
       case 'message_update':
         // 模型在出东西（包括思考过程）就是活着：高思考档位的模型可能想很久才吐第一个字
         beat();
+        // 首字（含思考增量）→ 记一条 TTFT 样本；之后同一轮的增量不再重复记
+        timing.markProgress();
         if (event.assistantMessageEvent?.type === 'text_delta') {
           buffer += event.assistantMessageEvent.delta;
           pushDelta();
@@ -534,6 +540,11 @@ async function runWithLease(
         break;
       case 'auto_retry_start':
         meter.retry();
+        // SDK 内部重试：这段等待是**可控的**，不是挂死 ——
+        // 既要如实计入 sdkRetryWaitMs，也要把 modelIdle 的锚点往后挪
+        timing.addSdkRetryWait(event.delayMs ?? event.delay ?? event.retryAfterMs ?? 0);
+        timing.countFail('sdk-retry');
+        timing.beginWait();
         break;
       case 'message_end':
         if (event.message?.role === 'assistant') {
@@ -541,6 +552,8 @@ async function runWithLease(
           usage = meter.snapshot();
           const failure = assistantFailure(event.message);
           if (failure) {
+            timing.countFail(failure.auth ? 'auth' : failure.quota ? 'quota'
+              : failure.aborted ? 'aborted' : 'model');
             responseFailure = failure;
             buffer = '';
             pushDelta.flush();
@@ -559,6 +572,8 @@ async function runWithLease(
         }
         break;
       case 'tool_execution_start': {
+        // 跑工具不算「模型没进展」，暂停等模型计时
+        timing.pauseWait();
         entry.toolsRunning = (Number(entry.toolsRunning) || 0) + 1;
         toolCalls += 1;
         if (isBlockingAsk(event.toolName, event.args)) askedUser = true;
@@ -587,6 +602,8 @@ async function runWithLease(
           step.durationMs = event.durationMs ?? Date.now() - step.startedAt;
         }
         pushSteps();
+        // 工具回来了 → 下一次请求马上发出，从这里重新开始算等模型
+        timing.beginWait();
         break;
       }
       case 'queue_update':
@@ -723,6 +740,8 @@ async function runWithLease(
         ? `${consumedSide.promptBlock}\n\n${prompt}`
         : prompt;
       const finalPrompt = withLessons(withSkills(promptWithSide));
+      // 从这里开始算「等模型」：到第一个 message_update 为止
+      timing.beginWait();
       try {
         return images.length
           ? await entry.session.prompt(finalPrompt, { images })
@@ -919,7 +938,7 @@ async function runWithLease(
       runner.bus.emit('event', { t: 'msg.error', roomId, msgId: botMsg.id, error: msg.error, msg });
       runner.recordRun({
         roomId, botId, startedAt: started, ok: false, usage: meter.snapshot(),
-        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'empty',
+        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'empty', timing,
       });
       return withAttempt({
         ok: false,
@@ -968,7 +987,7 @@ async function runWithLease(
     runner.bus.emit('event', { t: 'msg.done', msg });
     runner.recordRun({
       roomId, botId, startedAt: started, ok: true, usage: meter.snapshot(),
-      taskRunId, attemptIndex, sdkRetries: meter.retries,
+      taskRunId, attemptIndex, sdkRetries: meter.retries, timing,
       ...(sliceEnding ? { kind: 'slice' } : {}),
     });
     turnSucceeded = true;
@@ -1020,7 +1039,7 @@ async function runWithLease(
       runner.bus.emit('event', { t: 'msg.done', msg });
       runner.recordRun({
         roomId, botId, startedAt: started, ok: true, usage: meter.snapshot(),
-        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'step-cap',
+        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'step-cap', timing,
       });
       // 轮数到上限也算"跑完了"（真实落出了回复），只是被收住 —— 照样可以评估
       turnSucceeded = true;
@@ -1096,7 +1115,8 @@ async function runWithLease(
     });
     runner.recordRun({
       roomId, botId, startedAt: started, ok: false, usage: meter.snapshot(),
-      taskRunId, attemptIndex, sdkRetries: meter.retries, kind: recoverable ? 'retrying' : 'error',
+      taskRunId, attemptIndex, sdkRetries: meter.retries, timing,
+      kind: recoverable ? 'retrying' : 'error',
     });
     return withAttempt({
       ok: false,

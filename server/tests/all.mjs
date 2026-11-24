@@ -205,6 +205,8 @@ const TESTS = [
   'group-retry',
   'long-task-upstream',
   'long-task-restart',
+  // 运行统计埋点 + 只读性能报告（SPEC-PERF-V1 M1-b）
+  'perf-report',
 ];
 
 let failed = 0;
