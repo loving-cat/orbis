@@ -20,33 +20,17 @@
  *      如实落失败回执 —— 一直排下去只是把「不知道坏在哪」藏起来。
  */
 import { log } from '../util.js';
+import { isUpstreamTransient } from '../retry-policy.js';
+
+// 判定口径与受管链路共用一份（见 retry-policy.js `isUpstreamTransient`），
+// 免得群聊与任务对「什么算上游故障」给出两种答案。
+export { isUpstreamTransient };
 
 /** 阶梯退避：1 → 2 → 5 → 10 分钟（可注入，单测用毫秒级）。 */
 export const RETRY_LADDER_MS = Object.freeze([60_000, 120_000, 300_000, 600_000]);
 
 /** 累计等待上限：超过就如实失败，不再排。 */
 export const RETRY_MAX_TOTAL_MS = 60 * 60 * 1000;
-
-/** 网络瞬断的各种写法（undici / node / 上游网关）。 */
-const TRANSIENT_HINTS =
-  /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|terminated/i;
-
-/**
- * 这次失败是不是「等一会儿可能就好」的上游故障。
- *
- * 身份（401/403）与欠费（402）**不算**：等多久都不会好，早点说清楚比排队强。
- *
- * @param {{kind?:string, status?:number|null, error?:string}} failure
- * @returns {boolean}
- */
-export function isUpstreamTransient({ kind = '', status = null, error = '' } = {}) {
-  const code = Number(status);
-  if (code === 401 || code === 403 || code === 402) return false;
-  if (kind === 'breaker-open') return true;
-  if (code === 429) return true;
-  if (Number.isFinite(code) && code >= 500 && code < 600) return true;
-  return TRANSIENT_HINTS.test(String(error ?? ''));
-}
 
 /**
  * 下一次该等多久；返回 `null` = 累计已到上限，不该再排。
