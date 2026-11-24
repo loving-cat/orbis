@@ -209,6 +209,8 @@ const TESTS = [
   'perf-report',
   // Windows 桌面助手（SPEC-PERF-V1 P1-2 阶段 A）：契约 + 回退
   'desktop-helper-win',
+  // 流式期间不重写 state.json（SPEC-PERF-V1 §8 / P2-4）
+  'store-state-dirty',
 ];
 
 let failed = 0;

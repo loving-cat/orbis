@@ -468,6 +468,9 @@ export class Store {
     //   它自己管原子替换与单写入者，Store 只持有引用
     this.taskRuns = new TaskRunStore({ dir: this.taskRunsDir, memory: this.memory });
     this.saveTimer = null;
+    // state.json 有变更没落盘（SPEC-PERF-V1 §8.2）。
+    // 初始为 true：第一次 saveNow 必须把初始状态写出去。
+    this.stateDirty = true;
     /** 有变更的房间 id —— 落盘时只写这些，不要全量重写 */
     this.dirtyRooms = new Set();
     if (opts.secretsKey) this.useSecretsKey(opts.secretsKey);
@@ -552,8 +555,18 @@ export class Store {
 
   // ---------- 持久化 ----------
 
-  scheduleSave() {
+  /**
+   * 排一次延迟落盘。
+   *
+   * `state: false` = 这次只改了**房间消息**，`state.json` 内容没变。
+   * 默认 `true`（按「state 也改了」处理）：漏改的调用点最多多写一次，
+   * 反过来把该写的漏掉就是**数据丢失** —— 默认值朝安全的一侧偏。
+   *
+   * @param {{state?: boolean}} [opts]
+   */
+  scheduleSave({ state = true } = {}) {
     if (this.memory) return;
+    if (state) this.stateDirty = true;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -576,6 +589,9 @@ export class Store {
     try {
       assertMcpCredentialsSealed(this.state.mcpServers ?? []);
       writeJsonAtomic(this.stateFile, this.state);
+      // 只有**写成功之后**才清 dirty：先清再写的话，一次失败就把整份状态
+      // 永久留在内存里（下次也不会再写），直到进程退出。
+      this.stateDirty = false;
     } catch (err) {
       return { ok: false, text: `state.json 写入失败：${err?.message || err}` };
     }
@@ -595,13 +611,23 @@ export class Store {
     return { ok: true };
   }
 
+  /**
+   * 落盘：`state.json` 只在**真的变了**时写，房间文件按 dirty 集合写。
+   *
+   * 为什么要这道门：流式输出时 `pushDelta` 每 80 ms 改一条消息 →
+   * 整份 `state.json` 就跟着重写一遍，而它的内容一个字都没变（§8.1 实测 6.4 ms/次）。
+   */
   saveNow() {
     if (this.memory) return;
-    try {
-      assertMcpCredentialsSealed(this.state.mcpServers ?? []);
-      writeJsonAtomic(this.stateFile, this.state);
-    } catch (err) {
-      log('⚠️  写 state.json 失败（进程继续跑）：', err?.message || err);
+    if (this.stateDirty) {
+      try {
+        assertMcpCredentialsSealed(this.state.mcpServers ?? []);
+        writeJsonAtomic(this.stateFile, this.state);
+        this.stateDirty = false;
+      } catch (err) {
+        // 写失败保持 dirty：下次 saveNow 重试，不能把状态永久留在内存里
+        log('⚠️  写 state.json 失败（保持待写，进程继续跑）：', err?.message || err);
+      }
     }
     // 只写有变更的房间：全部重写的话，房间一多（每个群 500 条消息）就是纯浪费。
     //
@@ -3367,7 +3393,8 @@ export class Store {
     if (touch) msg.createdAt = now();
     msg.updatedAt = now();
     this.dirtyRooms.add(roomId);
-    this.scheduleSave();
+    // 只改了房间消息，state.json 没变（§8.2）
+    this.scheduleSave({ state: false });
     // 带上消息本体：客户端要按新的 createdAt 重建这条
     this.bus.emit('event', { t: 'msg.moved', roomId, msgId, afterId: afterMsgId, msg });
     return msg;
@@ -3378,7 +3405,8 @@ export class Store {
     if (!msg) return null;
     Object.assign(msg, patch, { updatedAt: now() });
     this.dirtyRooms.add(roomId);
-    this.scheduleSave();
+    // 流式输出的热路径：每 80 ms 一次，绝不能带着整份 state.json 重写（§8.2）
+    this.scheduleSave({ state: false });
     if (!silent) this.bus.emit('event', { t: 'msg.updated', msg });
     return msg;
   }
