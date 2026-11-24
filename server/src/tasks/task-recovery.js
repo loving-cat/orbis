@@ -22,6 +22,14 @@ export const RECOVERY_STAGE = Object.freeze({
   clearBlocked: 'clear_blocked',
   resume: 'resume',
   firstDispatch: 'first_dispatch',
+  /**
+   * 上游退避还没到期：**不解阻、不抢跑**，只把到期时间挂回定时器。
+   *
+   * 以前任何 `recoverableBlock` 都直接产出 `clearBlocked`：重启一次就把
+   * 「等上游 5 分钟」变成「立即再试一次」，正好撞在限流窗口上，
+   * 于是多烧十次快速重试、还可能连着几次重启直接耗光退避额度。
+   */
+  deferUpstream: 'defer_upstream',
 });
 
 /**
@@ -29,9 +37,10 @@ export const RECOVERY_STAGE = Object.freeze({
  * @param {object} p
  * @param {object} p.root 根任务快照（run 自己是根时传 run）
  * @param {(id:string)=>object|null} p.load 读取真实任务
+ * @param {()=>number} [p.clock] 当前时间（注入，单测用）
  * @returns {{stages:Array<{stage:string, attemptId?:string, slot?:object, ownerRunId?:string}>, pending:boolean}}
  */
-export function decideRecovery(run, { root, load }) {
+export function decideRecovery(run, { root, load, clock = () => Date.now() }) {
   const stages = [];
   const rootRun = root ?? run;
   const slots = Object.values(rootRun?.attemptSlots ?? {})
@@ -67,7 +76,15 @@ export function decideRecovery(run, { root, load }) {
   // 结算全部完成（或本来就没有占位）才允许清阻塞与唤醒
   if (!pending) {
     if (run.state === 'blocked' && (run.recoverableBlock || run.unknownBlock)) {
-      stages.push({ stage: RECOVERY_STAGE.clearBlocked });
+      const waitingUpstream = run.recoverableBlock === 'upstream'
+        && Number.isFinite(run.retryAt)
+        && run.retryAt > clock();
+      if (waitingUpstream) {
+        // 还没到期：保留阻塞状态，只把到期时间挂回定时器（不 notify，不抢跑）
+        stages.push({ stage: RECOVERY_STAGE.deferUpstream, dueAt: run.retryAt });
+      } else {
+        stages.push({ stage: RECOVERY_STAGE.clearBlocked });
+      }
     }
     // 初次交接完成、owner 已落盘但任务仍 queued：持久 next.action=dispatch 是执行意图。
     // 只认交接 done 的本版本首派；createOnly/暂停/取消/门槛/未知占位一律不在这里复活。

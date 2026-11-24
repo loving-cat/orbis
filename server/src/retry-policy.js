@@ -227,6 +227,34 @@ export function isRecoverableFailure({ error = '', status = null } = {}) {
 }
 
 /**
+ * 这类失败是不是「上游暂时不健康」——等几分钟再试可能就好。
+ *
+ * 与 `isRecoverableFailure` 的区别：那个是「还算值得重试吗」（默认宽容，
+ * 连未知错误都给一次机会）；这个是「值不值得排**分钟级**退避等它恢复」。
+ * 只有明确的上游特征算：429 / 5xx / 熔断打开 / 网络瞬断。
+ *
+ * 身份（401/403）与欠费（402/额度）**不算**：等多久都不会好，
+ * 早点把真实原因说清楚比排队强。
+ *
+ * @param {{error?:string, status?:number|null, kind?:string}} [p]
+ * @returns {boolean}
+ */
+export function isUpstreamTransient({ error = '', status = null, kind = '' } = {}) {
+  const text = String(error ?? '');
+  const code = Number(status);
+  if (code === 401 || code === 403 || code === 402) return false;
+  if (kind === 'auth' || kind === 'quota' || kind === 'aborted' || kind === 'budget') return false;
+  if (kind === 'breaker-open') return true;
+  if (/已.{0,2}(终止|中止)|aborted|cancelled|预算已用尽|budget_exhausted/i.test(text)) return false;
+  if (code === 429) return true;
+  if (Number.isFinite(code) && code >= 500 && code < 600) return true;
+  if (code === 401 || code === 403 || code === 402) return false;
+  return /\b429\b|rate[ _-]?limit|too many requests|限流|请求过于频繁/i.test(text)
+    || /\b(500|502|503|504)\b|bad gateway|service unavailable|gateway timeout/i.test(text)
+    || /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|terminated/i.test(text);
+}
+
+/**
  * 重试时追加到提示词里的说明。
  *
  * 为什么要换措辞而不是原样重发：原样重发的输入完全一样，

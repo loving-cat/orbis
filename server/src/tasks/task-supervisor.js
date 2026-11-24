@@ -15,7 +15,7 @@ import { verifyTaskRun } from './task-verification.js';
 import { remainingRuns } from './task-budget.js';
 import { TaskRunStore } from './task-run-store.js';
 import { runManagedAttempt } from './run-managed-attempt.js';
-import { decideRetry } from '../retry-policy.js';
+import { decideRetry, isUpstreamTransient } from '../retry-policy.js';
 import {
   CONTROL, applyControl, reconcileEarlyControls, descendants as descendantsOf,
 } from './task-controls.js';
@@ -51,6 +51,20 @@ const YIELD_RESUME_MS = 1_000;
 
 /** 自主重试之间的间隔：给执行器一点时间从上次失败里恢复。 */
 const AUTONOMY_RETRY_MS = 5_000;
+
+/**
+ * 上游瞬时故障（429 / 5xx / 熔断 / 网络瞬断）的**分钟级**阶梯退避。
+ *
+ * 快速重试（1.5–12 秒，最多 10 次）只够穿过一次抽风；上游限流是分钟级的事。
+ * 以前快速重试用尽就落「阻塞」等用户 —— 用户看到的是一次普通的限流把整件事判死。
+ */
+const UPSTREAM_LADDER_MS = Object.freeze([60_000, 120_000, 300_000, 600_000, 900_000]);
+
+/** 累计上游退避上限：超过这个时长就不该再「等一等」，如实阻塞给用户看。 */
+const MAX_UPSTREAM_WAIT_MS = 2 * 60 * 60 * 1000;
+
+/** 上游退避的累计状态挂在任务上（推进器重启也不丢）。 */
+const UPSTREAM_STATE_KEY = 'upstreamWait';
 
 /** 会话忙时的等待基数：执行器可能还在同房间跑上一波，等它空出来。 */
 const BUSY_RETRY_MS = 15_000;
@@ -130,6 +144,13 @@ export function createTaskSupervisor({
    */
   maxMilestoneRounds = 12,
   maxSteps = 32,
+  /**
+   * 上游退避的阶梯与上限（注入用；生产走默认值）。
+   *
+   * 单测里用毫秒级阶梯，不然「等 1 分钟」得真等 1 分钟。
+   */
+  upstreamLadder = UPSTREAM_LADDER_MS,
+  maxUpstreamWaitMs = MAX_UPSTREAM_WAIT_MS,
   /**
    * 同时最多推进几个任务。
    *
@@ -453,14 +474,81 @@ export function createTaskSupervisor({
   }
 
   /** 明确阻塞；可恢复原因单独记，便于恢复时解除。 */
-  async function block(taskRunId, why, recoverable = null) {
+  async function block(taskRunId, why, recoverable = null, retryAt = null) {
     const current = read(taskRunId);
     if (!current || [STATE.blocked, STATE.completed, STATE.cancelled].includes(current.state)) return;
     await settle(taskRunId, {
       type: EVENT.blocked, revision: current.revision, at: clock(),
       reason: String(why).slice(0, 300),
     });
-    await patch(taskRunId, { nextAction: null, retryAt: null, ...(recoverable ? { recoverableBlock: recoverable } : {}) });
+    // ★ 注意：这里把 `retryAt` 清成 null 了（阻塞 = 不再自动重排）。
+    //   上游可恢复阻塞需要保留到期时间，所以它显式传第三、四个参数，
+    //   而不是「先 block 再 patch」—— 那种写法一旦有人重排顺序就静默失效。
+    await patch(taskRunId, {
+      nextAction: null,
+      retryAt: Number.isFinite(retryAt) ? retryAt : null,
+      ...(recoverable ? { recoverableBlock: recoverable } : {}),
+    });
+  }
+
+  /**
+   * 上游瞬时故障的可恢复阻塞：快速重试用尽后不判死，改排**分钟级**退避。
+   *
+   * 三件事必须一起做，少一件就白做：
+   *   1. `recoverableBlock: 'upstream'` —— 恢复/唤醒逻辑靠它区分「等上游」与「真卡死」；
+   *   2. `retryAt` —— 到点才能真正醒（且 `block()` 会把它清空，所以必须显式传）；
+   *   3. 累计等待封顶 —— 等超过 2 小时就不是「上游抽风」了，如实阻塞给用户看。
+   *
+   * @returns {{status:'retry_scheduled'|'blocked', dueAt?:number, why:string, waitedMs:number}}
+   */
+  async function scheduleUpstreamRetry(taskRunId, { why = '', waitedMs = 0 } = {}) {
+    const current = read(taskRunId) ?? {};
+    const prev = current[UPSTREAM_STATE_KEY] ?? {};
+    const attempt = Number(prev.attempt ?? 0);
+    const waited = Number(prev.waitedMs ?? waitedMs ?? 0);
+    const nextDelay = upstreamLadder[Math.min(attempt, upstreamLadder.length - 1)];
+    if (!Number.isFinite(nextDelay) || waited + nextDelay > maxUpstreamWaitMs) {
+      // 到上限：清掉累计状态，如实阻塞（不再自动排）
+      const reason = `上游持续不可用（已累计等待 ${Math.round(waited / 60_000)} 分钟）：${String(why).slice(0, 120)}`;
+      await block(taskRunId, reason, null);
+      // block() 在「已经是 blocked」时会提前返回；而这里恰恰是常见情况
+      // （上一轮就是受阻等上游）。所以清可恢复标记与到期时间必须显式落盘，
+      // 否则任务会永远停在「等上游」——再也不会有人来排、也不会有人来解。
+      await patch(taskRunId, {
+        [UPSTREAM_STATE_KEY]: null,
+        recoverableBlock: null,
+        retryAt: null,
+        flags: { ...(read(taskRunId)?.flags ?? {}), blockedAt: clock(), blockedReason: reason },
+      });
+      return { status: 'blocked', why: 'upstream_exhausted', waitedMs: waited };
+    }
+    const dueAt = clock() + nextDelay;
+    const waitText = nextDelay < 60_000
+      ? `${Math.round(nextDelay / 1000)} 秒`
+      : `${Math.round(nextDelay / 60_000)} 分钟`;
+    await patch(taskRunId, {
+      [UPSTREAM_STATE_KEY]: { attempt: attempt + 1, waitedMs: waited + nextDelay, at: clock() },
+      nextAction: null,
+      // ★ 快速重试的计数**不清**：清掉的话下一次失败又能白拿 10 次快速重试，
+      //   分钟级退避就永远轮不到（每轮都从「第 1 次」重新开始）。
+      //   这一段真的跑通时（ok 路径）才会把 retry 清空。
+    });
+    const reason = `上游限流/临时故障，${waitText}后自动继续：${String(why).slice(0, 120)}`;
+    const alreadyBlocked = current.state === STATE.blocked;
+    // block() 里会把 retryAt 清空 —— 上游可恢复阻塞显式把到期时间传进去
+    await block(taskRunId, reason, 'upstream', dueAt);
+    if (alreadyBlocked) {
+      // 已经 blocked 时 block() 会提前返回（不重复发 blocked 事件），
+      // 但到期时间与可恢复原因必须落盘，否则定时唤醒读不到。
+      await patch(taskRunId, {
+        recoverableBlock: 'upstream',
+        retryAt: dueAt,
+        flags: { ...(read(taskRunId)?.flags ?? {}), blockedAt: clock(), blockedReason: reason },
+      });
+    }
+    setTimer(dueAt, taskRunId);
+    log(`上游退避：${taskRunId} 第 ${attempt + 1} 档，${waitText}后再试（累计 ${Math.round((waited + nextDelay) / 1000)}s）`);
+    return { status: 'retry_scheduled', dueAt, why: 'upstream_backoff', waitedMs: waited + nextDelay };
   }
 
   function remainingOf(taskRun) {
@@ -738,6 +826,13 @@ export function createTaskSupervisor({
           type: EVENT.unblocked, revision: taskRun.revision, at: clock(), reason: '重试到期',
         });
         if (!unblocked.ok) return { status: 'blocked', why: 'unblock_failed' };
+        // ★ 可恢复阻塞的记账要在解除时一起清：
+        //   `recoverableBlock: 'upstream'` 留着会让启动恢复以为「还在等上游」，
+        //   `retryAt` 留着会让下一轮重复判「重试到期」。
+        const revived = read(taskRun.id);
+        if (revived?.recoverableBlock === 'upstream') {
+          await patch(taskRun.id, { recoverableBlock: null, retryAt: null });
+        }
         continue;
       }
 
@@ -745,6 +840,10 @@ export function createTaskSupervisor({
       const beforeProgress = progressSignature(beforeRun);
       const out = await doLeadStep(taskRun, action);
       if (out.status === 'retry_scheduled' || out.status === 'paused_budget') return out;
+      // 这一段真的跑通了 → 上游退避的累计清零（下次抽风重新从第一档排起）
+      if (out.status === 'ok' && read(taskRun.id)?.[UPSTREAM_STATE_KEY]) {
+        await patch(taskRun.id, { [UPSTREAM_STATE_KEY]: null });
+      }
       // ★ 执行让出（步数上限）不是失败，但也不能在这里直接 return ——
       //   直接 return 就绕过了下面「安排续行」的收尾，任务从此停在 running，
       //   界面显示「执行中」却再也不动。让它落到循环尾部统一处理。
@@ -1022,7 +1121,10 @@ export function createTaskSupervisor({
       inflight.delete(taskRun.id);
     }
 
-    if (!out.ok) return handleStepFailure(taskRun, out);
+    // ★ 把执行器的原始结果一起带下去：`runManagedAttempt` 的失败壳子只说明
+    //   「这一步没成」，真正的原因（429 / 5xx / 熔断）在 rawResult 里。
+    //   不带下去的话，上游限流也会被归成「执行失败」直接阻塞。
+    if (!out.ok) return handleStepFailure(taskRun, { ...out, raw: rawResult });
 
     // 执行失败但属于可恢复的暂时故障：按既有决策排有界重试，不写成永久阻塞
     const failedStop = rawResult?.stop === STOP.failed || rawResult?.ok === false;
@@ -1067,6 +1169,18 @@ export function createTaskSupervisor({
       }
       // 不再重试：清掉到期标记，交给状态机判定为明确失败
       await patch(taskRun.id, { retryAt: null, nextAction: null });
+      // ★ 但如果是上游瞬时故障，这里不该走到「明确失败」：
+      //   快速重试（最多 10 次、总时长几十秒）穿不过一次分钟级的限流。
+      if (isUpstreamTransient({
+        error: String(rawResult?.error ?? rawResult?.text ?? ''),
+        status: rawResult?.status ?? null,
+      })) {
+        const scheduled = await scheduleUpstreamRetry(taskRun.id, {
+          why: String(rawResult?.error ?? rawResult?.text ?? '上游不可用'),
+        });
+        if (scheduled.status === 'retry_scheduled') return scheduled;
+        return { status: 'blocked', why: scheduled.why };
+      }
     }
 
     // ★ 自主模式：这一轮被判定失败时，自动把它再推起来，而不是等用户点「继续」。
@@ -1120,6 +1234,7 @@ export function createTaskSupervisor({
       await patch(taskRun.id, { nextAction: null });
       return { status: 'cancelled', why: '执行期间被取消/暂停' };
     }
+
 
     // 这一段有没有真实干活：改了工作区文件，或者登记了产物。
     // 停滞计数据此分两档（见 bumpStall / stallVerdict）：干了活就不算「卡住」。
@@ -1213,7 +1328,9 @@ export function createTaskSupervisor({
       return { status: 'blocked', why: out.code };
     }
     // 有界重试：只有明确 transient 才排重试；结果未知不在此列
-    const decision = decideRetry({ error: String(out.text ?? out.code ?? ''), status: out.status ?? null, attempt: (read(id)?.retry?.count ?? 0) + 1 });
+    const cause = String(out.raw?.error ?? out.raw?.text ?? out.text ?? out.code ?? '');
+    const causeStatus = out.raw?.status ?? out.status ?? null;
+    const decision = decideRetry({ error: cause, status: causeStatus, attempt: (read(id)?.retry?.count ?? 0) + 1 });
     if (decision.retry && (taskRun.retry?.count ?? 0) < MAX_TRANSIENT_ATTEMPTS) {
       const dueAt = clock() + (decision.delayMs ?? 30_000);
       await patch(id, {
@@ -1224,8 +1341,14 @@ export function createTaskSupervisor({
       setTimer(dueAt, id);
       return { status: 'retry_scheduled', dueAt };
     }
+    // ★ 快速重试用尽：如果是上游瞬时故障，不判死，改排分钟级退避。
+    //   一次普通的限流不该把整个任务变成「需要人工确认」。
+    if (isUpstreamTransient({ error: cause, status: causeStatus })) {
+      await patch(id, { stall: bumpStall(read(id) ?? taskRun) });
+      return scheduleUpstreamRetry(id, { why: cause || '上游不可用' });
+    }
     await patch(id, { nextAction: null, retryAt: null });
-    await block(id, out.text ?? out.code ?? '执行失败');
+    await block(id, out.text ?? out.code ?? cause ?? '执行失败');
     return { status: 'blocked', why: out.code };
   }
 
@@ -1539,7 +1662,7 @@ export function createTaskSupervisor({
    * 任何写入失败都累计恢复尝试并停止本轮，不反复 inspect/写盘。
    */
   async function recover() {
-    const report = { released: [], unknown: [], resumed: [], settleFilled: [], blocked: [] };
+    const report = { released: [], unknown: [], resumed: [], settleFilled: [], blocked: [], deferred: [] };
     const all = allRuns();
     const MAX_TRIES = 3;
 
@@ -1551,7 +1674,7 @@ export function createTaskSupervisor({
         if (!run || terminal(run)) break;
         const rootId = run.rootTaskId ?? run.id;
         const root = read(rootId) ?? run;
-        const { stages } = decideRecovery(run, { root, load: read });
+        const { stages } = decideRecovery(run, { root, load: read, clock });
         if (!stages.length) break;
         const st = stages[0];
 
@@ -1623,6 +1746,13 @@ export function createTaskSupervisor({
           if (!filled.ok) { failed = filled.text ?? filled.code; break; }
           report.settleFilled.push({ taskRunId: st.ownerRunId ?? run.id, attemptId: st.attemptId });
           continue;
+        }
+
+        if (st.stage === RECOVERY_STAGE.deferUpstream) {
+          // 上游退避还没到期：只挂定时器，不解阻也不抢跑（到期由既有唤醒链路接手）
+          if (Number.isFinite(st.dueAt)) setTimer(st.dueAt, run.id);
+          report.deferred.push({ taskRunId: run.id, dueAt: st.dueAt });
+          break;
         }
 
         if (st.stage === RECOVERY_STAGE.clearBlocked) {
