@@ -24,7 +24,9 @@
 | `update-checker.js` | 查 GitHub Releases（可换镜像）、超时与缓存；只查不装 |
 | `store.js` | 实例化存储与落盘工厂（`createStore` + 延迟默认单例）：bots/rooms/devices/sessions/tasks/automations/approvals/policy |
 | `pi-runner.js` | 运行时外观层与生命周期管理（模型注册/熔断/端点轮转/会话池/abort/reset），向 `runner/*` 子模块委派执行与编排 |
-| `runner/turn-executor.js` | 单轮会话执行主干（`executeTurn`：受管 scope/租约、主动压缩、技能与经验增量注入、流式事件、三层恢复与产物收集） |
+| `runner/turn-executor.js` | 单轮会话执行主干（`executeTurn`：受管 scope/租约、主动压缩、技能与经验增量注入、流式事件、三层恢复与产物收集、单轮软截止、续跑守卫与续段标记） |
+| `runner/turn-slicing.js` | 时间片与续段接线：软截止超时（`softDeadlineTimeout`）、收尾后工具还在跑就再宽限、续跑守卫（`runContinuationGuard`）、私聊自动续段（`scheduleDmContinuation`）、`STEP_CAP_GRACE` |
+| `turn-continuation.js` | 回合收尾判定（纯函数）：`classifyTurnEnding` / `shouldNudge` / `wantsAskFirst` / `nudgePrompt` / `wrapUpPrompt` / `continuationPrompt` / `extractContinuation`，续段标记 `【未完待续】` |
 | `runner/group-orchestrator.js` | 部门群轮次编排（`executeGroupRound` / `dispatchGroupRound`：发言判定、并发派发、`roundEpochs` 代数打断、收尾与游标） |
 | `runner/duplex-lane.js` | 全双工旁路 Talk、连发合并与发信分流入口（`sendUserMessage` / `deliverMerged` / `consumeSideContext` / `abortTalkInRoom`） |
 | `runner/task-bridge.js` | 请求信封（`withRequestEnvelope`）、受管报告通道与阻塞核验（`collectReport` / `verifyReportWait`）、看门狗与失败升级 |
