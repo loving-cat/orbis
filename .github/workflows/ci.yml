@@ -141,6 +141,19 @@ jobs:
         working-directory: native/orbis-sandbox
         run: |
           node ../../server/tools/check-launcher-version.mjs target/release/orbis-sandbox.exe
+      # The Windows desktop helper (native/orbis-desktop-win) is Rust too.
+      # Missing/broken only costs speed (it falls back to PowerShell), but a
+      # crate that stops compiling would only surface on a release machine.
+      - name: Desktop helper tests
+        working-directory: native/orbis-desktop-win
+        run: cargo test --release
+      - name: Build desktop helper
+        working-directory: native/orbis-desktop-win
+        run: cargo build --release
+      - name: Desktop helper version matches the Node side
+        working-directory: native/orbis-desktop-win
+        run: |
+          node ../../server/tools/check-desktop-helper-version.mjs target/release/orbis-desktop-win.exe
 
   app:
     name: app analyze + test (${{ matrix.os }})

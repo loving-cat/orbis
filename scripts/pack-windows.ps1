@@ -369,6 +369,18 @@ try {
     Write-Host "         Build it with scripts/build-sandbox-win.ps1 (needs Rust + MSVC)." -ForegroundColor Yellow
   }
 
+  # Windows desktop helper (native/orbis-desktop-win). Missing = automatic
+  # fallback to the old PowerShell implementation (fail-open by design: the
+  # feature still works, just slower), so warn instead of failing the pack.
+  $desktopExe = Join-Path $stageServer "resources\orbis-desktop-win.exe"
+  if (Test-Path -LiteralPath $desktopExe) {
+    Write-Host "bundled orbis-desktop-win.exe"
+  } else {
+    Write-Host "WARNING: server/resources/orbis-desktop-win.exe is missing." -ForegroundColor Yellow
+    Write-Host "         Desktop input falls back to the PowerShell implementation (slower)." -ForegroundColor Yellow
+    Write-Host "         Build it with scripts/build-desktop-win.ps1 (needs Rust + MSVC)." -ForegroundColor Yellow
+  }
+
   if (-not $SkipDeps) {
     Write-Host "== install server deps into stage =="
     Push-Location $stageServer

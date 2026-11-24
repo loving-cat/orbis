@@ -96,3 +96,7 @@ server/resources/pibot-sandbox.sha256
 native/*/build/
 server/resources/orbis-desktop-mac
 server/resources/orbis-desktop-mac.sha256
+
+# Windows 桌面输入原生助手（scripts/build-desktop-win.ps1 产出，随发版编译）
+server/resources/orbis-desktop-win.exe
+server/resources/orbis-desktop-win.sha256
