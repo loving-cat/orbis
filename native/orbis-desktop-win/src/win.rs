@@ -57,7 +57,12 @@ pub fn system_dpi() -> u32 {
     unsafe { GetDpiForSystem() }
 }
 
-/// 能不能打开输入桌面（锁屏 / 断开会话时打不开）。
+/// 当前桌面能不能**真的操作**（锁屏 / 断开会话 / 受限桌面时为 false）。
+///
+/// ★ 只看 `OpenInputDesktop` 不够：在受限或锁屏桌面上它仍可能返回一个非空句柄，
+///   但紧接着 `GetCursorPos()` 会失败（旧 PowerShell 实现忽略了那个 BOOL 返回值，
+///   于是一直"假装"读到 (0,0)，`session` 就误报成 true）。
+///   所以这里要求「句柄能打开 **且** 光标能读到」才算可操作。
 /// ★ 打开就必须关掉：`OpenInputDesktop` 每次都会拿一个句柄。
 pub fn has_input_desktop() -> bool {
     unsafe {
@@ -66,8 +71,9 @@ pub fn has_input_desktop() -> bool {
             return false;
         }
         CloseDesktop(desktop);
-        true
     }
+    // 读不到光标 = 这个桌面上发不了可信的输入
+    cursor_pos().is_some()
 }
 
 pub fn last_input_tick() -> i64 {
