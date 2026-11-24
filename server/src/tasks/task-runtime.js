@@ -10,6 +10,8 @@
  * 这里只做翻译与生命周期接线，不含判定、创建、验收规则。
  */
 import { createTaskSupervisor } from './task-supervisor.js';
+import { buildAttemptEvent } from './run-managed-attempt.js';
+import { isIrreversible } from '../capabilities.js';
 import { desktopInputSession } from '../desktop-input-session.js';
 import { store } from '../store.js';
 import { reclaimTaskGrants } from './task-grant-reclaim.js';
@@ -39,6 +41,119 @@ import { resumeAdmission } from '../coordination/task-admission.js';
  * @param {Function} [p.log]
  * @returns {object}
  */
+/**
+ * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
+ *
+ * 判定只做三件事：账本里这次尝试有没有结果；有就结算；没结果就看审计 ——
+ * 证明不了「这段没做不可逆的事」就一律 `unresolved`（fail-closed）。
+ *
+ * @param {object} p
+ * @param {object} p.taskRuns TaskRunStore
+ * @param {object} p.runner PiRunner（用它的 store 读 grantAudit）
+ * @param {(taskRun:object)=>{roomId:string,botId:string}} [p.routeOf]
+ * @param {()=>number} [p.clock]
+ * @returns {(p2:{taskRun:object, attemptId:string}) => Promise<object>}
+ */
+/**
+ * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
+ *
+ * 一条尝试没留下结果记录（服务重启）时，按授权审计判断这一段到底干了什么：
+ * **只要证明不了「没做过不可逆的事」，就维持 unresolved**（fail-closed）。
+ *
+ * @param {object} p
+ * @param {object} p.taskRuns TaskRunStore
+ * @param {object} p.runner PiRunner（用它的 store 读 `state.grantAudit`）
+ * @param {(taskRun:object)=>{roomId:string,botId:string}} [p.routeOf] 任务 → 房间/执行者
+ * @param {()=>number} [p.clock]
+ * @returns {(p2:{taskRun:object, attemptId:string}) => Promise<object>}
+ */
+export function createOutcomeInspector({ taskRuns, runner, routeOf = null, clock = () => Date.now() }) {
+  return async function inspectOutcome({ taskRun, attemptId }) {
+    try {
+      const loaded = taskRuns.read(taskRun.id);
+      const current = loaded?.status === 'found' ? loaded.taskRun : null;
+      if (!current) return { resolved: false, reason: '任务已不存在' };
+      const rec = (current.attempts ?? []).find((a) => a.attemptId === attemptId);
+      if (!rec) return { resolved: false, reason: '账本里没有这次执行' };
+      // 占位在**根**任务上（子任务的执行也挂在根账本里）
+      const rootId = current.rootTaskId ?? current.id;
+      const rootRun = rootId === current.id ? current : (taskRuns.read(rootId)?.taskRun ?? null);
+      const slot = Object.values(rootRun?.attemptSlots ?? {})
+        .find((one) => one && one.attemptId === attemptId) ?? null;
+
+      // 已经结算过：不需要再核验
+      if (rec.state === 'settled') return { resolved: true, alreadySettled: true };
+
+      // 有结果记录就直接结算
+      if (rec.result) {
+        return {
+          resolved: true,
+          attemptEvent: {
+            type: 'attempt_finished',
+            revision: rec.revision ?? current.revision,
+            at: clock(),
+            attempt: {
+              attemptId,
+              taskRunId: current.id,
+              botId: rec.botId,
+              revision: rec.revision ?? current.revision,
+              stop: rec.result.stop ?? 'returned',
+              phaseKind: rec.phaseKind ?? 'lead',
+            },
+          },
+        };
+      }
+
+      // ---- 没有结果：按「重启前那一段到底干了什么」判断能不能自动续跑 ----
+      //
+      // ★ 安全底线是 **fail-closed**：只要证明不了「这段没做不可逆的事」，
+      //   就维持「需人工确认」。宁可让用户点一下，也不自动重放删库/发布这类动作。
+      //
+      //   判定依据是授权审计 `state.grantAudit`：那段执行期间、同一个 bot、
+      //   同一个房间里，有没有**放行过**不可逆动作。
+      const startedAt = Number(rec.startedAt ?? slot?.startedAt ?? NaN);
+      if (!Number.isFinite(startedAt)) {
+        // 拿不到时间起点 → 分不清哪些审计属于这一段 → 保守阻塞
+        return { resolved: false, reason: '这次执行没有留下结果记录，也没有可核对的时间起点' };
+      }
+      const roomId = routeOf?.(current)?.roomId ?? current.origin?.roomId ?? null;
+      const auditStore = runner?.store ?? null;
+      const audit = Array.isArray(auditStore?.state?.grantAudit) ? auditStore.state.grantAudit : [];
+      const risky = audit.find((entry) => {
+        if (!entry || entry.result !== 'allow') return false;
+        if (!(Number(entry.at) >= startedAt)) return false;
+        if (entry.botId && rec.botId && entry.botId !== rec.botId) return false;
+        // 老记录没有 roomId：分不清是哪个房间，按「可能命中」算
+        if (roomId && entry.roomId && entry.roomId !== roomId) return false;
+        return isIrreversible(entry.action);
+      });
+      if (risky) {
+        return {
+          resolved: false,
+          reason: `执行期间触发过不可逆操作（${String(risky.action ?? '未知动作')}），需人工确认`,
+        };
+      }
+
+      // 没做过不可逆的事：结算成「让出」，让推进器按续段接着做。
+      // ★ 必须用 buildAttemptEvent 造事件，不手拼字段 —— 归约会校验这些字段。
+      const yielded = buildAttemptEvent(
+        { ok: true, stop: 'yielded', reason: '服务重启，执行被中断' },
+        {
+          taskRunId: current.id,
+          attemptId,
+          botId: rec.botId ?? null,
+          revision: rec.revision ?? current.revision,
+          clock,
+        },
+      );
+      if (!yielded) return { resolved: false, reason: '这次执行没有留下结果记录' };
+      return { resolved: true, attemptEvent: yielded, restarted: true };
+    } catch (err) {
+      return { resolved: false, reason: String(err?.message ?? err) };
+    }
+  };
+}
+
 export function createTaskRuntime({
   taskRuns,
   runner,
@@ -413,51 +528,7 @@ export function createTaskRuntime({
         return false;
       }
     },
-    /**
-     * 只读核验「结果未知」的那次执行到底发生了什么。
-     *
-     * ★ 生产装配从不注入它，于是任何一次崩溃/超时产生的「结果未知」
-     *   都会把任务永久钉死在 blocked：用户点「解除阻塞」，系统核验不了
-     *   就立刻判回同一个 blocked —— 死循环，任务永远救不回来。
-     *
-     *   这里给出一个真实可用的核验入口：查那次尝试有没有落结果。
-     *   查得到就把结果交回去让状态机结算；查不到也明确说「查不到」，
-     *   让调用方给出可理解的结论，而不是无限重试同一状态。
-     */
-    inspectOutcome: async ({ taskRun, attemptId }) => {
-      try {
-        const loaded = taskRuns.read(taskRun.id);
-        const current = loaded?.status === 'found' ? loaded.taskRun : null;
-        if (!current) return { resolved: false, reason: '任务已不存在' };
-        const rec = (current.attempts ?? []).find((a) => a.attemptId === attemptId);
-        if (!rec) return { resolved: false, reason: '账本里没有这次执行' };
-        // 已经结算过：不需要再核验
-        if (rec.state === 'settled') return { resolved: true, alreadySettled: true };
-        // 有结果记录就直接结算
-        if (rec.result) {
-          return {
-            resolved: true,
-            attemptEvent: {
-              type: 'attempt_finished',
-              revision: rec.revision ?? current.revision,
-              at: clock(),
-              attempt: {
-                attemptId,
-                taskRunId: current.id,
-                botId: rec.botId,
-                revision: rec.revision ?? current.revision,
-                stop: rec.result.stop ?? 'returned',
-                phaseKind: rec.phaseKind ?? 'lead',
-              },
-            },
-          };
-        }
-        // 没有结果：这次执行确实没留下可核验的产出
-        return { resolved: false, reason: '这次执行没有留下结果记录' };
-      } catch (err) {
-        return { resolved: false, reason: String(err?.message ?? err) };
-      }
-    },
+    inspectOutcome: createOutcomeInspector({ taskRuns, runner, routeOf, clock }),
     clock,
     log,
     // 名字只用于文案（“谁在改这个文件”）。不传也能跑，只是不显示名字。
