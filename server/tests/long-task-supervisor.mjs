@@ -115,6 +115,28 @@ async function waitUntil(sup, id, predicate, { timeoutMs = 20_000 } = {}) {
   }
 }
 
+/**
+ * 显式驱动推进器：把「让出续行」的到期时间拉到过去，再主动唤醒。
+ *
+ * 为什么不靠内部 1s 定时器：状态每次推进都要落盘（`state.json` + fsync），
+ * 在慢盘/CI 容器上一段要好几秒 —— 20 秒的等待只够跑 5 段，而用例要 6 段，
+ * 于是变成环境彩票（CI 的 ubuntu 分片就是这么红的：12/14 或 11/14，
+ * 而同一份代码在 Windows/macOS 上全绿）。
+ *
+ * 只改测试的驱动方式，不改产品行为：被测的仍然是「该不该继续推进」的判定。
+ */
+async function drive(sup, id, predicate, { maxRounds = 12 } = {}) {
+  for (let i = 0; i < maxRounds; i++) {
+    await Promise.race([sup.idle(), new Promise((r) => setTimeout(r, 50))]);
+    const run = taskRuns.read(id).taskRun;
+    if (predicate(run)) return run;
+    // 让出续行排的是 `retryAt = now + 1s`，把它拨到过去就等于「定时器已到点」
+    await taskRuns.mutate(id, { mutate: (c) => ({ ...c, retryAt: Date.now() - 1 }) });
+    sup.notify(id);
+  }
+  return taskRuns.read(id).taskRun;
+}
+
 function blockTask(id, reason) {
   return taskRuns.mutate(id, {
     mutate: (cur) => {
@@ -176,7 +198,7 @@ await test('★ 每段都真实干活 → 远超旧上限地续跑，直到第�
     },
   });
   sup.notify(id);
-  const run = await waitUntil(sup, id, (r) => r.state === 'blocked');
+  const run = await drive(sup, id, (r) => r.state === 'blocked');
   sup.dispose();
   assert.equal(run.state, 'blocked', '最终应被第二档兜底拦住，而不是无限跑');
   assert.ok(execs > 3, `每段都在干活时不能第 2~3 段就判死（旧行为），实际只跑了 ${execs} 段`);
@@ -196,7 +218,7 @@ await test('★ 什么都没干的让出 → 第一档照样拦住（防空转�
     },
   });
   sup.notify(id);
-  const run = await waitUntil(sup, id, (r) => r.state === 'blocked');
+  const run = await drive(sup, id, (r) => r.state === 'blocked');
   sup.dispose();
   assert.equal(run.state, 'blocked');
   assert.ok(execs <= 3, `空转必须很快被拦住，实际跑了 ${execs} 段`);
@@ -215,7 +237,7 @@ await test('★ 正常返回但没到可验收、这一段改了文件 → 接�
     },
   });
   sup.notify(id);
-  const run = await waitUntil(sup, id, (r) => r.state === 'blocked');
+  const run = await drive(sup, id, (r) => r.state === 'blocked');
   sup.dispose();
   assert.ok(execs >= 3, `写代码这类活一段没写完不该第一段就停，实际 ${execs} 段`);
   assert.doesNotMatch(run.flags.blockedReason ?? '', /没有产出可核验的交付/);
