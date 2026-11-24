@@ -21,6 +21,7 @@ import { bus } from '../bus.js';
 import { projectTaskRun } from './task-transport.js';
 import { normalizeDecision } from './task-controls.js';
 import { createTaskRun } from './task-run-factory.js';
+import { resolveAutonomy } from './task-autonomy.js';
 import { admissionBudget } from '../coordination/task-admission.js';
 import { newId } from '../util.js';
 import { resumeAdmission } from '../coordination/task-admission.js';
@@ -540,6 +541,40 @@ export function createTaskRuntime({
       return supervisor.onControl(taskRunId, { type: 'unblock', reason });
     },
     /**
+     * 切换「自主推进」（任务卡上的开关）。
+     *
+     * 写在**根任务**上：推进器、续跑守卫都以根为准，整棵任务树立刻按新方式走；
+     * 子任务的标记一并同步，只为了它们自己的记录说得清。
+     * 不动状态、门槛、预算：打开自主不会替用户解除阻塞，关掉也不会打断在跑的执行。
+     */
+    async onSetAutonomy({ taskRunId, autonomous }) {
+      const loaded = taskRuns.read(taskRunId);
+      const run = loaded?.status === 'found' ? loaded.taskRun : null;
+      if (!run) return { ok: false, code: 'not_found', text: '任务不存在' };
+      const rootId = run.rootTaskId ?? run.id;
+      const rootLoaded = rootId === run.id ? loaded : taskRuns.read(rootId);
+      const root = rootLoaded?.status === 'found' ? rootLoaded.taskRun : run;
+      if (root.state === 'completed' || root.state === 'cancelled') {
+        return { ok: false, code: 'terminal', text: '任务已结束，不需要再切换推进方式' };
+      }
+      const want = autonomous === true;
+      const reason = want ? '用户在任务卡上打开了自主推进' : '用户在任务卡上关掉了自主推进（每到关口先问）';
+      const ids = [root.id, ...supervisor.descendants(root.id)];
+      for (const id of ids) {
+        const out = await taskRuns.mutate(id, {
+          mutate: (cur) => (cur
+            ? { ...cur, flags: { ...(cur.flags ?? {}), autonomous: want, autonomyReason: reason }, updatedAt: clock() }
+            : null),
+        });
+        if (id === root.id && !out?.ok) {
+          return { ok: false, code: out?.code ?? 'persist_failed', text: out?.text ?? '推进方式没能保存' };
+        }
+        notifyTaskChanged(id);
+      }
+      log(`任务 ${root.id} 推进方式：${want ? '自主' : '逐步确认'}`);
+      return { ok: true, applied: true, autonomous: want };
+    },
+    /**
      * 用户在任务板里直接加一条任务。
      *
      * ★ 这是「加一条任务」与执行引擎之间缺失的那座桥。
@@ -557,12 +592,17 @@ export function createTaskRuntime({
       if (!appStore) {
         return { ok: false, code: 'no_store', text: '运行时缺少应用存储，无法建任务' };
       }
+      // 与模型接单同一口径：默认自主推进，任务描述里明确要求「先问我」才逐步确认
+      const autonomy = resolveAutonomy([title, goal?.requirement ?? ''].filter(Boolean).join('\n'));
       const built = createTaskRun({
         id, requestId, requesterId,
         goal,
         origin: { roomId, messageId: null, requesterId },
-        budget: admissionBudget(process.env, runner.store?.groupLimits?.() ?? null),
+        // 只认用户显式改过的上限（与接单准入同一口径，见 store.explicitGroupLimits）
+        budget: admissionBudget(process.env, runner.store?.explicitGroupLimits?.() ?? null),
         at,
+        autonomous: autonomy.autonomous,
+        autonomyReason: autonomy.reason,
       });
       if (!built.ok) return { ok: false, code: 'bad_goal', text: built.text };
 
