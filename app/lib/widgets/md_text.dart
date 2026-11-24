@@ -90,9 +90,12 @@ class _MdTextState extends State<MdText> {
   String? _parsedFor;
   List<_Block> _blocksCache = const [];
 
+  /// 流式增量解析的游标（SPEC-PERF-V1 §7.2 第 1 条）。
+  final _IncrementalMarkdown _incremental = _IncrementalMarkdown();
+
   List<_Block> _blocksFor(String text) {
     if (text != _parsedFor) {
-      _blocksCache = _parse(text);
+      _blocksCache = _incremental.blocksFor(text);
       _parsedFor = text;
     }
     return _blocksCache;
@@ -545,6 +548,121 @@ List<String> _splitRow(String line) {
   if (s.endsWith('|')) s = s.substring(0, s.length - 1);
   return s.split('|').map((c) => c.trim()).toList();
 }
+
+/// 流式增量解析：只重解析「还没闭合」的尾巴。
+///
+/// ## 为什么可以这样切
+///
+/// `_parse` 是逐行分块的状态机，但它在**代码围栏之外的连续空行**处状态完全清空
+/// （段落 flush、列表/引用/表格都已经收口）。所以对文本里的某个位置 offset：
+///
+/// ```
+/// parse(full) == parse(full[0..offset]) + parse(full[offset..])
+/// ```
+///
+/// 只要 offset 落在「围栏外、且是连续两个换行之后」。
+///
+/// ## 三条不能错的细节
+///
+/// 1. **末尾单个换行符不是空行**：`split` 之后会多出一个空尾串，
+///    把它当空行就会把「下一行还没写完的围栏/表格」提前当成闭合 ——
+///    offset 切在半个块中间，增量结果与整段解析对不上（属性测试守着这条）。
+/// 2. **必须识别围栏**：代码围栏里的空行不是块边界。
+/// 3. **前缀不成立就整段重来**（编辑、回滚、换条消息），不做"猜测式"修补。
+class _IncrementalMarkdown {
+  String _src = '';
+  int _offset = 0;
+  List<_Block> _stable = const [];
+
+  List<_Block> blocksFor(String text) {
+    // 不是「上一段的前缀」：编辑/回滚/换消息，整段重来
+    if (!text.startsWith(_src)) {
+      _src = text;
+      _offset = _stableStart(text);
+      _stable = _parse(text.substring(0, _offset));
+      return [..._stable, ..._parse(text.substring(_offset))];
+    }
+    // 前缀成立：只把新变成"稳定"的那一段追加进来
+    final next = _stableStart(text);
+    if (next > _offset) {
+      _stable = [..._stable, ..._parse(text.substring(_offset, next))];
+      _offset = next;
+    }
+    _src = text;
+    return [..._stable, ..._parse(text.substring(_offset))];
+  }
+
+  /// 最后一个「围栏外、连续空行之后」的位置。
+  ///
+  /// 只看 text 本身（不依赖增量状态），保证同一个文本永远得到同一个切点。
+  static int _stableStart(String text) {
+    var inFence = false;
+    var offset = 0;
+    var lineStart = 0;
+    for (var i = 0; i < text.length; i += 1) {
+      if (text.codeUnitAt(i) != 0x0A) continue;
+      final line = text.substring(lineStart, i);
+      if (_fence.hasMatch(line)) {
+        inFence = !inFence;
+      } else if (!inFence && line.trim().isEmpty && i + 1 < text.length) {
+        // 真空行、**且后面还有内容**：这时候前面的块才算闭合。
+        // 「末尾单个换行」产生的空尾串后面没有内容，绝不能当边界 ——
+        // 那正是把 `| 列A |` 这种还没写完的表格行提前切开的原因。
+        offset = i + 1;
+      }
+      lineStart = i + 1;
+    }
+    return offset;
+  }
+}
+
+/// 测试入口：把块结构压成一个确定性的字符串（属性测试拿它逐块对拍）。
+///
+/// 用「类型 + 关键内容」而不是 `toString()`：块类型都是私有类，默认 toString
+/// 只会打印实例地址，那样的「相等」什么也证明不了。
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+String debugBlocksSignature(List<_Block> blocks) {
+  final parts = <String>[];
+  for (final b in blocks) {
+    switch (b) {
+      case _Heading(:final level, :final text):
+        parts.add('H$level:${text.length}:$text');
+      case _Para(:final text):
+        parts.add('P:${text.length}:$text');
+      case _Code(:final language, :final code_, :final closed):
+        parts.add('C${closed ? '1' : '0'}:$language:${code_.length}');
+      case _Hr():
+        parts.add('HR');
+      case _Quote(:final text):
+        parts.add('Q:${text.length}');
+      case _ListBlock(:final items):
+        parts.add('L:${items.map((i) => '${i.indent}/${i.marker}/${i.text}').join(',')}');
+      case _Table(:final header, :final rows):
+        parts.add('T:${header.join(',')}|${rows.map((r) => r.join(',')).join(';')}');
+    }
+  }
+  return parts.join(String.fromCharCode(10));
+}
+
+/// 测试入口：走增量解析器（与 [MdText] 内部用的是同一个实现）。
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+List<_Block> debugParseIncremental(List<String> chunks) {
+  final it = _IncrementalMarkdown();
+  var text = '';
+  var blocks = <_Block>[];
+  for (final chunk in chunks) {
+    text += chunk;
+    blocks = it.blocksFor(text);
+  }
+  return blocks;
+}
+
+/// 测试入口：整段解析（对照用）。
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+List<_Block> debugParseFull(String src) => _parse(src);
 
 List<_Block> _parse(String src) {
   final lines = src.split('\n');
