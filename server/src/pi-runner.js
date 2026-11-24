@@ -65,7 +65,7 @@ import {
 import {
   consumeSideContext, restoreSideContext, abortTalkInRoom, deliverMerged, sendUserMessage,
 } from './runner/duplex-lane.js';
-import { roundEpoch, dispatchGroupRound, executeGroupRound, cancelGroupRetries } from './runner/group-orchestrator.js';
+import { roundEpoch, dispatchGroupRound, executeGroupRound, cancelGroupRetries, cancelAllGroupRetries } from './runner/group-orchestrator.js';
 import { executeTurn } from './runner/turn-executor.js';
 
 export class PiRunner {
@@ -553,7 +553,6 @@ export class PiRunner {
     }
   }
   // ---------------------------------------------------------------- 状态查询与输入组装
-
   roomHasBot(roomId, botId) {
     const room = this.store.getRoom(roomId);
     if (!room) return false;
@@ -840,6 +839,7 @@ export class PiRunner {
     this.watchdog?.stop?.();
     this.health?.stop?.();
     this.mergeQueue?.clearAll?.();
+    cancelAllGroupRetries(this, '进程收工'); // unref 只保证不阻塞退出，不清就是悬空 timer
     if (this.#onBusEvent) {
       this.bus.off('event', this.#onBusEvent);
       this.#onBusEvent = null;

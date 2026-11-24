@@ -29,32 +29,6 @@ import { newId } from '../util.js';
 import { resumeAdmission } from '../coordination/task-admission.js';
 
 /**
- * 建一个运行时接线。
- *
- * @param {object} p
- * @param {object} p.taskRuns TaskRunStore
- * @param {object} p.runner PiRunner
- * @param {(taskRun:object)=>{roomId:string,botId:string}} p.routeOf 任务 → 房间/执行者
- * @param {Function} [p.verify] 验收器
- * @param {object} [p.access] 验收访问器
- * @param {()=>number} [p.clock]
- * @param {Function} [p.log]
- * @returns {object}
- */
-/**
- * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
- *
- * 判定只做三件事：账本里这次尝试有没有结果；有就结算；没结果就看审计 ——
- * 证明不了「这段没做不可逆的事」就一律 `unresolved`（fail-closed）。
- *
- * @param {object} p
- * @param {object} p.taskRuns TaskRunStore
- * @param {object} p.runner PiRunner（用它的 store 读 grantAudit）
- * @param {(taskRun:object)=>{roomId:string,botId:string}} [p.routeOf]
- * @param {()=>number} [p.clock]
- * @returns {(p2:{taskRun:object, attemptId:string}) => Promise<object>}
- */
-/**
  * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
  *
  * 一条尝试没留下结果记录（服务重启）时，按授权审计判断这一段到底干了什么：
@@ -154,6 +128,19 @@ export function createOutcomeInspector({ taskRuns, runner, routeOf = null, clock
   };
 }
 
+/**
+ * 建一个运行时接线。
+ *
+ * @param {object} p
+ * @param {object} p.taskRuns TaskRunStore
+ * @param {object} p.runner PiRunner
+ * @param {(taskRun:object)=>{roomId:string,botId:string}} p.routeOf 任务 → 房间/执行者
+ * @param {Function} [p.verify] 验收器
+ * @param {object} [p.access] 验收访问器
+ * @param {()=>number} [p.clock]
+ * @param {Function} [p.log]
+ * @returns {object}
+ */
 export function createTaskRuntime({
   taskRuns,
   runner,

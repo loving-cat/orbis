@@ -20,6 +20,7 @@ import {
   isUpstreamTransient,
   retrySchedulerFor,
   cancelGroupRetries,
+  resetGroupRetryBackoff,
   describeWait,
 } from './group-retry.js';
 import {
@@ -44,8 +45,8 @@ import {
 } from '../group-prompt.js';
 import { RETRY_DELAY_MS, sessionKey } from './runner-utils.js';
 
-// 供外观层（`pi-runner.js` 的 abort）直接取消挂起的续派，不必再造一个入口
-export { cancelGroupRetries } from './group-retry.js';
+// 供外观层（`pi-runner.js` 的 abort / disposeAll）直接取消挂起的续派，不必再造入口
+export { cancelGroupRetries, cancelAllGroupRetries } from './group-retry.js';
 
 export function roundEpoch(runner, roomId) {
   return runner.roundEpochs.get(roomId) ?? 0;
@@ -101,10 +102,18 @@ export function interruptRoundForUser(runner, roomId) {
   if (n) log(`已打断 ${n} 个正在跑的会话（用户插话，旧轮作废）`);
 }
 
-export async function dispatchGroupRound(runner, roomId, text, files) {
+export async function dispatchGroupRound(
+  runner,
+  roomId,
+  text,
+  files,
+  { fromUpstreamRetry = false } = {},
+) {
   const roomName = runner.store.getRoom(roomId)?.name ?? roomId;
-  // 来了新消息（或本函数自己就是续派）：先把旧的挂起续派撤掉，一轮只留一个
-  cancelGroupRetries(runner, roomId, '本轮重新开始');
+  // 来了新消息（或本函数自己就是续派）：先把旧的挂起续派撤掉，一轮只留一个。
+  // ★ 续派自己进来时**不能清退避累计** —— 清了就等于每轮都从第一档重来，
+  //   持续限流时永远走不到上限，也没有真正的退避。
+  cancelGroupRetries(runner, roomId, '本轮重新开始', { resetBackoff: !fromUpstreamRetry });
   // ★ 只有「已经有 drainGroupRounds 在跑」才允许入队。
   //
   //   以前条件是 `roundLocks.has || isRoomBusy`，而 `isRoomBusy` 可能是真的忙、
@@ -807,8 +816,11 @@ export async function executeGroupRound(
                 botName: bot.name,
                 epoch,
                 onFire: ({ attempt: nth }) => {
-                  const again =
-                    String(item.fromText ?? '').trim() || `@${bot.name} 继续把上一轮没做完的活做完`;
+                  // ★ 只催**这一个**失败的成员。
+                  //   原来把 item.fromText 整条重发 —— 那句话里可能 @ 了好几个人，
+                  //   于是同一波里已经成功的同事会被再跑一遍：白烧额度、群里还多两条
+                  //   内容重复的回复。
+                  const again = `@${bot.name} 上游已恢复，请继续完成上一轮交办的工作`;
                   runner.store.appendMessage({
                     roomId,
                     authorType: 'system',
@@ -818,7 +830,7 @@ export async function executeGroupRound(
                     status: 'done',
                     meta: { via: 'upstream_retry_fire', botId: bot.id, attempt: nth },
                   });
-                  return dispatchGroupRound(runner, roomId, again, []);
+                  return dispatchGroupRound(runner, roomId, again, [], { fromUpstreamRetry: true });
                 },
               });
               if (plan.scheduled) {
@@ -877,6 +889,9 @@ export async function executeGroupRound(
             }
             return;
           }
+          // 这一段真的跑通了 → 这个房间的上游退避累计清零（下次抽风从第一档排起）
+          resetGroupRetryBackoff(runner, roomId, '本轮跑通');
+
           const text = res.text.trim();
           if (isPass) {
             // ★ 用户直接点名它、它却回了 [PASS]：**不能静默删掉气泡**。

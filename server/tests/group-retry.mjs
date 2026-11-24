@@ -79,8 +79,12 @@ function fakeTimers() {
     clearTimer,
     /** 还有几个活着的定时器 */
     alive: () => list.filter((t) => !t.cleared).length,
-    /** 到点：跑所有活着的回调，返回它们的返回值（可 await） */
-    fire: () => list.filter((t) => !t.cleared).map((t) => t.fn()),
+    /** 到点：跑所有活着的回调（跑过就作废，别重复触发），返回它们的返回值（可 await） */
+    fire: () => {
+      const alive = list.filter((t) => !t.cleared);
+      for (const t of alive) t.cleared = true;
+      return alive.map((t) => t.fn());
+    },
     list,
   };
 }
@@ -235,20 +239,108 @@ await test('②c 到期时轮次代数变了（先前插话过）→ 作废不�
   assert.equal(calls.length, before, '代数变了就不该续派');
 });
 
-await test('③ 累计等待到上限 → 如实落失败回执，不再排', async () => {
-  // 阶梯 10ms、上限 15ms：第二次就超（10 + 10 > 15）
-  const { runner, room, timers, openerText } = setup({ ladder: [10], maxTotalMs: 15, fail: upstreamFail });
+await test('③ 多轮续派仍 429 → 延迟按阶梯递增（10 → 20），到上限才失败', async () => {
+  // 阶梯 10ms / 20ms，上限 35ms：10（剩 25）→ 20（剩 5）→ 第三次排不下 → 放弃
+  const { runner, room, timers, scheduler, openerText } = setup({
+    ladder: [10, 20],
+    maxTotalMs: 35,
+    fail: upstreamFail,
+  });
+  const ep = () => runner.roundEpochs.get(room.id) ?? 0;
 
   await executeGroupRound(runner, room.id, { openerText, openerBotId: null });
   assert.equal(viaCount(room.id, 'upstream_retry_scheduled'), 1);
+  assert.equal(timers.list[0].ms, 10, '第一档 10ms');
 
-  // 不 fire，直接再失败一次：累计已 10ms，再加 10ms 超上限
-  await executeGroupRound(runner, room.id, { openerText, openerBotId: null });
+  // 第一次续派：还是 429
+  await Promise.allSettled(timers.fire());
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(viaCount(room.id, 'upstream_retry_scheduled'), 2);
+  assert.equal(timers.list.at(-1).ms, 20, '第二档 20ms（累计没被 fire 清掉）');
 
-  assert.equal(viaCount(room.id, 'failed'), 1, '到上限就要如实落失败回执');
+  // 第二次续派：还是 429 → 10+20=30，再排 20 会超 35 → 放弃
+  const epochBefore = ep();
+  await Promise.allSettled(timers.fire());
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(viaCount(room.id, 'upstream_retry_scheduled'), 2, '到上限不该再排');
+  assert.equal(viaCount(room.id, 'failed'), 1, '到上限要如实落失败回执');
   const receipt = msgs(room.id).find((m) => m?.meta?.via === 'failed');
   assert.match(String(receipt.text), /这单断了|重新发送任务/);
-  assert.equal(viaCount(room.id, 'upstream_retry_scheduled'), 1, '不该无限排期');
+  assert.equal(scheduler.pending(room.id), null, '不该留着挂起项');
+  assert.equal(scheduler.backoff.has(room.id), false, '到上限要把累计也清掉');
+  assert.equal(ep(), epochBefore, '续派本身不该改轮次代数');
+});
+
+await test('③ b 续派成功一次后，下一次 429 从第一档重新开始', async () => {
+  const { runner, room, calls, timers, scheduler, openerText } = setup({
+    ladder: [10, 20],
+    maxTotalMs: 35,
+    fail: upstreamFail,
+  });
+
+  await executeGroupRound(runner, room.id, { openerText, openerBotId: null });
+  assert.equal(timers.list[0].ms, 10);
+
+  // 这一轮续派跑通了
+  runner.run = async (roomId2, botId) => {
+    calls.push({ botId, prompt: '' });
+    return { ok: true, text: '做完了', ms: 1, messageId: '' };
+  };
+  await Promise.allSettled(timers.fire());
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(scheduler.backoff.has(room.id), false, '跑通后累计要清零');
+
+  // 再抽风一次：应该又是第一档 10ms
+  runner.run = async () => upstreamFail();
+  const opener2 = store.appendMessage({
+    roomId: room.id, authorType: 'user', authorName: '用户', text: openerText, status: 'done',
+  });
+  await executeGroupRound(runner, room.id, {
+    openerText, openerBotId: null, openerMessageId: opener2.id,
+  });
+  assert.equal(timers.list.at(-1).ms, 10, '成功之后重新从第一档开始');
+});
+
+await test('⑤ 续派只催失败的那个成员，不把同波已成功的同事重跑一遍', async () => {
+  // 一条消息 @ 了两个人：甲被 429 打回，乙正常交活
+  const lead = store.createBot({ name: '负责人', role: 'lead', persona: '测试' });
+  const jia = store.createBot({ name: '甲', role: 'member', persona: '测试' });
+  const yi = store.createBot({ name: '乙', role: 'member', persona: '测试' });
+  const room = store.createGroup({ name: '定向续派组', botIds: [jia.id, yi.id, lead.id], leadBotId: lead.id });
+  store.updateGroupLimits({ memberTurns: 15, leadTurns: 15 });
+
+  const runner = new PiRunner();
+  runner.model = model;
+  runner.modelRuntime = { completeSimple: () => assert.fail('这一轮不该问模型要不要回复') };
+  const timers = fakeTimers();
+  retrySchedulerFor(runner, {
+    setTimer: timers.setTimer, clearTimer: timers.clearTimer, ladder: [10], maxTotalMs: 60_000,
+  });
+  const calls = [];
+  runner.run = async (roomId, botId) => {
+    calls.push(botId);
+    if (botId === jia.id) return upstreamFail();
+    return { ok: true, text: '做完了', ms: 1, messageId: '' };
+  };
+
+  const openerText = `@${jia.name} @${yi.name} 各做一半`;
+  const opener = store.appendMessage({
+    roomId: room.id, authorType: 'user', authorName: '用户', text: openerText, status: 'done',
+  });
+  await executeGroupRound(runner, room.id, { openerText, openerBotId: null, openerMessageId: opener.id });
+  assert.equal(calls.filter((id) => id === jia.id).length, 1);
+  assert.equal(calls.filter((id) => id === yi.id).length, 1, '前置：乙本来就已经交过一次活');
+  assert.equal(timers.alive(), 1);
+
+  await Promise.allSettled(timers.fire());
+  await new Promise((r) => setTimeout(r, 40));
+
+  assert.equal(calls.filter((id) => id === jia.id).length, 2, '失败的甲要被再叫一次');
+  assert.equal(
+    calls.filter((id) => id === yi.id).length,
+    1,
+    '续派不许把同波里已经成功的乙再跑一遍（白烧额度、群里重复回复）',
+  );
 });
 
 await test('④ 身份/参数类失败（401 / 400）走原来的失败回执，不排期', async () => {

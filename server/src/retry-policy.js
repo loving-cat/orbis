@@ -248,7 +248,6 @@ export function isUpstreamTransient({ error = '', status = null, kind = '' } = {
   if (/已.{0,2}(终止|中止)|aborted|cancelled|预算已用尽|budget_exhausted/i.test(text)) return false;
   if (code === 429) return true;
   if (Number.isFinite(code) && code >= 500 && code < 600) return true;
-  if (code === 401 || code === 403 || code === 402) return false;
   return /\b429\b|rate[ _-]?limit|too many requests|限流|请求过于频繁/i.test(text)
     || /\b(500|502|503|504)\b|bad gateway|service unavailable|gateway timeout/i.test(text)
     || /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|terminated/i.test(text);

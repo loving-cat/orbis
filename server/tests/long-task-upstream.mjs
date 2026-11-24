@@ -31,6 +31,9 @@ globalThis.fetch = () => {
 const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f));
 const { store } = await import(src('store.js'));
 const { createTaskRun } = await import(src('tasks/task-run-factory.js'));
+const { createChildTask } = await import(src('tasks/task-subtasks.js'));
+const { EVENT } = await import(src('tasks/task-contract.js'));
+const { reduceTaskRun } = await import(src('tasks/task-reduce.js'));
 const { createTaskSupervisor } = await import(src('tasks/task-supervisor.js'));
 const { decideRecovery, RECOVERY_STAGE } = await import(src('tasks/task-recovery.js'));
 const { isUpstreamTransient } = await import(src('retry-policy.js'));
@@ -86,20 +89,60 @@ async function makeTask({ autonomous = true } = {}) {
 
 const read = (id) => taskRuns.read(id)?.taskRun ?? taskRuns.read(id);
 
+/** 父任务（自主）+ 一个子任务，子任务用来走上游退避。 */
+async function makeParentWithChild() {
+  const parentId = await makeTask();
+  const parent = read(parentId);
+  const out = await createChildTask({
+    taskRuns,
+    parentTaskRun: parent,
+    goal: { requirement: '抓 60 条数据', verification: [{ id: 'v1', kind: 'expert', description: '负责人确认' }] },
+    botId: chief.id,
+  });
+  assert.equal(out.ok, true, '建子任务应成功：' + (out.text ?? ''));
+  return { parentId, childId: out.child.id };
+}
+
+/** 直接给某任务打上「上游可恢复阻塞」（等价于 scheduleUpstreamRetry 落盘后的样子）。 */
+async function markUpstreamBlocked(taskRunId, { dueAt }) {
+  const wrote = await taskRuns.mutate(taskRunId, {
+    mutate: (cur) => {
+      const out = reduceTaskRun(cur, {
+        type: EVENT.blocked,
+        revision: cur.revision,
+        at: Date.now(),
+        reason: '上游限流/临时故障，1 分钟后自动继续：429 上游限流',
+        sequence: (cur.sequence ?? 0) + 1,
+      });
+      assert.equal(out.ok, true, '置为受阻应成功：' + (out.text ?? ''));
+      return {
+        ...out.taskRun,
+        recoverableBlock: 'upstream',
+        retryAt: dueAt,
+        upstreamWait: { attempt: 1, waitedMs: 60_000, at: Date.now() },
+        nextAction: null,
+      };
+    },
+  });
+  assert.equal(wrote.ok, true, '标记上游阻塞应成功：' + (wrote.text ?? wrote.code ?? ''));
+}
+
 /**
  * 造一个可推进的推进器：执行器按 `plan` 逐次返回结果（耗尽后一直用最后一个）。
  */
 function makeSupervisor({ plan, ladder = [60_000], maxUpstreamWaitMs = 600_000, clockRef }) {
   let nth = 0;
+  const step = async () => {
+    const one = plan[Math.min(nth, plan.length - 1)];
+    nth += 1;
+    return one;
+  };
   const sup = createTaskSupervisor({
     taskRuns,
     maxSteps: 8,
-    execute: async () => {
-      const step = plan[Math.min(nth, plan.length - 1)];
-      nth += 1;
-      return step;
-    },
-    executeMember: async () => ({ ok: false, code: 'no_member', text: '无成员' }),
+    execute: step,
+    // 子任务（成员执行）走的也是同一套失败剧本 —— 否则测不到「子任务上游退避」
+    executeMember: step,
     verify: async () => ({ passed: false, unmet: ['还没好'], needsReview: [], blocked: [] }),
     access: { stat: async () => ({ ok: false }), readText: async () => ({ ok: false }), resolveRef: () => null },
     clock: () => clockRef.now,
@@ -269,6 +312,57 @@ await test('审计：分钟级退避不像快速重试那样烧额度（retry.co
   sup.dispose();
 
   assert.ok((run.retry?.count ?? 0) <= 11, `快速重试次数不该无限涨（实际 ${run.retry?.count}）`);
+});
+
+await test('★ 父子：子任务在等上游时，父任务不取消也不阻塞它', async () => {
+  const clockRef = { now: Date.now() };
+  const { parentId, childId } = await makeParentWithChild();
+  // 故意不挂依赖门槛：父任务必须走到「子任务全部受阻？」那段判定
+  // 才会碰上面这个坑（挂了门槛的话它在更早的分支就 return wait 了，测不出问题）
+  // 子任务处于上游可恢复阻塞，但 `retryAt` 不在了（重启/旧记录清过时间的真实形态）。
+  // 没有 retryAt 时 planNextAction 判它 blocked，父任务就会走到「子任务全部受阻？」
+  // 那段 —— 坑就在那儿。
+  await markUpstreamBlocked(childId, { dueAt: null });
+  assert.equal(read(childId).recoverableBlock, 'upstream');
+  assert.equal(read(childId).retryAt ?? null, null);
+
+  const { sup } = makeSupervisor({ plan: [{ ok: true, text: '干别的', work: { files: ['x.md'] } }], clockRef });
+  sup.notify(parentId);
+  await settle(sup, parentId, (r) => (r?.childHandBacks ?? 0) > 0 || r?.state === 'blocked', { clockRef });
+  const parent = read(parentId);
+  const child = read(childId);
+  sup.dispose();
+
+  assert.equal(parent.childHandBacks ?? 0, 0, '自主父任务不许把还在等上游的子任务收回去重排');
+  assert.notEqual(parent.state, 'blocked', '父任务也不该因为子任务在等上游就阻塞');
+  assert.equal(child.state, 'blocked', '子任务保持等待，由其自己的定时器唤醒');
+  assert.equal(child.recoverableBlock, 'upstream', '可恢复标记不能被父任务清掉');
+});
+
+await test('★ 父子：子任务退避耗尽转永久阻塞 → 父任务被叫醒并收回重排', async () => {
+  const clockRef = { now: Date.now() };
+  const { parentId, childId } = await makeParentWithChild();
+  // 故意不挂依赖门槛：父任务要走到「子任务全部受阻」那段判定才看得出有没有被叫醒
+  // 子任务：快速重试已用尽 + 累计已到上限 → 再失败一次就是永久阻塞
+  await exhaustQuickRetries(childId);
+  await taskRuns.mutate(childId, {
+    mutate: (cur) => ({ ...cur, upstreamWait: { attempt: 5, waitedMs: 7_200_000, at: clockRef.now } }),
+  });
+
+  const { sup } = makeSupervisor({
+    plan: [upstreamFailure],
+    ladder: [60_000],
+    maxUpstreamWaitMs: 60_000,
+    clockRef,
+  });
+  sup.notify(childId);
+  // 父任务被 notifyParent 叫醒后会把这块分工收回去（childHandBacks +1）
+  const parent = await settle(sup, parentId, (r) => (r?.childHandBacks ?? 0) > 0, { clockRef });
+  sup.dispose();
+
+  assert.equal(parent.childHandBacks, 1, '父任务必须被叫醒并处理（不然它会永远悬在排队中）');
+  assert.equal(read(childId).state, 'cancelled', '永久受阻的分工被收回重排');
+  assert.equal(read(childId).recoverableBlock ?? null, null);
 });
 
 let failed = 0;

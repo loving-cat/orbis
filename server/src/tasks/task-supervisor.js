@@ -520,6 +520,11 @@ export function createTaskSupervisor({
         retryAt: null,
         flags: { ...(read(taskRunId)?.flags ?? {}), blockedAt: clock(), blockedReason: reason },
       });
+      // ★ 父任务这时才知道「等不到了，该你自己处理」。
+      //   不退避到上限的那条路上，子任务是靠「可恢复阻塞 → 恢复后自己醒」
+      //   推进的；一旦转成永久阻塞，没有任何定时器会再叫醒父任务，
+      //   它就会一直悬在 queued 等一个永远不来的交付。
+      notifyParent(read(taskRunId) ?? { id: taskRunId });
       return { status: 'blocked', why: 'upstream_exhausted', waitedMs: waited };
     }
     const dueAt = clock() + nextDelay;
@@ -726,7 +731,21 @@ export function createTaskSupervisor({
           const parentNow = read(taskRunId) ?? taskRun;
           const stuck = childrenOf(taskRuns, parentNow)
             .filter((k) => !terminal(k));
-          if (stuck.length && stuck.every((k) => k.state === STATE.blocked)) {
+          // ★ 「可恢复阻塞」不算永久受阻。
+          //
+          //   上游退避（`recoverableBlock: 'upstream'`）中的子任务到点会自己醒，
+          //   把它当成「全部受阻」会让父任务：自主模式下把还在等的分工**取消掉**
+          //   交回负责人重排（等于把正在自愈的活掐死），非自主模式直接阻塞父任务。
+          //   所以只要还有一个子任务在可恢复阻塞里，就老实等着它恢复。
+          const resumable = stuck.find((k) => k.state === STATE.blocked && k.recoverableBlock);
+          if (resumable) {
+            return {
+              status: 'wait',
+              why: '子任务在等上游恢复（可恢复阻塞）',
+              child: resumable.id,
+            };
+          }
+          if (stuck.length && stuck.every((k) => k.state === STATE.blocked && !k.recoverableBlock)) {
             // ★ 自主推进：交回负责人重新安排，而不是停下来等用户。
             //
             //   负责人提示词本来就写着「同事没交作业 → 再派 / 换人 / 自己上」，
@@ -1062,7 +1081,11 @@ export function createTaskSupervisor({
     //   登记了再失败会消耗额度并落一条 failed 尝试，任务直接被判阻塞。
     if (executorBusy(botId, taskRun)) {
       const dueAt = clock() + BUSY_RETRY_MS;
-      await patch(taskRun.id, { nextAction: null, retryAt: dueAt, retry: { count: (read(taskRun.id)?.retry?.count ?? 0) + 1, at: clock() } });
+      // ★ 忙等待不算失败次数（与下面 failedStop 里的忙分支一致）。
+      //   累加的话，上游退避期间 retry.count 已经是 10，撞一次「执行者还在忙」
+      //   就变 11，而 `task-next-action` 看到 >10 直接判「重试次数已达上限」——
+      //   一次无关紧要的忙就直接把任务硬阻塞。
+      await patch(taskRun.id, { nextAction: null, retryAt: dueAt });
       setTimer(dueAt, taskRun.id);
       return { status: 'retry_scheduled', dueAt, why: '执行者还在忙，稍后重派' };
     }
@@ -1344,7 +1367,8 @@ export function createTaskSupervisor({
     // ★ 快速重试用尽：如果是上游瞬时故障，不判死，改排分钟级退避。
     //   一次普通的限流不该把整个任务变成「需要人工确认」。
     if (isUpstreamTransient({ error: cause, status: causeStatus })) {
-      await patch(id, { stall: bumpStall(read(id) ?? taskRun) });
+      // ★ 上游故障不计入模型停滞：这是「路不通」，不是「模型在原地打转」。
+      //   计进去的话，一次限流就可能把停滞计数推到上限，恢复后立刻被判死。
       return scheduleUpstreamRetry(id, { why: cause || '上游不可用' });
     }
     await patch(id, { nextAction: null, retryAt: null });
@@ -1760,7 +1784,9 @@ export function createTaskSupervisor({
             type: EVENT.unblocked, revision: run.revision, at: clock(), reason: '恢复补齐后解除阻塞',
           });
           if (!unblocked.ok) { failed = unblocked.text ?? unblocked.code; break; }
-          await patch(run.id, { recoverableBlock: null, unknownBlock: null, recoveryTries: 0 });
+          // 与「重试到期解阻」那条路（runTask 里）对齐：可恢复标记、到期时间、恢复计数一起清。
+          // 留一个过期的 retryAt，下一轮会重复判「重试到期」，甚至拿旧时间点去排新的退避。
+          await patch(run.id, { recoverableBlock: null, unknownBlock: null, retryAt: null, recoveryTries: 0 });
           report.resumed.push(run.id);
           notify(run.id);
           continue;
