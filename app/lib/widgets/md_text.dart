@@ -93,12 +93,38 @@ class _MdTextState extends State<MdText> {
   /// 流式增量解析的游标（SPEC-PERF-V1 §7.2 第 1 条）。
   final _IncrementalMarkdown _incremental = _IncrementalMarkdown();
 
+  /// 已闭合稳定块的 Widget 缓存（§7.2 第 2 条）。
+  ///
+  /// 流式追加时只有**最后一块**在变，前面的块每帧重建纯属浪费：
+  /// 那就是"帧开销随消息长度线性增长"的来源。
+  List<Widget> _stableWidgets = const [];
+  int _stableWidgetCount = 0;
+  String _widgetKey = '';
+
   List<_Block> _blocksFor(String text) {
     if (text != _parsedFor) {
       _blocksCache = _incremental.blocksFor(text);
       _parsedFor = text;
     }
     return _blocksCache;
+  }
+
+  /// 影响块渲染外观的全部输入 —— 任一变化都必须让块缓存整体失效。
+  String _widgetCacheKey(BuildContext context, TextStyle base, TextStyle code) {
+    final colors = PB.colors(context);
+    return [
+      base.hashCode,
+      code.hashCode,
+      widget.mono.hashCode,
+      widget.linkColor?.toARGB32() ?? 0,
+      widget.mentions.hashCode,
+      colors.accent.toARGB32(),
+      Theme.of(context).brightness.index,
+      // 流式结束 false→true：可选中渲染是**另一棵树**，必须失效
+      widget.selectable ? 1 : 0,
+      // 系统字号/缩放变了同样要重建，否则字号不跟系统走
+      MediaQuery.textScalerOf(context).scale(100),
+    ].join('|');
   }
 
   @override
@@ -174,20 +200,39 @@ class _MdTextState extends State<MdText> {
 
     final blocks = _blocksFor(widget.text);
     final cursorColor = widget.streamingCursorColor;
+    // ★ 缓存键必须把所有影响**渲染外观**的东西都算进来，少一个就会
+    //   在"开了选中复制 / 系统改了字号 / 换主题"之后复用一批旧配置画出来的 widget：
+    //   表现是选中不了、字号不跟系统走，而且不报错。
+    final key = _widgetCacheKey(context, base, code);
+    final stableCount = _incremental.stableCount.clamp(0, blocks.length);
+    if (key != _widgetKey) {
+      _stableWidgets = const [];
+      _stableWidgetCount = 0;
+      _widgetKey = key;
+    }
     final children = <Widget>[];
     if (blocks.isEmpty && cursorColor != null) {
       children.add(Text('▍', style: base.copyWith(color: cursorColor)));
     } else {
-      for (var i = 0; i < blocks.length; i++) {
-        children.add(
-          _renderBlock(
-            context,
-            blocks[i],
-            base,
-            code,
-            cursorColor: i == blocks.length - 1 ? cursorColor : null,
-          ),
+      // 稳定块：实例直接复用（Flutter 会跳过完全相同的 widget 子树）
+      for (var i = 0; i < stableCount && i < _stableWidgets.length; i += 1) {
+        children.add(_stableWidgets[i]);
+      }
+      final rebuilt = <Widget>[];
+      for (var i = children.length; i < blocks.length; i += 1) {
+        final w = _renderBlock(
+          context,
+          blocks[i],
+          base,
+          code,
+          cursorColor: i == blocks.length - 1 ? cursorColor : null,
         );
+        children.add(w);
+        if (i < stableCount) rebuilt.add(w);
+      }
+      if (rebuilt.length > _stableWidgetCount) {
+        _stableWidgets = rebuilt;
+        _stableWidgetCount = rebuilt.length;
       }
     }
 
@@ -574,6 +619,9 @@ class _IncrementalMarkdown {
   int _offset = 0;
   List<_Block> _stable = const [];
 
+  /// 已闭合（不会再变）的块数 —— 块 Widget 缓存只对前缀这部分有效。
+  int get stableCount => _stable.length;
+
   List<_Block> blocksFor(String text) {
     // 不是「上一段的前缀」：编辑/回滚/换消息，整段重来
     if (!text.startsWith(_src)) {
@@ -582,8 +630,8 @@ class _IncrementalMarkdown {
       _stable = _parse(text.substring(0, _offset));
       return [..._stable, ..._parse(text.substring(_offset))];
     }
-    // 前缀成立：只把新变成"稳定"的那一段追加进来
-    final next = _stableStart(text);
+    // 前缀成立：只把新变成"稳定"的那一段追加进来（从旧 offset 起扫，O(tail)）
+    final next = _stableStart(text, startFrom: _offset);
     if (next > _offset) {
       _stable = [..._stable, ..._parse(text.substring(_offset, next))];
       _offset = next;
@@ -595,19 +643,27 @@ class _IncrementalMarkdown {
   /// 最后一个「围栏外、连续空行之后」的位置。
   ///
   /// 只看 text 本身（不依赖增量状态），保证同一个文本永远得到同一个切点。
-  static int _stableStart(String text) {
+  static int _stableStart(String text, {int startFrom = 0}) {
+    // ★ 从 startFrom 开始扫：前缀成立时不再每帧从 0 扫全篇（那和整段解析一样贵）。
+    //   startFrom 永远是"围栏外的稳定边界"，所以这里可以从 inFence=false 起算。
+    var from = startFrom < 0 ? 0 : (startFrom > text.length ? text.length : startFrom);
     var inFence = false;
-    var offset = 0;
-    var lineStart = 0;
-    for (var i = 0; i < text.length; i += 1) {
+    var offset = from;
+    var lineStart = from;
+    for (var i = from; i < text.length; i += 1) {
       if (text.codeUnitAt(i) != 0x0A) continue;
       final line = text.substring(lineStart, i);
-      if (_fence.hasMatch(line)) {
-        inFence = !inFence;
+      // ★ 围栏的开/关必须与 `_parse` 逐字对齐：
+      //   _parse 先试开围栏（`_fence`），只有已在一段围栏里才试关（`_fenceEnd`）。
+      //   原来这里用 `inFence = !inFence` 一刀切，遇到 ``` 与 ``` 混排、
+      //   或者围栏行里带语言标注时会算出与解析器不同的状态。
+      if (!inFence && _fence.hasMatch(line)) {
+        inFence = true;
+      } else if (inFence && _fenceEnd.hasMatch(line)) {
+        inFence = false;
       } else if (!inFence && line.trim().isEmpty && i + 1 < text.length) {
-        // 真空行、**且后面还有内容**：这时候前面的块才算闭合。
-        // 「末尾单个换行」产生的空尾串后面没有内容，绝不能当边界 ——
-        // 那正是把 `| 列A |` 这种还没写完的表格行提前切开的原因。
+        // 真空行、且后面还有内容：前面的块才闭合。
+        // 「末尾单个换行」产生的空尾串后面没有内容，绝不能当边界。
         offset = i + 1;
       }
       lineStart = i + 1;
@@ -631,11 +687,13 @@ String debugBlocksSignature(List<_Block> blocks) {
       case _Para(:final text):
         parts.add('P:${text.length}:$text');
       case _Code(:final language, :final code_, :final closed):
-        parts.add('C${closed ? '1' : '0'}:$language:${code_.length}');
+        // ★ 必须比内容，不只比长度：增量切错时长度可能正好相同（换行/空行互换），
+        //   那样的"相等"会让属性测试放过一个真实回归。
+        parts.add('C${closed ? '1' : '0'}:$language:${code_.length}:$code_');
       case _Hr():
         parts.add('HR');
       case _Quote(:final text):
-        parts.add('Q:${text.length}');
+        parts.add('Q:${text.length}:$text');
       case _ListBlock(:final items):
         parts.add('L:${items.map((i) => '${i.indent}/${i.marker}/${i.text}').join(',')}');
       case _Table(:final header, :final rows):
