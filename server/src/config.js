@@ -233,6 +233,8 @@ export function createConfig(overrides = {}) {
     groupBusyWaitMs: Number(readBrandEnv(env, 'GROUP_BUSY_WAIT_MS') || 120_000),
     heartbeatMs: Number(readBrandEnv(env, 'HEARTBEAT_MS') || 15_000),
     stallMs: Number(readBrandEnv(env, 'STALL_MS') || 360_000),
+    // 有工具正在执行时的"没动静"阈值（构建/测试常常安静地跑很久，见 watchdog.js）
+    toolStallMs: Number(readBrandEnv(env, 'TOOL_STALL_MS') || 900_000),
     maxSessions: Number(readBrandEnv(env, 'MAX_SESSIONS') || 40),
     maxConcurrentRuns: Number(readBrandEnv(env, 'MAX_CONCURRENT_RUNS') || 0),
     runSlotReserve: Number(readBrandEnv(env, 'RUN_SLOT_RESERVE') ?? 1),
@@ -251,6 +253,17 @@ export function createConfig(overrides = {}) {
     jarvisMode: readBrandEnv(env, 'JARVIS') !== '0',
     memoryRecursive: readBrandEnv(env, 'MEMORY_RECURSIVE') !== '0',
     runTimeoutMs: Number(readBrandEnv(env, 'RUN_TIMEOUT_MS') || 10 * 60 * 1000),
+    // ---- 长任务（分段续跑，见 runner/turn-executor.js 与 turn-continuation.js）
+    // 单段到点后给模型收尾、写进度的宽限时间；0 = 到点直接中断（旧行为）
+    turnGraceMs: Number(readBrandEnv(env, 'TURN_GRACE_MS') ?? 180_000),
+    // 单段硬上限（含宽限与「工具还在出结果」的延长）；0 = 单段时长的 3 倍
+    turnHardMaxMs: Number(readBrandEnv(env, 'TURN_HARD_MAX_MS') || 0),
+    // 回合收尾续跑守卫：半路停下来问「要不要继续」时自动催它继续
+    continueGuard: readBrandEnv(env, 'CONTINUE_GUARD') !== '0',
+    // 每轮最多催几次（催了仍只回文字就说明它真的需要用户，不再催）
+    continueGuardMax: Number(readBrandEnv(env, 'CONTINUE_GUARD_MAX') ?? 2),
+    // 非受管私聊连续自动续段的上限（每段约一个单段时长）
+    autoContinueMax: Number(readBrandEnv(env, 'AUTO_CONTINUE_MAX') ?? 12),
     hostname: os.hostname(),
     // os.userInfo() 在没有 /etc/passwd 的容器里会抛（任意 UID 跑镜像很常见）——
     // 只 import 一下 库 不该让进程崩掉，所以兜住。

@@ -1496,7 +1496,7 @@ await test('会话池：全部释放会清空表', () => {
 const { createWatchdog } = await import('../src/watchdog.js');
 
 /** 造一个假会话表 + 记录心跳/中断 */
-function harness(entries, { stallMs = 1000, heartbeatMs = 15_000, nowMs = 10_000 } = {}) {
+function harness(entries, { stallMs = 1000, heartbeatMs = 15_000, nowMs = 10_000, toolStallMs = undefined } = {}) {
   const sessions = new Map(Object.entries(entries).map(([k, v]) => [k, v]));
   const beats = [];
   const stalls = [];
@@ -1504,6 +1504,7 @@ function harness(entries, { stallMs = 1000, heartbeatMs = 15_000, nowMs = 10_000
     sessions,
     stallMs,
     heartbeatMs,
+    ...(toolStallMs === undefined ? {} : { toolStallMs }),
     now: () => nowMs,
     emit: (ev) => beats.push(ev),
     onStall: (info) => stalls.push(info),
@@ -1560,6 +1561,27 @@ await test('看门狗：连开始时间都没有 → 当"刚刚"，绝不白杀�
   wd.tick();
   assert.equal(beats[0].ageMs, 0);
   assert.equal(stalls.length, 0, '什么都还不知道的时候不能判它死');
+});
+
+await test('★ 看门狗：有工具在执行时按工具阈值判（安静跑着的测试/构建不是卡死）', () => {
+  const { stalls, wd } = harness({
+    // 模型在想：5s 没动静 > 1s 上限 → 判中断
+    'r7:thinking': { busy: true, progressAt: 10_000 - 5_000, toolsRunning: 0 },
+    // 工具在跑：5s 没输出，但工具阈值是 8s → 不判
+    'r7:building': { busy: true, progressAt: 10_000 - 5_000, toolsRunning: 1 },
+    // 工具在跑但已经 9s 没动静 → 超过工具阈值，照样判（真挂住的命令不能无限等）
+    'r7:hung': { busy: true, progressAt: 10_000 - 9_000, toolsRunning: 1 },
+  }, { stallMs: 1_000, toolStallMs: 8_000 });
+  wd.tick();
+  assert.deepEqual(stalls.map((s) => s.botId).sort(), ['hung', 'thinking']);
+});
+
+await test('看门狗：工具阈值比普通阈值小时按普通阈值（只放宽不收紧）', () => {
+  const { stalls, wd } = harness({
+    'r8:b1': { busy: true, progressAt: 10_000 - 1_500, toolsRunning: 2 },
+  }, { stallMs: 2_000, toolStallMs: 500 });
+  wd.tick();
+  assert.equal(stalls.length, 0, '1.5s < 2s，工具阈值配得更小也不能更早判死');
 });
 
 await test('看门狗：start 是幂等的，不会起两个定时器', () => {

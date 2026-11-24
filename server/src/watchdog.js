@@ -9,8 +9,20 @@
  *
  * 只做三件事：
  *   1. 还在跑的会话，按间隔报一次心跳（含"最后一次动静是多久前"）；
- *   2. 超过 stallMs 没动静的 → 判为中断，交给调用方收尾（onStall）；
+ *   2. 超过阈值没动静的 → 判为中断，交给调用方收尾（onStall）；
  *   3. 同一个会话只判一次（stallNotified），不然每 15 秒都会报一遍。
+ *
+ * ## 两档阈值（长任务）
+ *
+ * "没动静"要分清是谁没动静：
+ *   · 模型在想/在说 → `stallMs`（默认 6 分钟）没有任何事件就是真卡了；
+ *   · 有工具正在执行（`entry.toolsRunning > 0`）→ `toolStallMs`（默认 15 分钟）。
+ *
+ * 为什么工具要单独一档：构建、测试、安装依赖这类命令常常**安静地**跑很久
+ * （很多测试框架只在最后打印结果）。按 6 分钟一刀切，跑 7 分钟的测试
+ * 就会被判"心跳断了"——任务在正常干活，却被看门狗打断。
+ * 工具如果一直有输出（`tool_execution_update`），执行器会持续刷新进展时间，
+ * 根本走不到阈值；第二档只兜"安静但没死"的命令。
  */
 import { log } from './util.js';
 
@@ -18,11 +30,17 @@ export function createWatchdog({
   sessions,
   heartbeatMs = 15_000,
   stallMs = 360_000,
+  /** 有工具在执行时的阈值；小于 stallMs 时按 stallMs 算（只放宽、不收紧） */
+  toolStallMs = 900_000,
   emit = () => {},
   onStall = () => {},
   now = () => Date.now(),
   logger = log,
 } = {}) {
+  /** 这个会话此刻适用的阈值 */
+  const limitFor = (entry) => (Number(entry?.toolsRunning) > 0
+    ? Math.max(stallMs, Number(toolStallMs) || 0)
+    : stallMs);
   /** 定时器（一个进程一个就够） */
   let timer = null;
 
@@ -45,7 +63,7 @@ export function createWatchdog({
         startedAt: entry.startedAt ?? null,
       });
 
-      if (ageMs < stallMs || entry.stallNotified) continue;
+      if (ageMs < limitFor(entry) || entry.stallNotified) continue;
       // 先标记再上报：上报里会 abort 这一轮，而 abort 也是异步的，
       // 中间这段时间要是又 tick 一次，就会重复上报两条"这单断了"。
       entry.stallNotified = true;
@@ -61,7 +79,8 @@ export function createWatchdog({
     timer.unref?.();
     logger(
       `💓 心跳看门狗已启动：每 ${Math.round(every / 1000)}s 报一次，` +
-        `超过 ${Math.round(stallMs / 1000)}s 没动静就判为中断并上报组长`,
+        `超过 ${Math.round(stallMs / 1000)}s 没动静就判为中断并上报组长` +
+        `（有工具在执行时放宽到 ${Math.round(Math.max(stallMs, Number(toolStallMs) || 0) / 1000)}s）`,
     );
     return true;
   }
