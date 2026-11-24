@@ -167,6 +167,34 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/confirmation
 
 ---
 
+## 4c. Windows 原生桌面助手 · 阶段 A（P1-2 · 真机 · 约 10 分钟）
+
+自动部分：`server/tests/desktop-helper-win.mjs`（契约 + 回退）、
+`node server/tests/perf-stall.mjs`（两种实现的耗时与卡顿对比）、
+`node server/tools/desktop-parity.mjs`（口径对拍）。下面是**只能真机做**的那几项。
+
+1. **口径对拍**：`cd server && node tools/desktop-parity.mjs`
+   期望最后一行是 `结论：口径一致 ✅`，且窗口矩形误差 `0px`。
+   不一致时看谁多/谁少：多了 WorkerW 之类 → 少了 `WS_EX_TOOLWINDOW` 过滤或退回了 `GetWindowRect`。
+2. **DPI 100% / 150%**：改缩放后重启 App（DPI 感知是进程启动时声明的），
+   各跑一次 `desktop-parity.mjs`；两次的 `虚拟屏` 都应是物理像素
+   （2560x1440 那台：100% 与 125% 都报 2560x1440，**不是** 2048x1152）。
+3. **多显示器 / 混合缩放**：把光标移到第二块屏上，跑
+   `node -e "…cursorPosition()"`（或工具层 `desktop_observe`），坐标应落在
+   虚拟屏矩形内（虚拟屏的原点可能是负数）。
+4. **锁屏**：Win+L 之后 `probeEnvironment()` 的 `session` 必须是 `false`；
+   此时任何输入都应被拒绝（`no_session`），不允许"看起来点了"。
+5. **UAC 安全桌面**：弹一个 UAC 提权框，确认助手拿不到输入桌面
+   （`session:false`）—— 应当**停下来交还用户**，不是硬点。
+6. **装了远程控制软件时**：`sampleInputNoise()` 应报 `phantom: true`
+   （合成输入），验收这一项时换干净机器。
+
+**回退演练**：`set ORBIS_DESKTOP_WIN_IMPL=powershell` 重启服务端 → 桌面输入仍然可用
+（慢约 15 倍），`server.log` 只该出现一次"回退 PowerShell"的提示；再删掉
+`server/resources/orbis-desktop-win.exe` 重启 → 同样自动回退且只记一次。
+
+---
+
 ## 5. 回填对照表
 
 | # | 验收项 | `docs/acceptance-matrix.md` 的行 | 期望关键字 |

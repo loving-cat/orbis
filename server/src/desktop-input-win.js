@@ -78,6 +78,7 @@
  * 这份注释里不写"应该可以"。
  */
 import { spawnSync } from 'node:child_process';
+import { callHelper, helperState } from './desktop-helper-win.js';
 import {
   INPUT_FAIL, planInput, escapeForPsDoubleQuotes, classifyInputNoise,
   describePlatform as describePurePlatform,
@@ -85,6 +86,24 @@ import {
 
 /** 单次脚本超时。一次点击不该超过几秒。 */
 const TIMEOUT_MS = 15_000;
+
+/**
+ * 原生助手（阶段 A，SPEC-PERF-V1 §5.3）。
+ *
+ * 调用点都是**先试原生、不可用就回退 PowerShell**：
+ * `helperState()` 已经做过版本/哈希校验，返回 `mode:'native'` 才走这条；
+ * 它自己失败（不是"不可用"）时**不回退** —— 那是真实答案，例如 not_aware。
+ */
+function nativeCall(command, payload = {}, opts = {}) {
+  const state = helperState();
+  if (state.mode !== 'native') return { ok: false, code: 'helper_unavailable', text: state.why };
+  return callHelper(command, payload, { state, ...opts });
+}
+
+/** 原生助手这次能不能用（用来决定走哪条实现）。 */
+function nativeAvailable() {
+  return helperState().mode === 'native';
+}
 
 /**
  * 光标复核的容差（物理像素）。
@@ -264,6 +283,7 @@ export function probeEnvironment() {
   if (!isSupported()) {
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入实现` };
   }
+  if (nativeAvailable()) return probeEnvironmentNative();
   const res = run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'aware=0'; exit 0 }
@@ -290,6 +310,34 @@ Write-Output ("aware=1 screen=" + $i[0] + "," + $i[1] + "," + $i[2] + "," + $i[3
 }
 
 /**
+ * 原生助手的 `env` → 与 PowerShell 分支完全相同的返回形状。
+ *
+ * `aware:false` 翻译成 `INPUT_FAIL.notAware`（与旧实现同码同文案）：
+ * 声明不了 DPI 感知时坐标基准不可信，本轮不发输入。
+ */
+function probeEnvironmentNative() {
+  const r = nativeCall('env');
+  if (!r.ok) return { ok: false, code: r.code, text: r.text };
+  if (r.aware !== true) {
+    return {
+      ok: false,
+      code: INPUT_FAIL.notAware,
+      text: '这个进程声明不了 DPI 感知，坐标基准不可信，本轮不发输入',
+    };
+  }
+  const screen = {
+    x: Number(r.screen?.x) || 0,
+    y: Number(r.screen?.y) || 0,
+    width: Number(r.screen?.width) || 0,
+    height: Number(r.screen?.height) || 0,
+  };
+  if (!(screen.width > 0 && screen.height > 0)) {
+    return { ok: false, code: INPUT_FAIL.callFailed, text: '屏幕尺寸为 0 —— 可能没有登录会话' };
+  }
+  return { ok: true, screen, dpi: Number(r.dpi) || 96, session: r.session === true };
+}
+
+/**
  * 读「最后一次输入的时刻」（epoch 毫秒），喂给 `desktop-takeover.js` 的 `classify`。
  *
  * 换算链：`GetLastInputInfo().dwTime` 是**开机毫秒**（32 位，约 49.7 天回绕），
@@ -308,6 +356,15 @@ export function lastInputAt() {
   if (!isSupported()) {
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入探针` };
   }
+  if (nativeAvailable()) {
+    const r = nativeCall('probe');
+    if (!r.ok) {
+      return r.code === 'probe_unavailable'
+        ? { ok: false, code: INPUT_FAIL.probeUnavailable, text: r.text }
+        : { ok: false, code: INPUT_FAIL.callFailed, text: `取最后输入时间失败：${r.text}` };
+    }
+    return idleFromTicks(Number(r.lastInputTick), Number(r.uptime));
+  }
   const res = run(`${WIN_PRELUDE}
 Write-Output ("tick=" + [DeskIn]::LastInputTick() + " uptime=" + [DeskIn]::Uptime())
 `);
@@ -318,6 +375,19 @@ Write-Output ("tick=" + [DeskIn]::LastInputTick() + " uptime=" + [DeskIn]::Uptim
   const uptime = Number(m[2]);
   if (tick < 0) {
     // GetLastInputInfo 失败（没有交互式窗口站）—— 探针不可用，**不是**"没人动"
+    return { ok: false, code: INPUT_FAIL.probeUnavailable, text: 'GetLastInputInfo 失败（没有交互式会话）' };
+  }
+  return idleFromTicks(tick, uptime);
+}
+
+/**
+ * tick → idleMs 的换算（两条实现共用，避免"原生一套、PowerShell 一套"漂移）。
+ *
+ * `GetLastInputInfo().dwTime` 是**开机毫秒**（32 位，约 49.7 天回绕），
+ * 用 `GetTickCount64()` 反推：两者同源，所以不需要绝对基准。
+ */
+function idleFromTicks(tick, uptime) {
+  if (!Number.isFinite(tick) || tick < 0) {
     return { ok: false, code: INPUT_FAIL.probeUnavailable, text: 'GetLastInputInfo 失败（没有交互式会话）' };
   }
   const uptime32 = uptime % 2 ** 32;
@@ -348,6 +418,8 @@ export function perform({ plan, verifyCursor = true, shouldAbort = null, onStep 
   if (plan.action === 'drag') return performDrag({ plan, shouldAbort, onStep });
 
   if (plan.action === 'move' || plan.action === 'click') {
+    // 阶段 A：移动 + 复核 + 点击走原生助手（同一个进程内完成，§5.2 的 perform）
+    if (nativeAvailable()) return performNative(plan, foreground);
     const { x, y } = plan.point;
     // ★ 先移到位、复核、必要时重试；**到位之前绝不点击**
     const moved = verifyCursor ? moveTo({ x, y }) : moveOnce({ x, y });
@@ -448,6 +520,34 @@ Write-Output 'result=sent'
 }
 
 /** 拖拽时每段最多走几站。段内一次 PS 调用，段间回 Node 判一次中断。 */
+/**
+ * 原生助手的 `perform`：移动（最多 3 次复核）+ 点击都在**同一个进程**里完成。
+ *
+ * 错误码按老契约翻译：`not_aware` → INPUT_FAIL.notAware，`invalid` →
+ * INPUT_FAIL.invalid，其余（含 cursor_not_reached）→ call_failed。
+ */
+function performNative(plan, foreground) {
+  const r = nativeCall('perform', {
+    plan: {
+      action: plan.action,
+      point: plan.point,
+      button: plan.button ?? 'left',
+      clicks: plan.clicks ?? 1,
+    },
+  }, { timeoutMs: 20_000 });
+  if (!r.ok) {
+    const code = r.code === 'not_aware' ? INPUT_FAIL.notAware
+      : r.code === 'invalid' ? INPUT_FAIL.invalid
+        : INPUT_FAIL.callFailed;
+    return { ok: false, code, text: r.text };
+  }
+  return {
+    ok: true,
+    at: { x: Number(r.at?.x) || 0, y: Number(r.at?.y) || 0 },
+    foreground,
+  };
+}
+
 const DRAG_BATCH = 4;
 
 /**
@@ -747,6 +847,11 @@ Write-Output 'result=clicked'`;
  */
 export function cursorPosition() {
   if (!isSupported()) return { ok: false, code: INPUT_FAIL.notPlatform, text: '当前平台没有 Windows 输入实现' };
+  if (nativeAvailable()) {
+    const r = nativeCall('cursor');
+    if (!r.ok) return { ok: false, code: INPUT_FAIL.callFailed, text: `取光标位置失败：${r.text}` };
+    return { ok: true, x: Number(r.x) || 0, y: Number(r.y) || 0 };
+  }
   const res = run(`${WIN_PRELUDE}
 [void][DeskIn]::MakeAware()
 $p = [DeskIn]::Cursor()
@@ -803,6 +908,36 @@ export function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入探针` };
   }
   const n = Math.max(2, Math.min(20, Math.trunc(Number(samples) || 5)));
+  // 原生助手：采样与等待都在**它自己的进程里**（消灭 JS 侧 Atomics.wait），
+  // 判据仍然是下面那套 classifyInputNoise —— 两个平台共用，不在这里另写一份。
+  if (nativeAvailable()) {
+    const r = nativeCall('noise', { samples: n, intervalMs }, { timeoutMs: 20_000 });
+    if (!r.ok) {
+      return r.code === 'probe_unavailable'
+        ? { ok: false, code: INPUT_FAIL.probeUnavailable, text: r.text }
+        : { ok: false, code: INPUT_FAIL.callFailed, text: `采样失败：${r.text}` };
+    }
+    const gaps = (Array.isArray(r.gaps) ? r.gaps : []).map((v) => Math.max(0, Math.round(Number(v) || 0)));
+    const cursors = (Array.isArray(r.cursors) ? r.cursors : []).map((c) => ({
+      x: Number(c?.x) || 0,
+      y: Number(c?.y) || 0,
+    }));
+    if (!gaps.length || gaps.length !== cursors.length) {
+      return { ok: false, code: INPUT_FAIL.callFailed, text: '桌面助手返回的采样不完整' };
+    }
+    const cls = classifyInputNoise({ gaps, cursors, quietMs });
+    return {
+      ok: true,
+      kind: cls.kind,
+      phantom: cls.kind === 'phantom',
+      noisy: cls.noisy,
+      cursorStill: cls.cursorStill,
+      samples: gaps,
+      cursor: cursors[0],
+      min: Math.min(...gaps),
+      max: Math.max(...gaps),
+    };
+  }
   const gaps = [];
   const cursors = [];
   for (let i = 0; i < n; i += 1) {
@@ -843,6 +978,11 @@ export function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 
 /** 当前前台窗口标题（审计用：记下"动的是哪个窗口"，不记窗口内容）。 */
 export function foregroundTitle() {
   if (!isSupported()) return { ok: false, code: INPUT_FAIL.notPlatform, text: '当前平台没有 Windows 输入实现' };
+  if (nativeAvailable()) {
+    const r = nativeCall('foreground');
+    if (!r.ok) return { ok: false, code: INPUT_FAIL.callFailed, text: r.text };
+    return { ok: true, title: String(r.title ?? '').slice(0, 200) };
+  }
   const res = run(`${WIN_PRELUDE}
 Write-Output ("title=" + [DeskIn]::ForegroundTitle())
 `);

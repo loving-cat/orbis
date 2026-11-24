@@ -207,6 +207,8 @@ const TESTS = [
   'long-task-restart',
   // 运行统计埋点 + 只读性能报告（SPEC-PERF-V1 M1-b）
   'perf-report',
+  // Windows 桌面助手（SPEC-PERF-V1 P1-2 阶段 A）：契约 + 回退
+  'desktop-helper-win',
 ];
 
 let failed = 0;
