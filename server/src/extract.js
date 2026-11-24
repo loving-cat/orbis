@@ -209,11 +209,19 @@ const INLINE_TEXT_EXT = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.
  */
 export async function extractText(filePath, { maxChars = MAX_CHARS } = {}) {
   const ext = path.extname(filePath).toLowerCase();
-  let small = false;
+  let stat = null;
   try {
-    const stat = fs.statSync(filePath);
-    small = INLINE_TEXT_EXT.has(ext) && stat.isFile() && stat.size <= INLINE_TEXT_LIMIT_BYTES;
-  } catch { /* 不存在 / 无权限：交给内联实现去报准确错误 */ }
+    stat = fs.statSync(filePath);
+  } catch {
+    // 文件不存在 / 无权限：直接让内联实现报准确错误。
+    // 不为一个必然失败的文件白起一个 worker（启动成本 ~400 ms）。
+    return parseFileInline(filePath, { maxChars });
+  }
+  if (!stat.isFile()) {
+    // 目录同理：错误在毫秒级就能给出，没必要进线程池
+    return parseFileInline(filePath, { maxChars });
+  }
+  const small = INLINE_TEXT_EXT.has(ext) && stat.size <= INLINE_TEXT_LIMIT_BYTES;
   if (small) return parseFileInline(filePath, { maxChars });
 
   const pool = getExtractPool();

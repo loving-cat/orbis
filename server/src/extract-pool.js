@@ -88,6 +88,9 @@ export class ExtractPool {
       try {
         const worker = this.#spawn();
         const slot = { worker, busy: false };
+        // ★ 空闲的 worker 不许拖住进程退出：`tests/*.mjs` 跑完就该立刻退，
+        //   服务端收工也不该为了一个没在干活的解析线程多等。派发时再 ref 回来。
+        worker.unref?.();
         worker.on?.('error', (err) => this.#onCrash(slot, err));
         worker.on?.('exit', (code) => {
           if (code !== 0) this.#onCrash(slot, new Error(`worker 退出码 ${code}`));
@@ -132,16 +135,34 @@ export class ExtractPool {
 
   #pump() {
     while (this.queue.length) {
-      const slot = this.#idleSlot();
+      let slot = this.#idleSlot();
+      // ★ worker 崩溃/超时之后 `slots` 会空掉，队列里剩下的任务**没人来取** ——
+      //   以前这里直接 break，于是队列永久挂起（调用方永远等不到 resolve）。
+      //   发现"有活干、槽位不够"就补建一个；补不起来就把队列如实结算掉。
+      if (!slot && this.slots.length < this.size) {
+        if (!this.#ensure()) {
+          this.#flushQueue(fail('线程池不可用', 'pool_unavailable'));
+          return;
+        }
+        slot = this.#idleSlot();
+      }
       if (!slot) break;
       const job = this.queue.shift();
       this.#dispatch(slot, job);
     }
   }
 
+  /** 把排队中的任务全部结算掉（池关了 / 补建失败时用，绝不能让它们悬着）。 */
+  #flushQueue(result) {
+    for (const job of this.queue.splice(0)) job.resolve(result);
+  }
+
   #dispatch(slot, job) {
     const id = `job_${(seq += 1)}`;
     slot.busy = true;
+    // 忙的时候必须 ref：否则事件循环里只剩一条"不会被等的"线程，
+    // 进程可能在任务跑到一半就退出（表现为结果偶发丢失）。
+    slot.worker.ref?.();
     let settled = false;
     const finish = (result) => {
       if (settled) return;
@@ -149,6 +170,7 @@ export class ExtractPool {
       clearTimeout(timer);
       slot.busy = false;
       slot.pending = null;
+      slot.worker.unref?.();
       job.resolve(result);
       this.#pump();
     };
@@ -162,7 +184,9 @@ export class ExtractPool {
       if (index >= 0) this.slots.splice(index, 1);
       finish(fail(`解析超时（>${Math.round(this.timeoutMs / 1000)} s），已终止该任务`, 'extract_timeout'));
     }, this.timeoutMs);
-    timer.unref?.();
+    // ★ 这个定时器**不能 unref**：任务在飞的时候它往往是唯一压住事件循环的东西
+    //   （真 worker 忙时我们 ref 过，但假 worker / 已崩的 worker 不占句柄），
+    //   unref 掉会让进程"没事可做"直接退出，超时判定永远不触发。
 
     const onMessage = (msg) => {
       if (!msg || msg.id !== id) return;
@@ -183,10 +207,16 @@ export class ExtractPool {
   /** 收工：终止所有 worker，拒绝排队中的任务（不拖住进程退出）。 */
   async dispose() {
     this.dead = true;
-    for (const job of this.queue.splice(0)) {
-      job.resolve(fail('线程池已关闭', 'pool_closed'));
-    }
+    this.#flushQueue(fail('线程池已关闭', 'pool_closed'));
     const workers = this.slots.map((s) => s.worker);
+    // 在途任务同样要 settle：否则 terminate() 之后那些 promise 永远悬着，
+    // 调用方的 await 卡死（服务端收工时表现为"等不到返回"）。
+    for (const slot of this.slots) {
+      const pending = slot.pending;
+      slot.pending = null;
+      slot.busy = false;
+      pending?.(fail('线程池已关闭', 'pool_closed'));
+    }
     this.slots = [];
     await Promise.allSettled(workers.map((w) => w.terminate?.()));
   }
