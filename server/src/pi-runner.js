@@ -65,7 +65,7 @@ import {
 import {
   consumeSideContext, restoreSideContext, abortTalkInRoom, deliverMerged, sendUserMessage,
 } from './runner/duplex-lane.js';
-import { roundEpoch, dispatchGroupRound, executeGroupRound } from './runner/group-orchestrator.js';
+import { roundEpoch, dispatchGroupRound, executeGroupRound, cancelGroupRetries } from './runner/group-orchestrator.js';
 import { executeTurn } from './runner/turn-executor.js';
 
 export class PiRunner {
@@ -552,7 +552,6 @@ export class PiRunner {
       return null;
     }
   }
-
   // ---------------------------------------------------------------- 状态查询与输入组装
 
   roomHasBot(roomId, botId) {
@@ -744,6 +743,7 @@ export class PiRunner {
     if (cleanScope !== 'talk') {
       this.directDeliveryEpochs.set(roomId, (this.directDeliveryEpochs.get(roomId) ?? 0) + 1);
       this.roundQueue.delete(roomId);
+      cancelGroupRetries(this, roomId, '用户终止了这一轮');
       this.mergeQueue.drop(roomId);
       if (cleanScope === 'all') {
         this.aborting.add(roomId);

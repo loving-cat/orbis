@@ -201,6 +201,8 @@ const TESTS = [
   'task-intake-assumptions',
   'ask-user-default',
   'group-continuation',
+  // 上游故障不丢活：分钟级退避续派 / 可恢复阻塞 / 重启审计续跑
+  'group-retry',
 ];
 
 let failed = 0;

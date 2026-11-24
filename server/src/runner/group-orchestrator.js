@@ -17,6 +17,12 @@ import { settleRetryMessage } from '../retry-messages.js';
 import { decideRetry, failureNote, retryHint, transientBackoffMs } from '../retry-policy.js';
 import { continuationPrompt } from '../turn-continuation.js';
 import {
+  isUpstreamTransient,
+  retrySchedulerFor,
+  cancelGroupRetries,
+  describeWait,
+} from './group-retry.js';
+import {
   canRequest as breakerAllows,
   breakerNote,
   BREAKER_STATE,
@@ -38,6 +44,9 @@ import {
 } from '../group-prompt.js';
 import { RETRY_DELAY_MS, sessionKey } from './runner-utils.js';
 
+// 供外观层（`pi-runner.js` 的 abort）直接取消挂起的续派，不必再造一个入口
+export { cancelGroupRetries } from './group-retry.js';
+
 export function roundEpoch(runner, roomId) {
   return runner.roundEpochs.get(roomId) ?? 0;
 }
@@ -45,6 +54,8 @@ export function roundEpoch(runner, roomId) {
 /** 用户在群里插话：代数 +1，打断本轮在跑会话，当场把正在写消息标成 aborted。 */
 export function interruptRoundForUser(runner, roomId) {
   runner.roundEpochs.set(roomId, roundEpoch(runner, roomId) + 1);
+  // 用户插话 = 旧要求作废：挂着的上游续派必须跟着取消，否则会发「幽灵续派」
+  cancelGroupRetries(runner, roomId, '用户插话');
 
   let n = 0;
   const botIds = [];
@@ -92,6 +103,8 @@ export function interruptRoundForUser(runner, roomId) {
 
 export async function dispatchGroupRound(runner, roomId, text, files) {
   const roomName = runner.store.getRoom(roomId)?.name ?? roomId;
+  // 来了新消息（或本函数自己就是续派）：先把旧的挂起续派撤掉，一轮只留一个
+  cancelGroupRetries(runner, roomId, '本轮重新开始');
   // ★ 只有「已经有 drainGroupRounds 在跑」才允许入队。
   //
   //   以前条件是 `roundLocks.has || isRoomBusy`，而 `isRoomBusy` 可能是真的忙、
@@ -777,6 +790,64 @@ export async function executeGroupRound(
             log(
               `【${room.name}】${bot.name} 最终没跑成（试了 ${attempt} 次）：${lastError}`,
             );
+            // ★ 上游瞬时故障（429 / 5xx / 网络瞬断 / 熔断打开）**不丢活**。
+            //   以前这里直接落「[这单断了] …请重新发送任务」：把「系统暂时不健康」
+            //   变成「用户的活没了」。改成分钟级阶梯退避后自动续派一行，
+            //   全程不持锁（详见 runner/group-retry.js 的三条约束）。
+            if (
+              !itemManaged &&
+              !stale() &&
+              isUpstreamTransient({ kind: lastKind, status: lastStatus, error: lastError })
+            ) {
+              const plan = retrySchedulerFor(runner).schedule({
+                runner,
+                roomId,
+                roomName: room.name,
+                botId: bot.id,
+                botName: bot.name,
+                epoch,
+                onFire: ({ attempt: nth }) => {
+                  const again =
+                    String(item.fromText ?? '').trim() || `@${bot.name} 继续把上一轮没做完的活做完`;
+                  runner.store.appendMessage({
+                    roomId,
+                    authorType: 'system',
+                    authorId: bot.id,
+                    authorName: '续派提示',
+                    text: `上游恢复了，接着做（第 ${nth} 次重派）。`,
+                    status: 'done',
+                    meta: { via: 'upstream_retry_fire', botId: bot.id, attempt: nth },
+                  });
+                  return dispatchGroupRound(runner, roomId, again, []);
+                },
+              });
+              if (plan.scheduled) {
+                const wait = describeWait(plan.delay);
+                log(
+                  `【${room.name}】${bot.name} 上游限流/波动 → ${wait} 后自动续派（第 ${plan.attempt + 1} 次）`,
+                );
+                runner.store.appendMessage({
+                  roomId,
+                  authorType: 'system',
+                  authorId: bot.id,
+                  authorName: '排期提示',
+                  text:
+                    `上游限流/波动（${String(lastError || lastKind || '暂时不可用').slice(0, 80)}），` +
+                    `${wait}后自动接着做，不用重新发送任务。`,
+                  status: 'done',
+                  meta: {
+                    via: 'upstream_retry_scheduled',
+                    botId: bot.id,
+                    delayMs: plan.delay,
+                    attempt: plan.attempt + 1,
+                  },
+                });
+                return;
+              }
+              log(
+                `【${room.name}】${bot.name} 上游退避已累计 ${describeWait(plan.waitedMs)}，到上限 → 如实失败`,
+              );
+            }
             runner.store.appendMessage({
               roomId,
               authorType: 'system',
