@@ -22,7 +22,7 @@ import {
 import { childrenOf } from './task-subtasks.js';
 import { fileClaimList, pickBlockingClaim } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
-import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary } from './task-prompts.js';
+import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary, continuationNote } from './task-prompts.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
 
 const PAUSED = new Set([STATE.paused_user, STATE.paused_budget]);
@@ -37,6 +37,14 @@ const MAX_TRANSIENT_ATTEMPTS = 10;
 const DEFAULT_CONCURRENCY = 4;
 
 const AUTONOMY_RETRY_LIMIT = 3;
+
+/**
+ * 自主任务里「成员的分工全部受阻 → 交回负责人重新安排」最多几次。
+ *
+ * 交回一次，负责人能换人、拆小、或自己上手；反复交回仍不成，
+ * 就不是安排问题而是真卡住了（缺权限/缺外部条件），如实阻塞给用户看。
+ */
+const MAX_CHILD_HANDBACKS = 2;
 
 /** 步数用尽让出后，隔多久继续推进（避免原地空转，又不让任务停住）。 */
 const YIELD_RESUME_MS = 1_000;
@@ -95,7 +103,8 @@ function isBusyOutcome(raw) {
  * @param {Function} [p.abortInflight] 取消本任务在途执行（必须按任务/版本定位）
  * @param {()=>number} [p.clock]
  * @param {Function} [p.log]
- * @param {number} [p.maxStallRounds]
+ * @param {number} [p.maxStallRounds] 连续几轮**既没推进目标、也没干任何活**就阻塞（防空转）
+ * @param {number} [p.maxMilestoneRounds] 连续几轮**在干活但目标始终没推进**就阻塞（长任务兜底）
  * @param {number} [p.maxSteps] 单次排空的步数上限；用尽是让出，不是停住
  */
 export function createTaskSupervisor({
@@ -111,6 +120,15 @@ export function createTaskSupervisor({
   clock = () => Date.now(),
   log = () => {},
   maxStallRounds = 2,
+  /**
+   * ★ 长任务的兜底上限（两档停滞判定的第二档）。
+   *
+   * 第一档 `maxStallRounds` 只数「什么都没发生」的轮次 —— 真在改文件、
+   * 真在出产物的轮次不算停滞，否则一个要跑几十段的长任务第 2~3 段就被判死。
+   * 但「每轮都写点东西、目标却从不推进」也是一种空转，所以第二档数的是
+   * 「目标没推进」（缺项没减少、没有新交付、没有申请完成）的连续轮次，给得宽。
+   */
+  maxMilestoneRounds = 12,
   maxSteps = 32,
   /**
    * 同时最多推进几个任务。
@@ -147,6 +165,51 @@ export function createTaskSupervisor({
     } catch {
       return '';
     }
+  }
+
+  /**
+   * 这件事是不是「自主推进」。
+   *
+   * ★ 以**根任务**为准：子任务是负责人拆出来的分工，跟着整件事走。
+   *   以前只看子任务自己的标记，而子任务建出来时从不带它 ——
+   *   于是成员一失败，自主重试逻辑对它完全不生效，任务直接卡在受阻。
+   *   用户在任务卡上切换「自主推进」时也只改根，同样要立刻作用到整棵树。
+   */
+  function autonomousOf(taskRun) {
+    if (!taskRun) return false;
+    const rootId = taskRun.rootTaskId ?? taskRun.id;
+    const root = rootId === taskRun.id ? taskRun : read(rootId);
+    return (root ?? taskRun)?.flags?.autonomous === true;
+  }
+
+  /**
+   * 两档停滞判定（只读，不累加）：该不该停下来让用户看一眼。
+   *
+   *   · 第一档 rounds：连续几轮既没推进目标、也没改动任何东西 → 真卡住了；
+   *   · 第二档 milestoneRounds：连续几段一直在干活、目标却没推进 → 可能在原地打转。
+   *
+   * @returns {{code:string, why:string}|null}
+   */
+  function stallVerdict(run) {
+    const stall = run?.stall ?? {};
+    const rounds = Number(stall.rounds ?? 0);
+    const milestoneRounds = Number(stall.milestoneRounds ?? 0);
+    const stallCap = Math.max(1, Number(maxStallRounds) || 2);
+    const milestoneCap = Math.max(stallCap, Number(maxMilestoneRounds) || 12);
+    if (rounds >= stallCap) {
+      return {
+        code: 'yield_stall',
+        why: '连续 ' + rounds + ' 轮既没推进目标、也没改动任何东西，像是卡住了，需要你看一下',
+      };
+    }
+    if (milestoneRounds >= milestoneCap) {
+      return {
+        code: 'milestone_stall',
+        why: '已经连续 ' + milestoneRounds + ' 段在干活，但目标一直没推进（缺项没减少、没有新交付、没有申请完成），'
+          + '可能在原地打转，需要你看一下',
+      };
+    }
+    return null;
   }
 
   const queue = new Set();
@@ -549,9 +612,17 @@ export function createTaskSupervisor({
           } finally {
             if (kidBot) childBusyBots.delete(kidBot);
           }
-          if (out.status === 'blocked' || out.status === 'wait') {
+          if (out.status === 'wait') {
             return { status: 'wait', why: '子任务未完成', child: kid.id };
           }
+          // ★ 受阻的子任务**不在这里提前返回**。
+          //
+          //   原来受阻和等待一样直接 return wait —— 于是下面那段
+          //   「子任务全部受阻 → 说清谁卡住了」永远走不到：
+          //   父任务停在「排队中」，停滞计数不涨，也没有任何人会再唤醒它。
+          //   实机：调研任务的成员一次超时后受阻，根任务在「排队中」挂了 5 小时，
+          //   直到用户手动取消。先看完其它子任务，再统一判定是不是全卡住了。
+          if (out.status === 'blocked') continue;
           if (out.status === 'completed' || out.status === 'done' || out.status === 'cancelled') {
             progressed = true;
           }
@@ -564,13 +635,46 @@ export function createTaskSupervisor({
           //
           //   子任务自己受阻（blocked）不是父任务在"推进中"，
           //   而是整件事卡住了 —— 要说清是谁卡住、为什么。
-          const stuck = childrenOf(taskRuns, read(taskRunId) ?? taskRun)
+          const parentNow = read(taskRunId) ?? taskRun;
+          const stuck = childrenOf(taskRuns, parentNow)
             .filter((k) => !terminal(k));
           if (stuck.length && stuck.every((k) => k.state === STATE.blocked)) {
+            // ★ 自主推进：交回负责人重新安排，而不是停下来等用户。
+            //
+            //   负责人提示词本来就写着「同事没交作业 → 再派 / 换人 / 自己上」，
+            //   但负责人只有在子任务都收口后才会被叫起来 —— 受阻的子任务
+            //   不是终态，于是负责人永远没机会处理。这里把受阻的分工如实
+            //   收口（取消并记下原因），让负责人带着失败原因重新安排。
+            //   有上限：反复交回仍不成，就是真卡住了，如实阻塞给用户看。
+            const handBacks = Number(parentNow.childHandBacks ?? 0);
+            if (autonomousOf(parentNow) && handBacks < MAX_CHILD_HANDBACKS) {
+              const failures = stuck.map((k) => ({
+                taskRunId: k.id,
+                botId: k.owner?.leadBotId ?? null,
+                name: nameOfBot(k.owner?.leadBotId) || '成员',
+                requirement: String(k.goal?.requirement ?? '').slice(0, 160),
+                reason: String(k.flags?.blockedReason ?? '未说明').slice(0, 160),
+                at: clock(),
+              }));
+              for (const kid of stuck) {
+                await settle(kid.id, {
+                  type: EVENT.cancelled, revision: kid.revision, at: clock(),
+                  reason: '成员受阻，交回负责人重新安排',
+                }).catch(() => null);
+              }
+              await patch(taskRunId, {
+                childHandBacks: handBacks + 1,
+                childFailures: [...(parentNow.childFailures ?? []), ...failures].slice(-6),
+                stall: null,
+              });
+              log('子任务全部受阻，交回负责人重新安排', taskRunId, failures.length);
+              continue;
+            }
             const first = stuck[0];
             const who = nameOfBot(first.owner?.leadBotId) || '成员';
             const why = '等在子任务上：' + who + '受阻（'
-              + String(first.flags?.blockedReason ?? '未说明').slice(0, 80) + '）';
+              + String(first.flags?.blockedReason ?? '未说明').slice(0, 80) + '）'
+              + (handBacks >= MAX_CHILD_HANDBACKS ? '；已交回负责人重新安排 ' + handBacks + ' 次仍未解决' : '');
             await block(taskRunId, why);
             return { status: 'blocked', why: 'children_blocked' };
           }
@@ -580,7 +684,7 @@ export function createTaskSupervisor({
       }
 
       const action = planNextAction(taskRun, {
-        now: clock(), remainingRuns: remainingOf(taskRun), maxStallRounds, restartUnknown: false,
+        now: clock(), remainingRuns: remainingOf(taskRun), maxStallRounds, maxMilestoneRounds, restartUnknown: false,
         // 本进程是否真在跑这条 registered 尝试；不在就是崩溃/重启残留。
         isInflight: (run) => inflight.has(run.id),
       });
@@ -670,23 +774,23 @@ export function createTaskSupervisor({
         // stop 存在结果里（result.stop），不直接在账本记录上
         const stopKind = attempt?.result?.stop ?? attempt?.stop ?? null;
         if (stopKind === 'yielded') {
-          // ★ 让出是有上限的。
+          // ★ 让出是有上限的，但上限看的是「有没有进展」，不是「让出了几次」。
           //
-          //   「让步继续」本身正确 —— 模型跑到单轮上限，下一轮接着做。
-          //   但如果每一轮都只是让出、目标始终不达成，那就是在空转：
-          //   必须停下来告诉用户卡在哪，而不是一直排下一轮。
+          //   「让步继续」本身正确 —— 模型跑到单段上限，下一段接着做；
+          //   一个长任务本来就要跑很多段。停滞计数已经在 doLeadStep 里
+          //   按两档累计（有没有干活 / 目标有没有推进），这里**只读不再累加**。
+          //
+          //   以前这里又按签名 +1 一次，和 doLeadStep 里的那次叠成双重计数：
+          //   第 2 次没有「里程碑」的让出就被判死 —— 长任务基本活不过第三段。
           const after = read(taskRunId) ?? afterRun;
-          const afterSig = progressSignature(after);
-          const prev = after.stall ?? { rounds: 0, lastSignature: null };
-          const rounds = prev.lastSignature === afterSig ? (prev.rounds ?? 0) + 1 : 1;
-          if (rounds > Math.max(1, Number(maxStallRounds) || 2)) {
-            const why = '连续 ' + rounds + ' 轮让出但没有新进展（目标始终未达成），需要你确认下一步';
-            await patch(taskRunId, { nextAction: null, retryAt: null, stall: { rounds, lastSignature: afterSig } });
-            await block(taskRunId, why);
-            return { status: 'blocked', why: 'yield_stall' };
+          const verdict = stallVerdict(after);
+          if (verdict) {
+            await patch(taskRunId, { nextAction: null, retryAt: null });
+            await block(taskRunId, verdict.why);
+            return { status: 'blocked', why: verdict.code };
           }
           const resumeAt = clock() + YIELD_RESUME_MS;
-          await patch(taskRunId, { nextAction: null, retryAt: resumeAt, stall: { rounds, lastSignature: afterSig } });
+          await patch(taskRunId, { nextAction: null, retryAt: resumeAt });
           setTimer(resumeAt, taskRunId);
           return { status: 'yielded', why: '执行段让出，已安排续行' };
         }
@@ -699,6 +803,23 @@ export function createTaskSupervisor({
         const hasKids = childrenOf(taskRuns, afterRun).some((k) => !terminal(k));
         // 有在途子任务：等它们交付，这不算停滞。
         if (hasKids) return { status: 'wait', why: '等待子任务交付' };
+        // ★ 这一段真的干了活（改了文件 / 出了产物），只是还没到「可验收」：
+        //   按长任务的续段处理 —— 接着推进，而不是判「没有产出」停下来问用户。
+        //
+        //   以前只认「新子任务 / 新交付 / 完成申请」三种进展：写代码这类活
+        //   （源码不算交付物扩展名）一段没写完，就被判「负责人这一轮没有产出」。
+        //   防空转交给两档停滞计数：真没干活照样会被拦住。
+        if (out.didWork) {
+          const verdict = stallVerdict(read(taskRunId) ?? afterRun);
+          if (verdict) {
+            await block(taskRunId, verdict.why);
+            return { status: 'blocked', why: verdict.code };
+          }
+          const resumeAt = clock() + YIELD_RESUME_MS;
+          await patch(taskRunId, { nextAction: null, retryAt: resumeAt });
+          setTimer(resumeAt, taskRunId);
+          return { status: 'ok', why: '这一段有实际改动，安排接着推进' };
+        }
         // ★ 否则**明确停下**，不能返回一个「等待」了事。
         //
         //   返回 wait 会把记录留在 queued + next=dispatch，界面上就是「准备中」，
@@ -874,9 +995,12 @@ export function createTaskSupervisor({
       return { status: 'blocked', why: 'next_persist_failed' };
     }
 
-    const prompt = isChild
-      ? buildMemberPrompt({ childTaskRun: taskRun, parentTaskRun: parentTask })
-      : buildLeadPrompt({ phase: LEAD_PHASE.plan, taskRun });
+    // 续段：上一段让出/中断了，告诉它从断点接着做，而不是把整件事从头再来一遍
+    const resume = continuationNote(taskRun, { autonomous: autonomousOf(taskRun) });
+    const basePrompt = isChild
+      ? buildMemberPrompt({ childTaskRun: taskRun, parentTaskRun: parentTask, autonomous: autonomousOf(taskRun) })
+      : buildLeadPrompt({ phase: LEAD_PHASE.plan, taskRun: autonomousOf(taskRun) ? { ...taskRun, flags: { ...(taskRun.flags ?? {}), autonomous: true } } : taskRun });
+    const prompt = resume ? basePrompt + '\n\n' + resume : basePrompt;
 
     inflight.set(taskRun.id, { attemptId, revision: taskRun.revision });
     let out;
@@ -951,7 +1075,7 @@ export function createTaskSupervisor({
     //   上限 AUTONOMY_RETRY_LIMIT：同一个错误反复重试只会烧时间。
     {
       const nowRun = read(taskRun.id);
-      if (nowRun?.flags?.autonomous === true
+      if (autonomousOf(nowRun)
         && nowRun.state === STATE.blocked
         && nowRun.recoverableBlock == null
         && !nowRun.flags?.blockedByUser) {
@@ -997,7 +1121,10 @@ export function createTaskSupervisor({
       return { status: 'cancelled', why: '执行期间被取消/暂停' };
     }
 
-    await patch(taskRun.id, { nextAction: null, retryAt: null, retry: null, stall: bumpStall(after ?? taskRun) });
+    // 这一段有没有真实干活：改了工作区文件，或者登记了产物。
+    // 停滞计数据此分两档（见 bumpStall / stallVerdict）：干了活就不算「卡住」。
+    const didWork = workDoneBy(rawResult);
+    await patch(taskRun.id, { nextAction: null, retryAt: null, retry: null, stall: bumpStall(after ?? taskRun, { didWork }) });
     await reconcileEarlyControls({ taskRuns, taskRunId: taskRun.id, settle, patch, notify, clock });
     await releaseDependencyFor(read(taskRun.id) ?? taskRun);
     // ★ 只唤醒子任务，**绝不 notify 自己**。
@@ -1012,7 +1139,7 @@ export function createTaskSupervisor({
     for (const kid of childrenOf(taskRuns, read(taskRun.id) ?? taskRun)) {
       if (!terminal(kid)) notify(kid.id);
     }
-    return { status: 'ok' };
+    return { status: 'ok', didWork };
   }
 
   /**
@@ -1553,12 +1680,45 @@ export function createTaskSupervisor({
   };
 }
 
-/** 停滞计数：签名没变 +1，变了清零。 */
-function bumpStall(taskRun) {
+/**
+ * 停滞计数（两档）。
+ *
+ *   · `milestoneRounds`：目标签名没变 +1，变了清零 —— 「目标有没有推进」；
+ *   · `rounds`：签名没变**且这一段没干活**才 +1；干了活或签名变了都清零 ——
+ *     「是不是真卡住了」。
+ *
+ * 不传 didWork（验收、失败善后等非执行路径）时两档一起按签名累计，与旧行为一致。
+ *
+ * @param {object} taskRun
+ * @param {{didWork?:boolean}} [opts]
+ */
+export function bumpStall(taskRun, { didWork = false } = {}) {
   const sig = progressSignature(taskRun);
-  const prev = taskRun?.stall ?? { rounds: 0, lastSignature: null };
-  if (prev.lastSignature === sig) return { rounds: (prev.rounds ?? 0) + 1, lastSignature: sig };
-  return { rounds: 0, lastSignature: sig };
+  const prev = taskRun?.stall ?? { rounds: 0, lastSignature: null, milestoneRounds: 0 };
+  if (prev.lastSignature !== sig) return { rounds: 0, lastSignature: sig, milestoneRounds: 0 };
+  // 旧记录没有 milestoneRounds：按 rounds 起算，别让升级后的第一轮把计数清零
+  const milestoneRounds = Number(prev.milestoneRounds ?? prev.rounds ?? 0) + 1;
+  const rounds = didWork ? 0 : Number(prev.rounds ?? 0) + 1;
+  return { rounds, lastSignature: sig, milestoneRounds };
+}
+
+/**
+ * 这一段执行有没有真实干活。
+ *
+ * 只认运行层观察到的事实，不认模型自己说的：
+ *   · 工作区里有文件被新增/修改（执行器的 change-watch 结果 `work.files`）；
+ *   · 这一段登记了产物（附件 / 交付物）。
+ *
+ * @param {object|null} raw 执行器原始返回
+ * @returns {boolean}
+ */
+export function workDoneBy(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (Number(raw.work?.files ?? 0) > 0) return true;
+  const listed = Array.isArray(raw.attemptEvent?.attempt?.artifacts)
+    ? raw.attemptEvent.attempt.artifacts
+    : (Array.isArray(raw.artifacts) ? raw.artifacts : []);
+  return listed.some((a) => (typeof a === 'string' ? a.trim() : a));
 }
 
 export { NEXT, LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary };
