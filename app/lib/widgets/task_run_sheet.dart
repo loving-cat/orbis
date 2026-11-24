@@ -4,6 +4,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
+import '../l10n/l10n.dart';
 import '../task_bot_name.dart';
 import '../task_run_models.dart';
 import '../theme.dart';
@@ -196,6 +197,9 @@ class _TaskRunSheetBody extends StatelessWidget {
           const Text('结果（服务端已准备）', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
           Text(task.result.summary, style: const TextStyle(fontSize: 14)),
         ],
+        const SizedBox(height: 14),
+        // 自主推进开关：默认自主是这一版的行为基线，用户要能一眼看到并改回来。
+        _AutonomyRow(state: state, task: task, onRun: onRun),
         const SizedBox(height: 14),
         Wrap(
           spacing: 8,
@@ -424,6 +428,76 @@ class TaskRunDetailInline extends StatelessWidget {
           child: _TaskRunSheetBody(state: state, task: task, onRun: _run),
         );
       },
+    );
+  }
+}
+/// 「自主推进」开关行。
+///
+/// 决定的是**任务级**行为（服务端写根任务 + 全部子孙）：
+///   开 = 做完为止，不停下来问；关 = 每到关口先问。
+/// 终态任务（已完成 / 已取消）一律置灰 —— 服务端那边也只会回 `terminal`。
+class _AutonomyRow extends StatelessWidget {
+  const _AutonomyRow({required this.state, required this.task, required this.onRun});
+
+  final AppState state;
+  final TaskRun task;
+  final Future<void> Function(BuildContext, Future<TaskRun?> Function(TaskRun), TaskRun) onRun;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = L10n.s(context);
+    final enabled = task.canToggleAutonomy;
+    final hint = enabled
+        ? (task.autonomous ? s.t('taskRun.autonomyOnHint') : s.t('taskRun.autonomyOffHint'))
+        : s.t('taskRun.autonomyFinished');
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      decoration: BoxDecoration(
+        color: PB.bgElevated,
+        borderRadius: BorderRadius.circular(PB.rXl),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  s.t('taskRun.autonomy'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: enabled ? null : PB.textTertiary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(hint, style: TextStyle(fontSize: 12, color: PB.textSecondary)),
+                if (task.autonomyReason.isNotEmpty)
+                  Text(
+                    task.autonomyReason,
+                    style: TextStyle(fontSize: 12, color: PB.textTertiary),
+                  ),
+              ],
+            ),
+          ),
+          // 走同一条幂等命令通道：commandId 由控制器生成，失败可原样重试。
+          Switch(
+            value: task.autonomous,
+            onChanged: enabled
+                ? (on) => onRun(
+                      context,
+                      (t) => state.taskRuns.control(
+                        t,
+                        type: 'autonomy',
+                        decision: on ? 'on' : 'off',
+                      ),
+                      task,
+                    )
+                : null,
+          ),
+        ],
+      ),
     );
   }
 }

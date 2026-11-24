@@ -175,6 +175,12 @@ const areaPanel2 = StringArea(
     'task.unpin': '取消置顶',
     'task.pin': '置顶',
 
+    // ---- 任务详情：自主推进 ----
+    'taskRun.autonomy': '自主推进',
+    'taskRun.autonomyOnHint': '做完为止，不停下来问',
+    'taskRun.autonomyOffHint': '每到关口先问你',
+    'taskRun.autonomyFinished': '任务已结束，不能再改',
+
     // ---- 定时任务 ----
     'auto.title': '定时任务 · {room}',
     'auto.runningCount': '{n} 个在跑',
@@ -271,6 +277,7 @@ const areaPanel2 = StringArea(
 
     // ---- 询问卡 ----
     'ask.asksYou': '{name} 问你',
+    'ask.proceedingWithDefault': '它没停下来等，先按「{option}」接着做了；选别的会改过来。',
     'ask.answered': '已回答：{answer}',
     'ask.customHint': '或者我自己说一句…',
     'ask.send': '发出去',
@@ -614,6 +621,12 @@ const areaPanel2 = StringArea(
     'task.unpin': 'Unpin',
     'task.pin': 'Pin',
 
+    // ---- task detail: autonomous progress ----
+    'taskRun.autonomy': 'Autonomous progress',
+    'taskRun.autonomyOnHint': 'Runs to the end without stopping to ask',
+    'taskRun.autonomyOffHint': 'Asks you at every checkpoint',
+    'taskRun.autonomyFinished': 'Task is finished — this can no longer change',
+
     // ---- scheduled tasks ----
     'auto.title': 'Scheduled tasks · {room}',
     'auto.runningCount': '{n} running',
@@ -715,6 +728,7 @@ const areaPanel2 = StringArea(
 
     // ---- ask card ----
     'ask.asksYou': '{name} asks you',
+    'ask.proceedingWithDefault': 'It didn\'t stop to wait — it\'s going ahead with "{option}". Pick another to change course.',
     'ask.answered': 'Answered: {answer}',
     'ask.customHint': 'Or type your own answer…',
     'ask.send': 'Send',

@@ -169,6 +169,8 @@ class TaskRun {
     this.plan,
     this.leadBotId = '',
     this.leadBotName = '',
+    this.autonomous = false,
+    this.autonomyReason = '',
     this.legacyNote = false,
     required this.budget,
     required this.result,
@@ -208,6 +210,15 @@ class TaskRun {
   final String leadBotId;
   final String leadBotName;
 
+  /// 自主推进：服务端下发的开关（以根任务为准）。
+  ///
+  /// 投影里没有这个字段时按 `false` 处理 —— 界面照实显示「每到关口先问你」，
+  /// 不替用户猜一个更激进的值。
+  final bool autonomous;
+
+  /// 为什么是这个值（非自主时的原因，例如「你说过要先问我」）。服务端已截断。
+  final String autonomyReason;
+
   /// 服务端打的「历史对话片段」标记（W5c）。
   ///   为 true 时看板默认折叠，不再只靠客户端启发式判断。
   final bool legacyNote;
@@ -244,6 +255,8 @@ class TaskRun {
       phase: _asString(json['phase'], 'active'),
       leadBotId: _asString(json['leadBotId']),
       leadBotName: _asString(json['leadBotName']),
+      autonomous: json['autonomous'] == true,
+      autonomyReason: _asString(json['autonomyReason']),
       legacyNote: json['legacyNote'] == true,
       childrenSummary: json['childrenSummary'] is Map
           ? TaskRunChildren.fromJson((json['childrenSummary'] as Map).cast<String, dynamic>())
@@ -272,6 +285,9 @@ class TaskRun {
   bool get needsUser => state == 'waiting_approval' || state == 'waiting_input';
   bool get canPause => isActive && state != 'paused_user' && state != 'paused_budget';
   bool get canResume => state == 'paused_user';
+
+  /// 自主推进开关能不能动：终态（completed / cancelled 等）一律锁死。
+  bool get canToggleAutonomy => isActive;
   String get budgetText {
     final max = budget.maxRuns;
     if (max == null) return '不限';

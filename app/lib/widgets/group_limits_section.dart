@@ -47,7 +47,7 @@ class _GroupLimitsSectionState extends State<GroupLimitsSection> {
     // 否则拿不到数据时会显示一个用户从没设置过的数字。
     _lead.text = '${l['leadTurns'] ?? 15}';
     _member.text = '${l['memberTurns'] ?? 15}';
-    _runs.text = '${l['maxRuns'] ?? 100}';
+    _runs.text = '${l['maxRuns'] ?? 20}';
     _steps.text = '${l['maxSteps'] ?? 30}';
     final ms = l['turnMaxMs'] ?? 600000;
     _turnMin.text = '${(ms / 60000).round()}';
@@ -184,7 +184,7 @@ class _GroupLimitsSectionState extends State<GroupLimitsSection> {
                   _num(
                     strings.t('limits.runsPerMessage'),
                     _runs,
-                    '100',
+                    '20',
                     desc: strings.t('limits.runsPerMessageDesc'),
                   ),
                   const SizedBox(width: 10),
