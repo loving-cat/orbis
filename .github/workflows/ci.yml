@@ -15,7 +15,9 @@ on:
       - 'README.md'
       - '.github/workflows/ci.yml'
   pull_request:
-    branches: [main]
+    # 除了 main，也允许 PR 到长任务/性能这类**栈式分支**上跑 CI：
+    # 否则「先合 A、B 基于 A」的 PR 永远拿不到绿灯，只能等全并进 main 才发现红。
+    branches: [main, 'feat/**']
     paths:
       - 'app/**'
       - 'server/**'
