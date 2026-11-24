@@ -117,7 +117,76 @@ async function measure(impl) {
   };
 }
 
-if (implArg) {
+/**
+ * 附件解析的卡顿探针（§6.3）：合成 6 万行 xlsx + 1.25 MB PDF，
+ * 量「主线程内联解析」与「走线程池」的事件循环最大卡顿。
+ *
+ * 用同一个文件、同一套 5 ms 探针，两次分别跑：
+ *   inline  —— 直接调 parseFileInline()（等价于改动前的行为）
+ *   pool    —— 调 extractText()（现在走 worker）
+ */
+async function measureExtract() {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const XLSX = (await import('xlsx')).default ?? (await import('xlsx'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-perf-extract-'));
+
+  // 6 万行 xlsx（立项实测内联卡 1066 ms）
+  const rows = [];
+  for (let i = 0; i < 60_000; i += 1) rows.push([i, `名称${i}`, i * 1.5, `${(i % 100) / 10}%`]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), '数据');
+  const xlsx = path.join(dir, 'big.xlsx');
+  XLSX.writeFile(wb, xlsx);
+  const xlsxMb = +(fs.statSync(xlsx).size / 1024 / 1024).toFixed(1);
+
+  const { parseFileInline, extractText } = await import(src('extract.js'));
+  const { disposeExtractPool } = await import(src('extract-pool.js'));
+
+  // ★ 一次 tick 让探针把"刚刚被堵了多久"记下来：
+  //   同步解析期间定时器根本不会触发，测完立刻 stop() 会读到 0（假的好看数字）。
+  const yieldTick = () => new Promise((r) => setTimeout(r, 0));
+
+  const probe = startStallProbe();
+  const t0 = performance.now();
+  await parseFileInline(xlsx);
+  const inlineMs = performance.now() - t0;
+  await yieldTick();
+  const inlineStall = probe.stop();
+
+  // 让事件循环喘一口，再量池化那条路
+  await new Promise((r) => setTimeout(r, 50));
+
+  // 首次调用要付 worker 启动成本（加载 xlsx / pdf / mammoth / cheerio ≈ 数百 ms），
+  // 之后是稳态。两个数都要报，否则"线程池更慢"是个假结论。
+  const cold0 = performance.now();
+  await extractText(xlsx);
+  const coldMs = performance.now() - cold0;
+
+  const probe2 = startStallProbe();
+  const t1 = performance.now();
+  await extractText(xlsx);
+  const poolMs = performance.now() - t1;
+  await yieldTick();
+  const poolStall = probe2.stop();
+  await disposeExtractPool();
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  return {
+    fileMb: xlsxMb,
+    inlineMs: Math.round(inlineMs),
+    inlineStallMs: Math.round(inlineStall.maxStallMs),
+    coldMs: Math.round(coldMs),
+    poolMs: Math.round(poolMs),
+    poolStallMs: Math.round(poolStall.maxStallMs),
+  };
+}
+
+if (implArg === 'extract') {
+  const out = await measureExtract();
+  console.log(JSON.stringify(out));
+} else if (implArg) {
   // 子进程：量完就把结果作为最后一行 JSON 打出来（父进程解析）
   const result = await measure(implArg);
   console.log(JSON.stringify(result));
@@ -127,6 +196,14 @@ if (implArg) {
     process.exit(0);
   }
   const rows = [];
+  // 附件解析探针（§6.3）：单独一个子进程，避免把上一阶段的状态带进去
+  const extract = await (async () => {
+    try {
+      return await runChild('extract');
+    } catch (err) {
+      return { error: String(err?.message || err).slice(0, 200) };
+    }
+  })();
   for (const impl of ['powershell', 'native']) {
     try {
       rows.push(await runChild(impl));
@@ -156,6 +233,26 @@ if (implArg) {
     console.log(`  门槛：探针 ${native.probeP50Ms <= 40 ? '✅' : '❌'}`
       + ` · 窗口 ${native.listWindowsP50Ms <= 60 ? '✅' : '❌'}`
       + ` · 卡顿 ${native.maxStallMs <= 50 ? '✅' : '❌'}`);
+  }
+
+  // ---- 附件解析（§6.3）：内联 vs 线程池
+  if (extract && !extract.error) {
+    console.log(`
+附件解析（合成 ${extract.fileMb} MB / 6 万行 xlsx）
+`);
+    console.log(`  ${'实现'.padEnd(12)}${pad('解析耗时')}${pad('最大卡顿')}`);
+    console.log(`  ${'内联（旧）'.padEnd(12)}${pad(`${extract.inlineMs} ms`)}${pad(`${extract.inlineStallMs} ms`)}`);
+    console.log(`  ${'线程池(首次)'.padEnd(12)}${pad(`${extract.coldMs} ms`)}${pad('—')}`);
+    console.log(`  ${'线程池(稳态)'.padEnd(12)}${pad(`${extract.poolMs} ms`)}${pad(`${extract.poolStallMs} ms`)}`);
+    const overhead = extract.inlineMs > 0
+      ? Math.round(((extract.poolMs - extract.inlineMs) / extract.inlineMs) * 100) : 0;
+    console.log(`
+  稳态总耗时变化：${overhead >= 0 ? '+' : ''}${overhead}%（目标 ≤ +20%）`
+      + ` · 卡顿 ${extract.poolStallMs <= 50 ? '✅' : '❌'}（目标 ≤ 50 ms）`);
+    console.log('  注：首次调用的额外成本是 worker 启动（加载 xlsx/pdf/mammoth/cheerio），只付一次。');
+  } else if (extract?.error) {
+    console.log(`
+附件解析探针失败：${extract.error}`);
   }
   console.log('');
 }

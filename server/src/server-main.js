@@ -17,6 +17,7 @@ import { log } from './util.js';
 import { servePendingMigrationMode } from './pending-migration.js';
 import { installChildEnvScrub } from './child-env.js';
 import { shells } from './shells.js';
+import { disposeExtractPool } from './extract-pool.js';
 import { createAutomationScheduler } from './automations.js';
 import { createTaskHost } from './bootstrap/task-host.js';
 import { desktopInputSession } from './desktop-input-session.js';
@@ -466,6 +467,13 @@ async function main() {
       shells.stopAll(),
       new Promise((resolve) => setTimeout(resolve, 3000)),
     ]);
+    // 附件解析 worker 也要收干净：活着的 worker 会拖住进程退出
+    try {
+      await Promise.race([
+        disposeExtractPool(),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+    } catch { /* 收不掉也照常退出 */ }
     taskHost.dispose();
     runner.disposeAll();
     store.saveNow();

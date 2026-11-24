@@ -12,6 +12,7 @@ import mammoth from 'mammoth';
 import * as cheerio from 'cheerio';
 import { PDFParse } from 'pdf-parse';
 import { log } from './util.js';
+import { getExtractPool } from './extract-pool.js';
 
 /**
  * 默认最多返回多少字。
@@ -127,7 +128,14 @@ function extractJson(file) {
 /**
  * @returns {Promise<{ok:boolean, text?:string, ext?:string, chars?:number, truncated?:boolean, error?:string}>}
  */
-export async function extractText(filePath, { maxChars = MAX_CHARS } = {}) {
+/**
+ * 内联解析（主线程 / worker 共用同一份实现）。
+ *
+ * ★ worker 里跑的就是这个函数：两条路**同一个实现**，池解析与主线程解析
+ *   才能保证逐字节一致（tests/extract.mjs 有对拍）。
+ * ★ 主线程**不该直接调它**：`extractText()` 才是对外入口（它决定走池还是内联）。
+ */
+export async function parseFileInline(filePath, { maxChars = MAX_CHARS } = {}) {
   // ★ 夹硬上限：模型传什么都不能超过 MAX_CHARS_HARD_LIMIT。
   //   非法值（负数/NaN/字符串）一律回落到默认值。
   const wanted = Number(maxChars);
@@ -180,6 +188,46 @@ export async function extractText(filePath, { maxChars = MAX_CHARS } = {}) {
   const { text, truncated } = clip(raw, maxChars);
   if (!text) return { ok: false, error: `${ext} 里没提取到文字（可能是扫描件或空文件）` };
   return { ok: true, text, ext, chars: text.length, truncated };
+}
+
+/**
+ * 小文本类且体积不大：主线程直接读，省掉一次线程往返。
+ *
+ * 256 KB 这个门槛来自实测：这个尺寸以内的文本读盘 + 切分都在**微秒级**，
+ * 而一次 worker 往返是毫秒级 —— 走池反而更慢。
+ */
+export const INLINE_TEXT_LIMIT_BYTES = 256 * 1024;
+const INLINE_TEXT_EXT = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.tsv', '.log', '.yaml', '.yml']);
+
+/**
+ * 对外入口：解析附件正文。
+ *
+ * 大文件（pdf / xlsx / docx / 大 html）交给线程池，避免把主线程钉住
+ * （立项实测 6 万行 xlsx 卡 1066 ms、1.25 MB PDF 卡 247 ms）。
+ * 池不可用（起不来 / 被打包漏掉 / 已崩溃）时退回内联解析并记一次日志 ——
+ * 慢，但功能不能没了。
+ */
+export async function extractText(filePath, { maxChars = MAX_CHARS } = {}) {
+  const ext = path.extname(filePath).toLowerCase();
+  let small = false;
+  try {
+    const stat = fs.statSync(filePath);
+    small = INLINE_TEXT_EXT.has(ext) && stat.isFile() && stat.size <= INLINE_TEXT_LIMIT_BYTES;
+  } catch { /* 不存在 / 无权限：交给内联实现去报准确错误 */ }
+  if (small) return parseFileInline(filePath, { maxChars });
+
+  const pool = getExtractPool();
+  const out = await pool.run({ op: 'text', filePath, options: { maxChars } });
+  if (out.ok) return out.value;
+  if (out.code === 'pool_unavailable' || out.code === 'pool_closed') {
+    if (!pool.fallbackLogged) {
+      pool.fallbackLogged = true;
+      log('ℹ️  附件解析线程池不可用，退回主线程解析（大文件会卡住服务端）');
+    }
+    return parseFileInline(filePath, { maxChars });
+  }
+  // 超时 / 崩溃：如实报错，不再退回主线程重来一遍（那会把同样的坑再踩一次）
+  return { ok: false, error: out.error };
 }
 
 /** 给提示词用的附件正文块 */
