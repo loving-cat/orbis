@@ -315,11 +315,13 @@ export function buildCommonTools({
       name: 'ask_user',
       label: '★ 问用户要个选择',
       description:
-        '卡住了、或者后面怎么走取决于用户的口味时，用它弹一张**可点的卡片**给用户，' +
+        '后面怎么走取决于用户的口味时，用它弹一张**可点的卡片**给用户，' +
         '而不是在聊天里写一段"您看是 A 还是 B？"——卡片用户能直接点，省得打字。' +
-        '**只在真的岔路口用**（方向分歧、要不要花钱、要不要删东西、它给的几个方案' +
-        '你判断不了哪个好）。能自己判断的就自己判断，别拿小事去问。' +
-        '发完你就先停下，等用户回。',
+        '**只在真的岔路口用**（方向分歧、它给的几个方案你判断不了哪个好）。能自己判断的就自己判断，别拿小事去问。' +
+        '\n\n★ 默认**不停下来等**：卡片发出去后，你先按 defaultOption（不写就按第一个选项）接着做，' +
+        '用户点了别的会以插话的形式送到你这里，到时再调整。' +
+        '只有选错了没法回头（要删东西、要花钱、要对外发布），或者后面的活全部取决于这个选择时，' +
+        '才设 blocking=true —— 那样这一轮就停在这里等用户点。',
       parameters: Type.Object({
         question: Type.String({ description: '一句话问清楚要用户决定什么' }),
         options: Type.Array(
@@ -334,8 +336,14 @@ export function buildCommonTools({
         allowCustom: Type.Optional(
           Type.Boolean({ description: '要不要同时给一个"我自己说"的输入框，默认给' }),
         ),
+        defaultOption: Type.Optional(
+          Type.String({ description: '不等用户、先按哪个选项接着做（填选项的 label；不填就按第一个）' }),
+        ),
+        blocking: Type.Optional(
+          Type.Boolean({ description: '选错了没法回头时才设 true：这一轮停下来等用户点。默认 false（先按默认选项继续做）' }),
+        ),
       }),
-      execute: async (_toolCallId, { question, options, allowCustom }) => {
+      execute: async (_toolCallId, { question, options, allowCustom, defaultOption, blocking }) => {
         // 群聊里不弹卡片：任务要往下走，不能停在这里等用户点。
         // 要确认的事写进正文；用户想回会直接在群里说。
         const room = store.getRoom(roomId);
@@ -354,6 +362,10 @@ export function buildCommonTools({
           .filter((o) => o.label)
           .slice(0, 6);
         if (!opts.length) return fail('至少要给一个选项');
+        const waitForUser = blocking === true;
+        // 默认选项：给了就用它（必须是卡片上真有的那个），没给就第一个
+        const wanted = String(defaultOption ?? '').trim();
+        const chosen = (wanted && opts.find((o) => o.label === wanted)) || opts[0];
         const msg = store.appendMessage({
           roomId,
           authorType: 'bot',
@@ -363,14 +375,28 @@ export function buildCommonTools({
           kind: 'ask',
           text: String(question ?? '').slice(0, 500),
           status: 'done',
-          meta: { options: opts, allowCustom: allowCustom !== false },
+          meta: {
+            options: opts,
+            allowCustom: allowCustom !== false,
+            // 界面据此显示「它先按 X 继续做了，选别的会改过来」
+            ...(waitForUser ? { blocking: true } : { defaultOption: chosen.label }),
+          },
         });
         bus.emit('event', { t: 'msg.new', msg });
-        log(`❓ ${store.getBot(botId)?.name ?? botId} 问用户：${String(question).slice(0, 40)}`);
+        log(`❓ ${store.getBot(botId)?.name ?? botId} 问用户${waitForUser ? '（停下来等）' : `（先按「${chosen.label}」继续）`}：${String(question).slice(0, 40)}`);
+        // ★ 默认不阻塞：长任务最常见的停摆就是「弹了张卡片，然后一直等」。
+        //   用户不在旁边，一张卡能让整件事停一整夜。先按默认选项做下去、把假设说清，
+        //   用户回来点了别的再改 —— 只有选错了没法回头的才停下来等。
+        if (waitForUser) {
+          return ok(
+            '卡片已经发给用户了。你标了 blocking：这一轮先停在这里，等他点了再接着做。',
+            { options: opts.map((o) => o.label), blocking: true },
+          );
+        }
         return ok(
-          '卡片已经发给用户了，等他点/答。' +
-            '**这一轮到此为止，不要再自己往下猜** —— 猜错了比等着更贵。',
-          { options: opts.map((o) => o.label) },
+          `卡片已经发给用户了。**不要停下来等**：先按「${chosen.label}」接着做，` +
+            '并在汇报里说明你是按这个选项做的；用户点了别的，会以插话的形式送到你这里，到时再调整。',
+          { options: opts.map((o) => o.label), defaultOption: chosen.label },
         );
       },
     })]),

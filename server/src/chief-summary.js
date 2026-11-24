@@ -33,7 +33,7 @@ export const SUMMARY_STATES = Object.freeze([
 /**
  * 汇总交卷轮里被硬拦的工具（规格 §3.3「硬防循环派活」）。
  *
- * 汇总轮的任务是**如实汇报**：缺什么说什么、问用户要不要返工。
+ * 汇总轮的任务是**如实汇报**：缺什么说什么、告诉用户要补的话怎么说（不用问句等表态）。
  * 如果允许它自己再 `dispatch_to_department` / 建部门 / 接新任务，就会无限套娃
  * —— 汇总 → 再派活 → 再汇总 → 再派活。
  */
@@ -46,7 +46,8 @@ export const SUMMARY_TURN_BLOCKED_TOOLS = Object.freeze([
 /** 这句会在被拦时原样返回给模型 —— 要能指导它下一步该干什么，而不是只说"不行" */
 export const SUMMARY_TURN_BLOCK_MESSAGE =
   '当前是**汇总交卷轮**：请直接面向用户汇报各部门的交付结果与缺口，' +
-  '缺项如实说明并询问用户是否需要返工。禁止在本轮自行建组、再派活或接新任务。';
+  '缺项如实说明，并告诉用户需要返工的话直接说一声就行（不要用问句等他表态）。' +
+  '禁止在本轮自行建组、再派活或接新任务。';
 
 /** 这轮是不是汇总轮 + 这个工具要不要拦（纯函数，工具入口统一调它） */
 export function isToolBlockedInSummaryTurn(toolName, { summaryTurn = false } = {}) {
