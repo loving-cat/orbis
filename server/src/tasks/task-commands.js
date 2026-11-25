@@ -93,6 +93,7 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
         ref: body?.ref ?? null, decision: body?.decision ?? null, text: body?.text ?? null,
         goal: body?.goal ?? null, reason: body?.reason ?? null, deferNotify: body?.deferNotify === true,
         extraRuns: body?.extraRuns ?? null,
+        extraTokens: body?.extraTokens ?? null,
       });
       const requesterId = device?.id ?? 'device_unknown';
       const runNow = () => (typeof findRun === 'function' ? findRun(taskRunId) : null);
@@ -223,7 +224,11 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
         } else if (type === 'unblock') {
           result = await runtime.onUnblock({ taskRunId, reason: body?.reason ?? '手动解除阻塞' });
         } else if (type === 'extend') {
-          result = await runtime.onExtendBudget({ taskRunId, extraRuns: Number(body?.extraRuns ?? 0) });
+          result = await runtime.onExtendBudget({
+            taskRunId,
+            extraRuns: body?.extraRuns ?? null,
+            extraTokens: body?.extraTokens ?? null,
+          });
         } else if (type === 'autonomy') {
           result = typeof runtime.onSetAutonomy === 'function'
             ? await runtime.onSetAutonomy({ taskRunId, autonomous: body?.decision === 'on' })

@@ -216,7 +216,9 @@ export async function startRootBudget({ store, rootTaskId, taskRunId = null, att
 /**
  * **结算**：把根预留推进到 settled。
  */
-export async function settleRootBudget({ store, rootTaskId, taskRunId = null, attemptId, botId = null, revision = null, at }) {
+export async function settleRootBudget({
+  store, rootTaskId, taskRunId = null, attemptId, botId = null, revision = null, at, tokens = 0,
+}) {
   if (!isAnyId(attemptId)) return fail('bad_attempt', '必须给出 attemptId');
   const owner = isAnyId(taskRunId) ? taskRunId : rootTaskId;
   const key = reservationKey(owner, attemptId);
@@ -230,15 +232,24 @@ export async function settleRootBudget({ store, rootTaskId, taskRunId = null, at
 
       const plan = planSettle(existing, { taskRunId: owner, botId, revision });
       if (!plan.ok) return { __reject: plan };
+      // ★ 幂等：已结算的直接 reuse，**不再重复累加 token**（这才是关键，
+      //   否则每次重新结算都会把整棵树的用量算两遍）。
       if (plan.action === 'reuse') return null;
+
+      // ★ 坑位：子任务的 attempts 存在子任务文件里，不在 root.attempts ——
+      //   token 消耗只能由调用方（runManagedAttempt）在结算时递进来。
+      const spent = Number.isFinite(Number(tokens)) && Number(tokens) > 0 ? Math.round(Number(tokens)) : 0;
+      const budget = { ...(current.budget ?? {}) };
+      if (spent > 0) budget.usedTokens = Number(budget.usedTokens ?? 0) + spent;
 
       slots[key] = {
         ...existing,
         phase: PHASE.settled,
         startedAt: existing.startedAt ?? at,
         settledAt: at,
+        ...(spent > 0 ? { tokens: spent } : {}),
       };
-      return { ...current, attemptSlots: slots, updatedAt: at };
+      return { ...current, budget, attemptSlots: slots, updatedAt: at };
     },
   });
 
@@ -290,9 +301,15 @@ export async function refundRootBudget({ store, rootTaskId, taskRunId = null, at
 /**
  * 追加根额度。
  */
-export async function extendRootBudget({ store, rootTaskId, extraRuns, at }) {
-  if (!Number.isInteger(extraRuns) || extraRuns <= 0) {
-    return fail('bad_extra', '追加额度必须是正整数');
+export async function extendRootBudget({ store, rootTaskId, extraRuns = null, extraTokens = null, at }) {
+  const addRuns = extraRuns === null || extraRuns === undefined ? null : extraRuns;
+  const addTokens = extraTokens === null || extraTokens === undefined ? null : extraTokens;
+  if (addRuns === null && addTokens === null) return fail('bad_extra', '扩额至少要给 extraRuns 或 extraTokens');
+  if (addRuns !== null && (!Number.isInteger(addRuns) || addRuns <= 0)) {
+    return fail('bad_extra', '追加次数必须是正整数');
+  }
+  if (addTokens !== null && (!Number.isInteger(addTokens) || addTokens <= 0)) {
+    return fail('bad_extra', '追加 Token 必须是正整数');
   }
   const out = await store.mutate(rootTaskId, {
     mutate: (current) => {
@@ -301,7 +318,7 @@ export async function extendRootBudget({ store, rootTaskId, extraRuns, at }) {
       if (actualRoot !== current.id) {
         return { __reject: fail('not_a_root', `只有根任务能追加额度（${rootTaskId} 属于 ${actualRoot}）`) };
       }
-      const extended = extendBudget(current.budget, extraRuns);
+      const extended = extendBudget(current.budget, addRuns, addTokens);
       if (!extended.ok) return { __reject: fail(extended.code, extended.text) };
       return { ...current, budget: extended.budget, updatedAt: at };
     },

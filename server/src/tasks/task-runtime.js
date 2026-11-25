@@ -580,7 +580,7 @@ export function createTaskRuntime({
       return supervisor.onControl(taskRunId, { type: 'resume' });
     },
     /** 追加根额度：只在根上加一次，并唤醒同根的预算暂停任务。 */
-    async onExtendBudget({ taskRunId, extraRuns = 1 }) {
+    async onExtendBudget({ taskRunId, extraRuns = null, extraTokens = null }) {
       // ★ 已结束的任务不能再加额度：追加是给「还要继续跑」的任务用的。
       //   不拦的话，用户会给一个已完成/已取消的任务凭空加预算，账面看起来还能跑。
       const loaded = taskRuns.read(taskRunId);
@@ -589,10 +589,18 @@ export function createTaskRuntime({
       if (current.state === 'completed' || current.state === 'cancelled') {
         return { ok: false, code: 'terminal', text: '任务已结束，不能再追加额度' };
       }
-      if (!Number.isInteger(Number(extraRuns)) || Number(extraRuns) <= 0) {
-        return { ok: false, code: 'bad_extra', text: '追加额度必须是正整数' };
+      const addRuns = extraRuns === null || extraRuns === undefined ? null : Number(extraRuns);
+      const addTokens = extraTokens === null || extraTokens === undefined ? null : Number(extraTokens);
+      if (addRuns === null && addTokens === null) {
+        return { ok: false, code: 'bad_extra', text: '扩额至少要给 extraRuns 或 extraTokens' };
       }
-      return supervisor.onBudgetExtended(taskRunId, { extraRuns: Number(extraRuns) });
+      if (addRuns !== null && (!Number.isInteger(addRuns) || addRuns <= 0)) {
+        return { ok: false, code: 'bad_extra', text: '追加次数必须是正整数' };
+      }
+      if (addTokens !== null && (!Number.isInteger(addTokens) || addTokens <= 0)) {
+        return { ok: false, code: 'bad_extra', text: '追加 Token 必须是正整数' };
+      }
+      return supervisor.onBudgetExtended(taskRunId, { extraRuns: addRuns, extraTokens: addTokens });
     },
     /** 解除受阻：清掉阻塞事实并重新推进（不动门槛/暂停/预算/版本）。 */
     onUnblock({ taskRunId, reason = '手动解除阻塞' }) {

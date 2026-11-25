@@ -186,6 +186,20 @@ function normalizeBudget(budget, { isSubtask }) {
     }
   }
   out.extraRuns = 0;
+  // Token 预算（可选）：子任务共享根预算，这里只负责把字段如实带进记录。
+  // 旧快照没有这两项时保持缺省，读侧一律 ?? 0 兼容。
+  // ★ 与 maxRuns 一致：子任务**不持有**自己的 token 上限，额度共享根预算。
+  //   子记录存一份会变成另一个「永远对不上」的账（根扩额了子还停在旧值）。
+  out.maxTokens = isSubtask || budget.maxTokens === undefined ? null : budget.maxTokens;
+  if (out.maxTokens !== null) {
+    const t = Number(out.maxTokens);
+    if (!Number.isInteger(t) || t <= 0) {
+      return reject(REJECT.badField, 'budget.maxTokens', 'maxTokens 必须是正整数或 null');
+    }
+    out.maxTokens = t;
+  }
+  out.usedTokens = 0;
+  out.extraTokens = 0;
   // ★ 保留并发上限。
   //
   //   task-budget 把 concurrencyLimit 列为三种准确可数限制之一，
