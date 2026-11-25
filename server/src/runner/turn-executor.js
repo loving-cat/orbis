@@ -473,7 +473,6 @@ async function runWithLease(
         });
         log(`[${bot.name}] 上下文压缩开始（${event.reason}）`);
         idle.pause(); // 压缩是 SDK 在干活，不是"模型没进展"
-        idle.pause();
         break;
       case 'compaction_end': {
         runner.bus.emit('event', {

@@ -88,15 +88,21 @@ export function transcriptFor(roomId, botId, limit = 30, { maxChars = 12000, sto
   //   那一轮跑的是内存会话（#fb），正常会话的 JSONL 里只有消息、没有上下文。
   //   不放行它们，下一轮切回原模型时就不知道自己已经答过什么，
   //   会把同一件事再回一遍。
+  // ★ `selfFallback` 是给**读它的这个 bot 自己**的标记：同一房间里别的同事读到
+  //   这条消息时不该看到「你上次…」这种第二人称（那不是他们说的）。所以过滤时按
+  //   当前 reader 判定，标注只在 composeGroupPrompt 里按同一个标记加。
   const fresh = list
     .slice(start)
     .filter((m) => (m.authorId !== botId || m.meta?.viaFallback === true)
-      && m.status === 'done' && (m.text ?? '').trim());
+      && m.status === 'done' && (m.text ?? '').trim())
+    .map((m) => (m.authorId === botId && m.meta?.viaFallback === true
+      ? { ...m, selfFallback: true }
+      : m));
 
   const room = store.getRoom(roomId);
   const { members, leadId } = room ? departmentOf(room, store) : { members: [], leadId: null };
   const chiefId = store.mainBot()?.id ?? null;
-  const addressed = (m) => m.meta?.viaFallback === true
+  const addressed = (m) => m.selfFallback === true
     || isAddressedToReader(m, { readerId: botId, leadId, chiefId, members });
   const { items, dropped } = trimTranscript(fresh, {
     maxChars,
@@ -269,7 +275,7 @@ export function composeGroupPrompt(
       const gap = m.gapBefore ? `（中间省略 ${m.gapBefore} 条）\n` : '';
       // ★ 自己经备用模型回的那条要**标明**：那不是「同事说的」，是「你上次说的」。
       //   不标的话下一轮模型会把它当成别人的输出，重复回答或者否定自己。
-      const fallbackNote = m.meta?.viaFallback === true ? ' [你上次经备用模型已回复]' : '';
+      const fallbackNote = m.selfFallback === true ? ' [你上次经备用模型已回复]' : '';
       return `${gap}${who}${fallbackNote}: ${shown}`;
     });
     const dropped = Number(droppedCount ?? fresh?.droppedCount ?? 0);

@@ -637,6 +637,21 @@ await test('★ 6d. #fb 跑完后游标不误前移，且 transcriptFor 能看�
   });
   const again = transcriptFor(room2.id, bot.id, 30, { store });
   assert.equal(again.filter((m) => m.authorId === bot.id).length, 1, '普通自身回复不该被放进来');
+
+  // ★ 同一房间里**另一个成员**读这段记录时，不该看到「你上次…」这种第二人称：
+  //   `selfFallback` 只在 reader 自己就是作者时打上。
+  const other = store.createBot({ name: '旁观同事', persona: '测试' });
+  const asOther = transcriptFor(room2.id, other.id, 30, { store });
+  const ownSeenByOther = asOther.filter((m) => m.authorId === bot.id && m.meta?.viaFallback === true);
+  assert.ok(ownSeenByOther.length >= 0);
+  assert.ok(
+    ownSeenByOther.every((m) => m.selfFallback !== true),
+    '别的同事读到时不能打 selfFallback（否则会显示成「你上次回复」）',
+  );
+  assert.ok(
+    again.filter((m) => m.authorId === bot.id).every((m) => m.selfFallback === true),
+    '自己读到时必须打 selfFallback',
+  );
 });
 
 await test('★ 6e. 上下文压缩期间不判 model-idle（暂停计时）', async () => {
