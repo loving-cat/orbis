@@ -699,7 +699,8 @@ export async function executeGroupRound(
             });
           }
           if (res.ok) {
-            runner.markGroupHealthy(bot.id);
+            // ★ 首发就熔断直切时，跑通的是 overrideModel —— 不能把坏着的主组标成健康
+            runner.markGroupHealthy(bot.id, overrideModel);
           } else if (!res.breakerSkipped) {
             const firstDecision = decideRetry({
               error: String(res.error ?? ''),
@@ -710,7 +711,9 @@ export async function executeGroupRound(
             runner.markGroupFailed(bot.id, {
               kind: firstDecision.kind,
               status: res.status ?? null,
+              model: overrideModel,
             });
+            overrideModel = null;
           }
           let attempt = 1;
           let lastError = res.ok ? '' : String(res.error ?? '未知原因');
@@ -733,6 +736,7 @@ export async function executeGroupRound(
               break;
             }
             const afterFail = runner.breakerFor(bot.id);
+            let breakerSwitched = false;
             if (afterFail && afterFail.breaker.state === BREAKER_STATE.open) {
               // 熔断打开时先试早切换（§4.2 d）：有健康替代就换一条路继续，
               // 没有才走 breakerSkipped / group-retry 的分钟级续派。
@@ -740,8 +744,9 @@ export async function executeGroupRound(
               if (alt) {
                 overrideModel = alt.slug;
                 switchedOnce = true;
+                breakerSwitched = true;
                 runner.bus.emit('event', {
-                  t: 'bot.retrying', roomId, botId: bot.id, attempt,
+                  t: 'bot.retrying', roomId, botId: bot.id, attempt: attempt + 1,
                   delayMs: 0, kind: 'breaker-open', switchedTo: alt.label,
                 });
               } else {
@@ -755,10 +760,10 @@ export async function executeGroupRound(
             log(
               `【${room.name}】${bot.name} 第 ${attempt} 次尝试（${decision.kind}）：${lastError.slice(0, 80)}`,
             );
-            const waitMs =
-              decision.kind === 'transient'
-                ? transientBackoffMs(attempt - 1)
-                : RETRY_DELAY_MS;
+            // 刚因熔断换了新模型：等退避没有意义（那条通路还没被这条链用过）
+            const waitMs = breakerSwitched
+              ? 0
+              : (decision.kind === 'transient' ? transientBackoffMs(attempt - 1) : RETRY_DELAY_MS);
             await new Promise((r) => setTimeout(r, waitMs));
             if (runner.aborting.has(roomId)) break;
             if (stale()) break;
@@ -771,6 +776,8 @@ export async function executeGroupRound(
             settleRetryMessage(runner.store, roomId, res, { willRetry: true });
             // ★ 早切换（§4.2 d）：连续第 2 次临时故障 / 第 1 次 model-idle / 所属组熔断打开
             //   → 这一轮换一个健康的已启用模型跑（一次性会话，不改 bot.model）
+            // `attempt - 1` = 这条链已经失败了几次（attempt 在本轮已自增过）：
+            // transient 要连续 2 次才切，model-idle 第 1 次就切（门槛在 shouldSwitchEarly）
             const alt = altFor(decision.kind, attempt - 1);
             if (alt) {
               overrideModel = alt.slug;

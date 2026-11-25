@@ -296,6 +296,21 @@ class AppState extends ChangeNotifier {
 
   /// 按轨道拆分的忙碌 Bot 集合：working=后台执行，talking=前台旁路回话。
   final Map<String, Set<String>> workingBots = {};
+  /// 上游重试 / 已临时切到备用模型的**纯运行态**（`$roomId:$botId`）。
+  ///
+  /// ★ 绝不写进消息或气泡历史：它是「这一轮正在重试」的临时事实，
+  ///   收到 msg.done / msg.error / typing:false 就清掉，免得胶囊一直挂着
+  ///   一句过期的「上游不稳」。
+  /// 只放安全字段：attempt / delayMs / kind / switchedTo（模型组别名，不含 endpoint）。
+  final Map<String, Map<String, dynamic>> retryingBots = {};
+
+  /// 某个 bot 这一轮的重试态（没有就是 null）。
+  Map<String, dynamic>? retryingOf(String roomId, String botId) =>
+      retryingBots['$roomId:$botId'];
+
+  void _clearRetrying(String key) {
+    if (retryingBots.remove(key) != null) notifyListeners();
+  }
   final Map<String, Set<String>> talkingBots = {};
 
   /// 这个会话当前在干活的 Bot id 列表（供输入框上方的轮播使用）。
@@ -3208,6 +3223,11 @@ class AppState extends ChangeNotifier {
           );
           if (!msg.isLive || ev['t'] == 'msg.done') {
             _retireStreamTick(msg.id);
+            // 终态到达：这一轮的重试态就此作废（key 用消息自己的 roomId，
+            // msg.done 事件本身不带 roomId）
+            if (ev['t'] == 'msg.done' && (msg.authorId ?? '').isNotEmpty) {
+              _clearRetrying('${msg.roomId}:${msg.authorId}');
+            }
           }
           _replace((ev['msg'] as Map).cast<String, dynamic>());
           _maybeNotify(msg);
@@ -3228,6 +3248,10 @@ class AppState extends ChangeNotifier {
         if (ev['msg'] is Map)
           _replace((ev['msg'] as Map).cast<String, dynamic>());
         lastError = ev['error'] as String?;
+        final errRoom = msg?.roomId ?? roomId;
+        if (errRoom != null && (msg?.authorId ?? '').isNotEmpty) {
+          _clearRetrying('$errRoom:${msg!.authorId}');
+        }
         break;
 
       case 'msg.deleted':
@@ -3281,6 +3305,20 @@ class AppState extends ChangeNotifier {
           contexts[key] = ContextInfo.fromJson(ev.cast<String, dynamic>());
           break;
         }
+      case 'bot.retrying':
+        {
+          // 上游不稳 / 已临时切到备用模型：只进临时态，不进任何气泡。
+          final key = '${ev['roomId']}:${ev['botId']}';
+          retryingBots[key] = {
+            'attempt': ev['attempt'] as int? ?? 1,
+            'maxAttempts': ev['maxAttempts'],
+            'delayMs': ev['delayMs'] as int? ?? 0,
+            'kind': ev['kind'] as String? ?? '',
+            'switchedTo': ev['switchedTo'] as String?,
+          };
+          notifyListeners();
+          break;
+        }
       case 'bot.compacting':
         {
           final key = '${ev['roomId']}:${ev['botId']}';
@@ -3295,6 +3333,7 @@ class AppState extends ChangeNotifier {
         final botId = ev['botId'] as String?;
         final lane = ev['lane'] as String?;
         if (botId != null) {
+          if (!active) _clearRetrying('$rid:$botId');
           if (lane == 'talk') {
             final talkSet = talkingBots.putIfAbsent(rid, () => <String>{});
             if (active) {
