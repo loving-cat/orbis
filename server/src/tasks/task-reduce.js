@@ -1012,7 +1012,11 @@ function planResume(run, event) {
 
     const runsOk = maxRuns === null
       || (Number(maxRuns) + totalExtraRuns) - (Number.isInteger(usedRuns) ? usedRuns : 0) > 0;
-    const tokensOk = maxTokens === null || usedTokens < (Number(maxTokens) + totalExtraTokens);
+    // ★ `maxTokens` 已经含了历次扩额（`extendBudget` / `planBudgetExtended` 都把
+    //   extraTokens 加进 maxTokens 了），这里再叠加 totalExtraTokens 就是双倍计数：
+    //   第二次超额（2000 用过 2100、历史 extraTokens 1000）会被 2100 < 3000 放过，
+    //   扩额不足（1060 用过 1100、extraTokens 60）也会被 1100 < 1120 误放行。
+    const tokensOk = maxTokens === null || usedTokens < Number(maxTokens);
     const hasExtension = totalExtraRuns > 0 || totalExtraTokens > 0;
     if (!runsOk || !tokensOk || !hasExtension) {
       return reject(

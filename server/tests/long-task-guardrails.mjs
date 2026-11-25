@@ -452,10 +452,27 @@ async function pauseForBudget(rootId) {
 
 await test('★ 5a. 双维度不互锁：只扩超额的那个维度就能恢复', async () => {
   // token 超额、次数富余 → 只扩 extraTokens 能过
+  // ★ 用**真实扩额后**的预算形状：`maxTokens` 已经含了这次追加（1000 + 1000），
+  //   `extraTokens` 只是流水记录 —— 再加一遍就成了双倍计数（P1 修的就是这个）。
   const okTokens = resumeVerdict({
-    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: 1000, usedTokens: 1100, extraTokens: 1000,
+    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: 2000, usedTokens: 1100, extraTokens: 1000,
   });
   assert.equal(okTokens.ok, true, '只扩 token 就该能恢复（旧实现会因 extraRuns 也必须是正数而互锁）');
+
+  // 反例 1：第二次超额 —— maxTokens 2000 已含上次扩的 1000，用过 2100 就是真超额。
+  // 若把 extraTokens 再叠加一遍会变成 2100 < 3000 而错误放行。
+  const secondOver = resumeVerdict({
+    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: 2000, usedTokens: 2100, extraTokens: 1000,
+  });
+  assert.equal(secondOver.ok, false, '二次超额不能放行（extraTokens 不能重复计）');
+  assert.equal(secondOver.code, 'budget_not_extended');
+
+  // 反例 2：扩额不足 —— 只扩到 1060，用过 1100 仍然超额
+  const notEnough = resumeVerdict({
+    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: 1060, usedTokens: 1100, extraTokens: 60,
+  });
+  assert.equal(notEnough.ok, false, '扩额不足也不能放行');
+  assert.equal(notEnough.code, 'budget_not_extended');
 
   // 反例：只扩次数（token 仍超额）→ 仍拒绝
   const badTokens = resumeVerdict({
