@@ -189,6 +189,35 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/confirmation
 6. **装了远程控制软件时**：`sampleInputNoise()` 应报 `phantom: true`
    （合成输入），验收这一项时换干净机器。
 
+## 4d. Windows 原生桌面助手 · 阶段 B（M4 · 真机 · 约 15 分钟）
+
+自动部分：`server/tests/desktop-helper-win.mjs`（含常驻协议/分片/超时/崩溃降级）、
+`node server/tests/perf-stall.mjs --impl=native`（耗时与卡顿）、
+`node server/tools/desktop-parity.mjs`（口径对拍）。下面是**只能真机做**的那几项。
+
+1. **常驻进程起来了**：启动服务端后 `tasklist | findstr orbis-desktop-win` 应能看到
+   **一个** `orbis-desktop-win.exe`（`serve`）。再点一次桌面动作，进程数**不变**
+   （复用，不是每次都新起）。服务端停机（Ctrl+C / 退出）后该进程应消失，不留孤儿。
+2. **阶段 B 指标**（§5.6）：`node server/tests/perf-stall.mjs --impl=native`
+   期望 `probeP50Ms ≤ 2`、`listWindowsP50Ms ≤ 5`、`captureP50Ms ≤ 150`，
+   且 `maxStallMs - baselineGapMs` 接近 0（`baselineGapMs` 是这台机器的计时器地板，
+   Windows 一般 15–16 ms，**不要**把它当成卡顿）。
+3. **截图不写盘**：截图落盘路径只由 Node 侧决定（`desktop-shots/...`）；
+   助手进程**不接收任何文件路径**（`capture` 只回 `pngBase64`）。可用
+   `strings server/resources/orbis-desktop-win.exe | findstr desktop-shots` 抽查（结果应为空）。
+4. **外接屏热插拔 / 改缩放**：插拔一块外接屏或改 125%→150%，
+   **无需重启服务端**，再截图与点击；坐标应仍然正确
+   （常驻进程不缓存显示器与 DPI，每次请求都重查）。
+5. **锁屏 / UAC**：Win+L 与弹 UAC 期间 `probeEnvironment().session` 应为 `false`，
+   输入被拒绝（`no_session`），不是"点了但没效果"。
+6. **GDI 句柄不涨**：连点/连截 200 次（`for /l %i in (1,1,200) do ...` 或脚本循环），
+   任务管理器里助手进程的 **GDI 对象**数应回到基线（不随次数线性增长）。
+   涨了就是 RAII 漏了一个句柄 —— 常驻进程最怕这个。
+7. **截图长边**：`captureScreenshot({maxEdge:1600})` 的产物长边应 ≤ 1600，
+   且 `meta.resized` 与 `originalWidth/originalHeight` 如实（纯 Rust 盒滤波，不是 PowerShell 缩放）。
+8. **老程序全黑回退**：找一个 PrintWindow 只给黑图的程序（老 Win32 工具常见），
+   截图应是**真实画面**而不是全黑（内存里 `is_mostly_blank` 判出来后回了 `bitblt`）。
+
 **回退演练**：`set ORBIS_DESKTOP_WIN_IMPL=powershell` 重启服务端 → 桌面输入仍然可用
 （慢约 15 倍），`server.log` 只该出现一次"回退 PowerShell"的提示；再删掉
 `server/resources/orbis-desktop-win.exe` 重启 → 同样自动回退且只记一次。

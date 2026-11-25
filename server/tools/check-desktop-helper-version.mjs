@@ -27,6 +27,9 @@ const nodeSide = fs.readFileSync(
   path.join(import.meta.dirname, '..', 'src', 'desktop-helper-win.js'), 'utf8',
 );
 const wanted = /DESKTOP_HELPER_VERSION = '([^']+)'/.exec(nodeSide)?.[1];
+// 协议版本同样以 Node 侧为真源（阶段 B 起是 2）；这里写死 1 会让
+// 「两边都改了、却因为检查脚本自己过期而构建失败」变成一个很难查的问题。
+const wantedProtocol = Number(/HELPER_PROTOCOL = (\d+)/.exec(nodeSide)?.[1] ?? 1);
 if (!wanted) {
   console.error('无法从 server/src/desktop-helper-win.js 读出 DESKTOP_HELPER_VERSION');
   process.exit(1);
@@ -53,8 +56,8 @@ if (parsed.version !== wanted) {
   console.error('改了一边就要改另一边，并重新编译 native/orbis-desktop-win。');
   process.exit(1);
 }
-if (Number(parsed.protocol) !== 1) {
-  console.error(`协议版本不一致：期望 1，实际 ${parsed.protocol}`);
+if (Number(parsed.protocol) !== wantedProtocol) {
+  console.error(`协议版本不一致：期望 ${wantedProtocol}，实际 ${parsed.protocol}`);
   process.exit(1);
 }
 console.log(`version ok: ${parsed.version} (protocol ${parsed.protocol})`);

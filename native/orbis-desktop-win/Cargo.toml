@@ -1,9 +1,9 @@
 [package]
 name = "orbis-desktop-win"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Orbis 的 Windows 桌面助手：单次进程，JSON over stdin/stdout"
+description = "Orbis 的 Windows 桌面助手：单次进程 + 常驻 serve，JSON over stdin/stdout"
 
 [[bin]]
 name = "orbis-desktop-win"
@@ -12,10 +12,12 @@ path = "src/main.rs"
 [dependencies]
 # 与 orbis-sandbox 同版本、同许可（MIT OR Apache-2.0）。
 # 阶段 A 只用 -sys 这一层薄 FFI：命令很少、参数很直白，
-# typed 包装反而多一层间接。截图 / PNG 编码留到阶段 B（§11·1 已拍板用 png crate）。
+# typed 包装反而多一层间接。
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
+  # 阶段 B：截图要 GDI（CreateDIBSection / BitBlt / PrintWindow 的目标 DC）
+  "Win32_Graphics_Gdi",
   "Win32_System_StationsAndDesktops",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
@@ -23,6 +25,13 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# 阶段 B 截图编码（SPEC-PERF-V1 §11·1 已拍板）：
+#   · 只用 png 这一个 crate，**不引 image 全家桶**
+#     （image 会把 png/jpeg/gif/webp/rayon 一整套拖进来，为一张 1600px 的缩图不值得）；
+#   · 缩放自己手写盒滤波（capture.rs），不额外加依赖；
+#   · 许可 MIT OR Apache-2.0，与 Cargo.toml 的 license 一致，已登记 docs/LICENSES.md。
+png = "0.17"
 
 [profile.release]
 opt-level = "z"

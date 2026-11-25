@@ -1,10 +1,10 @@
 # 第三方组件许可证清单
 
 > 由 `node scripts/check-licenses.mjs` 生成，**不要手改**。
-> 来源是"真的装在机器上的东西"（`server/node_modules` 与 `app/.dart_tool`），
+> 来源是"真的装在机器上的东西"（`server/node_modules`、`app/.dart_tool`、`native/*/Cargo.lock`），
 > 不是手写的依赖列表 —— 规格 §14.2 要求核对的是锁文件与打包清单，不是记忆。
 
-生成时间：2026-11-21　｜　共 200 个组件：✅ 宽松 199　⚠️ 需复核 1
+生成时间：2026-11-25　｜　共 232 个组件：✅ 宽松 231　⚠️ 需复核 1
 
 ## 判定规则
 
@@ -52,7 +52,6 @@
 | @earendil-works/pi-telemetry | 1.2.0 | MIT | ✅ 宽松 | node_modules |
 | @earendil-works/pi-tui | 1.2.0 | MIT | ✅ 宽松 | node_modules |
 | @google/genai | 2.21.0 | Apache-2.0 | ✅ 宽松 | node_modules |
-| @koromix/koffi-win32-x64 | 3.3.3 | MIT | ✅ 宽松 | node_modules |
 | @napi-rs/canvas | 0.1.80 | MIT | ✅ 宽松 | node_modules |
 | @napi-rs/canvas-win32-x64-msvc | 0.1.80 | MIT | ✅ 宽松 | node_modules |
 | @protobufjs/aspromise | 1.1.2 | BSD-3-Clause | ✅ 宽松 | node_modules |
@@ -76,6 +75,7 @@
 | @types/retry | 0.12.0 | MIT | ✅ 宽松 | node_modules |
 | @xmldom/xmldom | 0.8.15 | MIT | ✅ 宽松 | node_modules |
 | adler-32 | 1.3.1 | Apache-2.0 | ✅ 宽松 | node_modules |
+| adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | agent-base | 9.0.0 | MIT | ✅ 宽松 | node_modules |
 | ansi-regex | 5.0.1 | MIT | ✅ 宽松 | node_modules |
 | ansi-styles | 4.3.0 | MIT | ✅ 宽松 | node_modules |
@@ -83,12 +83,14 @@
 | balanced-match | 4.0.4 | MIT | ✅ 宽松 | node_modules |
 | base64-js | 1.5.1 | MIT | ✅ 宽松 | node_modules |
 | bignumber.js | 9.3.1 | MIT | ✅ 宽松 | node_modules |
+| bitflags | 1.3.2 | MIT/Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | boolbase | 1.0.0 | ISC | ✅ 宽松 | node_modules |
 | bowser | 2.14.1 | MIT | ✅ 宽松 | node_modules |
 | brace-expansion | 5.0.12 | MIT | ✅ 宽松 | node_modules |
 | buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | ✅ 宽松 | node_modules |
 | camelcase | 5.3.1 | MIT | ✅ 宽松 | node_modules |
 | cfb | 1.2.2 | Apache-2.0 | ✅ 宽松 | node_modules |
+| cfg-if | 1.0.5 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | chalk | 6.0.0 | MIT | ✅ 宽松 | node_modules |
 | cheerio | 1.2.0 | MIT | ✅ 宽松 | node_modules |
 | cheerio-select | 2.1.0 | BSD-2-Clause | ✅ 宽松 | node_modules |
@@ -98,6 +100,7 @@
 | color-name | 1.1.4 | MIT | ✅ 宽松 | node_modules |
 | core-util-is | 1.0.3 | MIT | ✅ 宽松 | node_modules |
 | crc-32 | 1.2.2 | Apache-2.0 | ✅ 宽松 | node_modules |
+| crc32fast | 1.5.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | cross-spawn | 7.0.6 | MIT | ✅ 宽松 | node_modules |
 | css-select | 5.2.2 | BSD-2-Clause | ✅ 宽松 | node_modules |
 | css-what | 6.2.2 | BSD-2-Clause | ✅ 宽松 | node_modules |
@@ -118,8 +121,10 @@
 | entities | 4.5.0 | BSD-2-Clause | ✅ 宽松 | node_modules |
 | extend | 3.0.2 | MIT | ✅ 宽松 | node_modules |
 | fast-sha256 | 1.3.0 | Unlicense | ✅ 宽松 | node_modules |
+| fdeflate | 0.3.7 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | fetch-blob | 3.2.0 | MIT | ✅ 宽松 | node_modules |
 | find-up | 4.1.0 | MIT | ✅ 宽松 | node_modules |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | formdata-polyfill | 4.0.10 | MIT | ✅ 宽松 | node_modules |
 | frac | 1.1.2 | Apache-2.0 | ✅ 宽松 | node_modules |
 | gaxios | 7.3.1 | Apache-2.0 | ✅ 宽松 | node_modules |
@@ -148,7 +153,6 @@
 | jszip | 3.10.2 | (MIT OR GPL-3.0-or-later) | ✅ 宽松 | node_modules |
 | jwa | 2.0.1 | MIT | ✅ 宽松 | node_modules |
 | jws | 4.0.1 | MIT | ✅ 宽松 | node_modules |
-| koffi | 3.3.3 | MIT | ✅ 宽松 | node_modules |
 | lie | 3.3.0 | MIT | ✅ 宽松 | node_modules |
 | locate-path | 5.0.0 | MIT | ✅ 宽松 | node_modules |
 | long | 5.3.2 | Apache-2.0 | ✅ 宽松 | node_modules |
@@ -157,12 +161,16 @@
 | mammoth | 1.13.0 | BSD-2-Clause | ✅ 宽松 | node_modules |
 | marked | 18.0.11 | MIT | ✅ 宽松 | node_modules |
 | minimatch | 10.2.6 | BlueOak-1.0.0 | ✅ 宽松 | node_modules |
+| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | ms | 2.1.3 | MIT | ✅ 宽松 | node_modules |
 | node-domexception | 1.0.0 | MIT | ✅ 宽松 | node_modules |
 | node-fetch | 3.3.2 | MIT | ✅ 宽松 | node_modules |
 | nth-check | 2.1.1 | BSD-2-Clause | ✅ 宽松 | node_modules |
 | openai | 7.19.0 | Apache-2.0 | ✅ 宽松 | node_modules |
 | option | 0.2.4 | BSD-2-Clause | ✅ 宽松 | node_modules |
+| orbis-desktop-win | 0.2.0 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| orbis-sandbox | 0.2.0 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
 | p-limit | 2.3.0 | MIT | ✅ 宽松 | node_modules |
 | p-locate | 4.1.0 | MIT | ✅ 宽松 | node_modules |
 | p-retry | 4.6.2 | MIT | ✅ 宽松 | node_modules |
@@ -176,6 +184,7 @@
 | path-key | 3.1.1 | MIT | ✅ 宽松 | node_modules |
 | pdf-parse | 2.4.5 | Apache-2.0 | ✅ 宽松 | node_modules |
 | pdfjs-dist | 5.4.296 | Apache-2.0 | ✅ 宽松 | node_modules |
+| png | 0.17.16 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
 | pngjs | 5.0.0 | MIT | ✅ 宽松 | node_modules |
 | process-nextick-args | 2.0.1 | MIT | ✅ 宽松 | node_modules |
 | proper-lockfile | 4.1.2 | MIT | ✅ 宽松 | node_modules |
@@ -195,6 +204,7 @@
 | shebang-command | 2.0.0 | MIT | ✅ 宽松 | node_modules |
 | shebang-regex | 3.0.0 | MIT | ✅ 宽松 | node_modules |
 | signal-exit | 3.0.7 | ISC | ✅ 宽松 | node_modules |
+| simd-adler32 | 0.3.10 | MIT | ✅ 宽松 | cargo (orbis-desktop-win) |
 | sprintf-js | 1.0.3 | BSD-3-Clause | ✅ 宽松 | node_modules |
 | ssf | 0.11.2 | Apache-2.0 | ✅ 宽松 | node_modules |
 | standardwebhooks | 1.1.1 | MIT | ✅ 宽松 | node_modules |
@@ -204,8 +214,9 @@
 | ts-algebra | 2.0.0 | MIT | ✅ 宽松 | node_modules |
 | tslib | 2.8.1 | 0BSD | ✅ 宽松 | node_modules |
 | typebox | 1.3.27 | MIT | ✅ 宽松 | node_modules |
+| typescript | 5.9.3 | Apache-2.0 | ✅ 宽松 | node_modules |
 | underscore | 1.13.8 | MIT | ✅ 宽松 | node_modules |
-| undici | 8.10.2 | MIT | ✅ 宽松 | node_modules |
+| undici | 7.30.2 | MIT | ✅ 宽松 | node_modules |
 | undici-types | 8.9.0 | MIT | ✅ 宽松 | node_modules |
 | util-deprecate | 1.0.2 | MIT | ✅ 宽松 | node_modules |
 | web-streams-polyfill | 3.3.3 | MIT | ✅ 宽松 | node_modules |
@@ -213,6 +224,26 @@
 | whatwg-mimetype | 4.0.0 | MIT | ✅ 宽松 | node_modules |
 | which | 2.0.2 | ISC | ✅ 宽松 | node_modules |
 | which-module | 2.0.1 | ISC | ✅ 宽松 | node_modules |
+| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows-sys | 0.59.0 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows-sys | 0.59.0 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
+| windows-targets | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-desktop-win) |
+| windows-targets | 0.52.6 | MIT OR Apache-2.0 | ✅ 宽松 | cargo (orbis-sandbox) |
 | wmf | 1.0.2 | Apache-2.0 | ✅ 宽松 | node_modules |
 | word | 0.3.0 | Apache-2.0 | ✅ 宽松 | node_modules |
 | wrap-ansi | 6.2.0 | MIT | ✅ 宽松 | node_modules |
@@ -223,3 +254,4 @@
 | yaml | 2.9.0 | ISC | ✅ 宽松 | node_modules |
 | yargs | 15.4.1 | MIT | ✅ 宽松 | node_modules |
 | yargs-parser | 18.1.3 | ISC | ✅ 宽松 | node_modules |
+| zlib-rs | 0.6.9 | Zlib | ✅ 宽松 | cargo (orbis-desktop-win) |

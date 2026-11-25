@@ -32,7 +32,7 @@ async function test(name, fn) {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-desktop-'));
 const canObserve = process.platform === 'win32' || process.platform === 'darwin';
 
-await test('截图落点：不进 workspace，按任务/bot 分开', () => {
+await test('截图落点：不进 workspace，按任务/bot 分开', async () => {
   const a = screenshotPath({ dataDir: root, taskId: 'tr_abc' });
   const b = screenshotPath({ dataDir: root, taskId: 'tr_abc' });
   assert.ok(a.dir.includes('desktop-shots'), '应落在 desktop-shots 下（不是 workspace）');
@@ -44,23 +44,23 @@ await test('截图落点：不进 workspace，按任务/bot 分开', () => {
   assert.ok(noTask.dir.includes('b_1'));
 });
 
-await test('截图落点：id 里的路径字符被清掉（不能靠 id 跳出目录）', () => {
+await test('截图落点：id 里的路径字符被清掉（不能靠 id 跳出目录）', async () => {
   const evil = screenshotPath({ dataDir: root, taskId: '../../etc/passwd' });
   assert.ok(!evil.dir.includes('..'), '路径穿越字符必须被清掉：' + evil.dir);
   assert.ok(evil.dir.startsWith(path.join(root, 'desktop-shots')), evil.dir);
 });
 
-await test('缺参数时明确报错，不猜', () => {
-  assert.equal(captureScreenshot({}).ok, false);
-  assert.match(captureScreenshot({}).error, /落盘路径/);
+await test('缺参数时明确报错，不猜', async () => {
+  assert.equal((await captureScreenshot({})).ok, false);
+  assert.match((await captureScreenshot({})).error, /落盘路径/);
   if (process.platform === 'win32' || process.platform === 'darwin') {
-    const noWin = captureScreenshot({ outFile: path.join(root, 'x.png') });
+    const noWin = await captureScreenshot({ outFile: path.join(root, 'x.png') });
     assert.equal(noWin.ok, false);
     assert.match(noWin.error, /没有指定窗口|完整屏幕/);
   }
 });
 
-await test('窗口描述是可读一行、不含绝对路径', () => {
+await test('窗口描述是可读一行、不含绝对路径', async () => {
   const line = describeWindow({
     app: 'msedge', title: 'New tab', x: 100, y: 200, width: 800, height: 600,
   }, 0);
@@ -70,12 +70,12 @@ await test('窗口描述是可读一行、不含绝对路径', () => {
   assert.ok(!line.includes('/'), '不该出现路径分隔符：' + line);
 });
 
-await test('窗口描述：没标题时给出占位而不是空串', () => {
+await test('窗口描述：没标题时给出占位而不是空串', async () => {
   const line = describeWindow({ app: 'x', title: '', width: 10, height: 10 });
   assert.match(line, /无标题/);
 });
 
-await test('清理旧截图只删 png，且不越过 desktop-shots', () => {
+await test('清理旧截图只删 png，且不越过 desktop-shots', async () => {
   const dir = path.join(root, 'desktop-shots', 'tr_old');
   fs.mkdirSync(dir, { recursive: true });
   const old = path.join(dir, 'a.png');
@@ -98,7 +98,7 @@ await test('清理旧截图只删 png，且不越过 desktop-shots', () => {
 
 // ---------------------------------------------------------------- 真机行为
 await test('当前平台要么能列窗口，要么明确说"不支持"', async () => {
-  const r = listWindows();
+  const r = await listWindows();
   if (!canObserve) {
     assert.equal(r.ok, false);
     assert.match(r.error, /不支持/);
@@ -118,14 +118,14 @@ await test('当前平台要么能列窗口，要么明确说"不支持"', async 
 
 await test('真机截图：截得到，且文件是合法 PNG', async () => {
   if (!canObserve) return;
-  const list = listWindows();
+  const list = await listWindows();
   if (!list.ok || !list.windows.length) {
     console.log('     （当前没有可截窗口，跳过）');
     return;
   }
   const target = list.windows[0];
   const p = screenshotPath({ dataDir: root, botId: 'shot' });
-  const r = captureScreenshot({ outFile: p.file, window: target, maxEdge: 800 });
+  const r = await captureScreenshot({ outFile: p.file, window: target, maxEdge: 800 });
   assert.equal(r.ok, true, r.error ?? '');
   assert.ok(fs.statSync(p.file).size > 1000, '截图不应是空文件');
   const buf = fs.readFileSync(p.file);
@@ -137,11 +137,11 @@ await test('真机截图：截得到，且文件是合法 PNG', async () => {
 
 await test('真机截图：PrintWindow 拿到的不是空白（回归：PowerShell 变量名撞句柄）', async () => {
   if (process.platform !== 'win32') return;
-  const list = listWindows();
+  const list = await listWindows();
   if (!list.ok || !list.windows.length) return;
   const target = list.windows[0];
   const p = screenshotPath({ dataDir: root, botId: 'blank' });
-  const r = captureScreenshot({ outFile: p.file, window: target, maxEdge: 4000 });
+  const r = await captureScreenshot({ outFile: p.file, window: target, maxEdge: 4000 });
   assert.equal(r.ok, true, r.error ?? '');
 
   // 直接解 PNG 的 IDAT 看字节分布：全黑/全白图里单字节占比会 > 99%
@@ -164,11 +164,11 @@ await test('真机截图：PrintWindow 拿到的不是空白（回归：PowerShe
   assert.ok(ratio < 0.99, `截图几乎是纯色（top=${top} / ${raw.length}）——PrintWindow 可能没生效`);
 });
 
-await test('全屏截图必须显式要求（默认路径不截全屏）', () => {
+await test('全屏截图必须显式要求（默认路径不截全屏）', async () => {
   // 这条是行为约定：不传 window 也不传 fullScreen 时必须拒绝，
   // 否则模型很容易"顺手截一下整个桌面"，把用户所有窗口一起送进上下文。
   if (!canObserve) return;
-  const out = captureScreenshot({ outFile: path.join(root, 'full.png') });
+  const out = await captureScreenshot({ outFile: path.join(root, 'full.png') });
   assert.equal(out.ok, false);
   assert.match(out.error, /没有指定窗口/);
 });

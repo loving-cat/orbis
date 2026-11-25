@@ -33,6 +33,7 @@
  * 因为随包发布的是它们全部。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -65,6 +66,14 @@ function classify(raw) {
     const judged = body.split(/\s+OR\s+/i).map((p) => classify(p.trim()));
     const best = judged.find((j) => j.verdict.startsWith('✅')) ?? judged[judged.length - 1];
     return { verdict: best.verdict, why: `双许可（可选其一）：${text}` };
+  }
+  // ★ Cargo 生态习惯写 `MIT/Apache-2.0`（斜杠 = 「或」）。这是**双许可**，
+  //   与 `OR` 同义；不认识它会把一堆标准宽松 crate 判成"未知"，
+  //   然后有人为了过检查加白名单 —— 那才是真把闸拆了。
+  if (!/\s+(AND|OR)\s+/i.test(body) && /(MIT|Apache-2\.0)\s*\/\s*(MIT|Apache-2\.0)/i.test(body)) {
+    const judged = body.split('/').map((part) => classify(part.trim()));
+    const best = judged.find((j) => j.verdict.startsWith('✅')) ?? judged[judged.length - 1];
+    return { verdict: best.verdict, why: `双许可（斜杠写法）：${text}` };
   }
   if (/\s+AND\s+/i.test(body)) {
     const judged = body.split(/\s+AND\s+/i).map((p) => classify(p.trim()));
@@ -185,10 +194,70 @@ function flutterPackages() {
   return { missing: false, list };
 }
 
+
+/**
+ * 原生（Rust）依赖。
+ *
+ * ## 为什么要单独扫
+ *
+ * 这份清单以前只覆盖 `node_modules` 与 `pubspec.lock` —— 而阶段 B 起
+ * `orbis-desktop-win` 多了一个直接依赖（`png`，MIT OR Apache-2.0）。
+ * 一个"随包分发"的许可证清单漏掉它，等于清单在撒谎。
+ *
+ * 数据源：`native/<crate>/Cargo.lock` 拿名字与版本，
+ * `~/.cargo/registry` 里对应 crate 的 `Cargo.toml` 拿 license 字段。
+ * 拿不到（没编译过）就明确标「未扫描」，不假装知道。
+ */
+function rustPackages() {
+  const out = { list: [], missing: false };
+  const nativeDir = path.join(ROOT, 'native');
+  let crates = [];
+  try {
+    crates = fs.readdirSync(nativeDir).filter((d) => fs.existsSync(path.join(nativeDir, d, 'Cargo.lock')));
+  } catch {
+    out.missing = true;
+    return out;
+  }
+  if (!crates.length) {
+    out.missing = true;
+    return out;
+  }
+  const registry = path.join(os.homedir(), '.cargo', 'registry', 'src');
+  for (const crate of crates) {
+    const lock = fs.readFileSync(path.join(nativeDir, crate, 'Cargo.lock'), 'utf8');
+    const blocks = lock.split('[[package]]').slice(1);
+    for (const block of blocks) {
+      const name = /name = "([^"]+)"/.exec(block)?.[1];
+      const version = /version = "([^"]+)"/.exec(block)?.[1];
+      if (!name || !version) continue;
+      // 只有工作区自己的 crate 一定在仓库里；其它去 registry 找
+      let license = '';
+      const localManifest = path.join(nativeDir, crate, 'Cargo.toml');
+      if (name === crate && fs.existsSync(localManifest)) {
+        license = /^license\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(localManifest, 'utf8'))?.[1] ?? '';
+      }
+      if (!license && registry && fs.existsSync(registry)) {
+        try {
+          for (const host of fs.readdirSync(registry)) {
+            const p = path.join(registry, host, `${name}-${version}`, 'Cargo.toml');
+            if (fs.existsSync(p)) {
+              license = /^license\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(p, 'utf8'))?.[1] ?? '';
+              break;
+            }
+          }
+        } catch { /* 读不到就当未声明，由判定规则兜住 */ }
+      }
+      out.list.push({ name, version, license, source: `cargo (${crate})` });
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- 汇总
 const node = nodePackages();
 const dart = flutterPackages();
-const rows = [...node.list, ...dart.list].map((p) => ({ ...p, ...classify(p.license) }));
+const rust = rustPackages();
+const rows = [...node.list, ...dart.list, ...rust.list].map((p) => ({ ...p, ...classify(p.license) }));
 rows.sort((a, b) => a.name.localeCompare(b.name));
 
 const counts = new Map();
@@ -202,7 +271,7 @@ const lines = [
   '# 第三方组件许可证清单',
   '',
   '> 由 `node scripts/check-licenses.mjs` 生成，**不要手改**。',
-  '> 来源是"真的装在机器上的东西"（`server/node_modules` 与 `app/.dart_tool`），',
+  '> 来源是"真的装在机器上的东西"（`server/node_modules`、`app/.dart_tool`、`native/*/Cargo.lock`），',
   '> 不是手写的依赖列表 —— 规格 §14.2 要求核对的是锁文件与打包清单，不是记忆。',
   '',
   `生成时间：${new Date().toISOString().slice(0, 10)}　｜　`
@@ -241,6 +310,7 @@ lines.push('');
 
 if (node.missing) lines.push('> ⚠ `server/node_modules` 不存在：Node 部分没扫到（先 `npm install`）。', '');
 if (dart.missing) lines.push('> ⚠ `app/pubspec.lock` 不存在：Flutter 部分没扫到。', '');
+if (rust.missing) lines.push('> ⚠ `native/*/Cargo.lock` 不存在：Rust 部分没扫到（先 `cargo build`）。', '');
 
 if (!checkOnly) {
   fs.mkdirSync(path.dirname(OUT), { recursive: true });

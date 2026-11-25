@@ -376,9 +376,9 @@ export function foregroundTitle({ run } = {}) {
  * @returns {{ok:true, at:object|null, foreground:string, plan:object, screen:object}
  *   | {ok:false, code:string, text:string}}
  */
-export function performAction({ action, point = null, button = 'left', clicks = 1, delta = 0, key = null, keyCombo = null, text = '' } = {}) {
+export async function performAction({ action, point = null, button = 'left', clicks = 1, delta = 0, key = null, keyCombo = null, text = '' } = {}) {
   if (process.platform !== 'darwin') return notPlatform('桌面输入');
-  const env = probeEnvironment();
+  const env = await probeEnvironment();
   if (!env.ok) return env;
   if (!env.session) {
     return { ok: false, code: INPUT_FAIL.noSession, text: '当前没有可操作会话（可能锁屏或已断开），交还用户' };

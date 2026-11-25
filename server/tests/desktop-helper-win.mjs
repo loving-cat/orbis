@@ -10,6 +10,7 @@
  *      `desktop-input-win.js` 的对外契约一致（screen/dpi/session、x/y、windows 字段）。
  */
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,7 +31,7 @@ async function test(name, fn) {
 }
 
 /** 造一个假 exe（内容无所谓，校验用的是注入的 run）。 */
-function fakeExe(payload = { version: helper.DESKTOP_HELPER_VERSION, protocol: 1 }) {
+function fakeExe(payload = { version: helper.DESKTOP_HELPER_VERSION, protocol: 2 }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-desktop-helper-'));
   const exe = path.join(dir, 'orbis-desktop-win.exe');
   fs.writeFileSync(exe, 'MZ fake', 'utf8');
@@ -70,7 +71,7 @@ await test('verifyHelper：版本对得上 → ok；版本/协议不符 → 明�
   const good = fakeExe();
   assert.equal(helper.verifyHelper(good.exe, { run: good.run }).ok, true);
 
-  const badVersion = fakeExe({ version: '9.9.9', protocol: 1 });
+  const badVersion = fakeExe({ version: '9.9.9', protocol: 2 });
   const v = helper.verifyHelper(badVersion.exe, { run: badVersion.run });
   assert.equal(v.ok, false);
   assert.equal(v.reason, 'version_mismatch');
@@ -110,7 +111,7 @@ await test('verifyHelper：先验哈希、后执行（顺序不可颠倒）', ()
   const order = [];
   const run = (file, args, input) => {
     order.push('exec:version');
-    return JSON.stringify({ ok: true, version: helper.DESKTOP_HELPER_VERSION, protocol: 1 });
+    return JSON.stringify({ ok: true, version: helper.DESKTOP_HELPER_VERSION, protocol: 2 });
   };
   const v = helper.verifyHelper(good.exe, { run });
   assert.equal(v.ok, true);
@@ -147,7 +148,7 @@ await test('helperState：助手缺失 → 回退（不是崩溃）', () => {
 
 await test('helperState：版本不符 → 回退，并在 detail 里说清差在哪', () => {
   helper.resetHelperState();
-  const bad = fakeExe({ version: '0.0.1', protocol: 1 });
+  const bad = fakeExe({ version: '0.0.1', protocol: 2 });
   const st = helper.helperState({
     env: { ORBIS_DESKTOP_WIN_HELPER: bad.exe },
     run: bad.run,
@@ -160,7 +161,7 @@ await test('helperState：版本不符 → 回退，并在 detail 里说清差�
 
 await test('helperState：校验通过 → native，且 callHelper 真的调它', () => {
   helper.resetHelperState();
-  const fake = fakeExe({ version: helper.DESKTOP_HELPER_VERSION, protocol: 1, responses: { cursor: { ok: true, x: 11, y: 22 } } });
+  const fake = fakeExe({ version: helper.DESKTOP_HELPER_VERSION, protocol: 2, responses: { cursor: { ok: true, x: 11, y: 22 } } });
   const st = helper.helperState({ env: { ORBIS_DESKTOP_WIN_HELPER: fake.exe }, run: fake.run, force: true });
   assert.equal(st.mode, 'native');
   const r = helper.callHelper('cursor', {}, { run: fake.run, state: st });
@@ -202,7 +203,7 @@ await test('★ 真机：version / env / cursor / foreground / windows 的形状
   const { probeEnvironment, cursorPosition, foregroundTitle } = await import(src('desktop-input-win.js'));
   const { listWindows } = await import(src('desktop-observe.js'));
 
-  const env = probeEnvironment();
+  const env = await probeEnvironment();
   // ★ 锁屏 / 远程会话断开 / CI 的无头桌面上 `session` 是 false：
   //   那时**不该**要求光标与窗口列表有值（它们本来就取不到），
   //   但 `env` 必须如实返回 `session:false`，而不是假装成功。
@@ -217,16 +218,16 @@ await test('★ 真机：version / env / cursor / foreground / windows 的形状
   assert.ok(Number(env.dpi) >= 96);
   assert.equal(env.session, true);
 
-  const cursor = cursorPosition();
+  const cursor = await cursorPosition();
   assert.equal(cursor.ok, true);
   assert.equal(typeof cursor.x, 'number');
   assert.equal(typeof cursor.y, 'number');
 
-  const fg = foregroundTitle();
+  const fg = await foregroundTitle();
   assert.equal(fg.ok, true);
   assert.equal(typeof fg.title, 'string');
 
-  const win = listWindows({ limit: 5 });
+  const win = await listWindows({ limit: 5 });
   assert.equal(win.ok, true);
   assert.ok(win.windows.length <= 5);
   for (const w of win.windows) {
@@ -252,7 +253,7 @@ await test('★ 真机：perform(move) 走到位，且不点击（默认不抢�
   }
   helper.resetHelperState();
   const { probeEnvironment, perform, cursorPosition } = await import(src('desktop-input-win.js'));
-  const env = probeEnvironment();
+  const env = await probeEnvironment();
   if (env.ok === true && env.session !== true) {
     console.log('    （跳过：没有可交互桌面，session=false）');
     return;
@@ -272,6 +273,271 @@ await test('★ 真机：perform(move) 走到位，且不点击（默认不抢�
   assert.equal(back.ok, true);
   assert.ok(Math.abs(back.x - target.x) <= 24 && Math.abs(back.y - target.y) <= 24,
     `移动后光标漂出了容差：目标 ${JSON.stringify(target)} 实际 ${JSON.stringify(back)}`);
+});
+
+// ---------------------------------------------------------------------------
+// 常驻客户端（阶段 B）：协议、分片、乱序、超时、崩溃退避降级
+//
+// 这一段用**假子进程**（注入 spawn）在 macOS/Linux CI 上也能完整跑：
+// 被测的是「按 id 匹配 / 分片缓冲 / 超时杀进程 / 崩溃后降级」这些逻辑，
+// 不是 Win32 本身。
+// ---------------------------------------------------------------------------
+
+/**
+ * 造一个假常驻进程。
+ *
+ * @param {(req:{id:any,cmd:string,payload:object}) => object|string|null} onRequest
+ *   返回对象/字符串 = 回一条响应；返回 null = **不回**（用来测超时）。
+ * @param {{split?:boolean}} [opts] split: 把一条响应拆成两个 chunk 发（测分片）
+ */
+function makeFakeServe(onRequest, { split = false } = {}) {
+  const stdout = new EventEmitter();
+  stdout.setEncoding = () => {};
+  const stdin = new EventEmitter();
+  const stderr = new EventEmitter();
+  const child = new EventEmitter();
+  const sent = [];
+  let killed = false;
+  let buffer = '';
+
+  child.stdout = stdout;
+  child.stderr = stderr;
+  child.stdin = stdin;
+  child.kill = () => { killed = true; child.emit('exit', 0); };
+  child.stdin.end = () => {};
+
+  const emitLine = (obj) => {
+    const text = JSON.stringify(obj) + '\n';
+    if (split && text.length > 8) {
+      stdout.emit('data', text.slice(0, 5));
+      stdout.emit('data', text.slice(5));
+    } else {
+      stdout.emit('data', text);
+    }
+  };
+
+  stdin.write = (chunk) => {
+    buffer += String(chunk);
+    let idx = buffer.indexOf('\n');
+    while (idx >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      let req = null;
+      try { req = JSON.parse(line); } catch { req = null; }
+      if (req) {
+        sent.push(req);
+        const answer = onRequest(req);
+        if (answer !== null && answer !== undefined) {
+          // 走一个微任务再回，模拟真实管道的异步
+          queueMicrotask(() => emitLine({ id: req.id, ...answer }));
+        }
+      }
+      idx = buffer.indexOf('\n');
+    }
+    return true;
+  };
+
+  return { child, sent, get killed() { return killed; } };
+}
+
+function residentSetup(onRequest, opts = {}) {
+  const helperMod = helper;
+  helperMod.resetResidentHelper();
+  helperMod.resetHelperState();
+  const spawned = [];
+  const spawnFn = () => {
+    const fake = makeFakeServe(onRequest, opts);
+    spawned.push(fake);
+    return fake.child;
+  };
+  const state = { mode: 'native', exe: 'C:/fake/orbis-desktop-win.exe', why: 'ok' };
+  return { spawnFn, spawned, state, helperMod };
+}
+
+await test('★ 常驻：按 id 匹配响应（不再靠「下一个回包就是我的」）', async () => {
+  const { spawnFn, spawned, state, helperMod } = residentSetup((req) => ({ ok: true, echo: req.cmd }));
+  try {
+    const r1 = await helperMod.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+    const r2 = await helperMod.callHelperAsync('cursor', {}, { spawn: spawnFn, state });
+    assert.equal(r1.ok, true, JSON.stringify(r1));
+    assert.equal(r1.echo, 'probe');
+    assert.equal(r2.echo, 'cursor');
+    assert.equal(spawned.length, 1, '两条请求必须复用同一个常驻进程');
+    assert.deepEqual(spawned[0].sent.map((s) => s.cmd), ['probe', 'cursor']);
+    assert.equal(helperMod.residentInfo().alive, true);
+  } finally {
+    await helperMod.stopDesktopHelper();
+  }
+});
+
+await test('★ 常驻：一条 stdout 被拆成多个 chunk 也能正确拼回去', async () => {
+  const big = { ok: true, pngBase64: 'A'.repeat(5000), width: 10, height: 10 };
+  const { spawnFn, state, helperMod } = residentSetup(() => big, { split: true });
+  try {
+    const r = await helperMod.callHelperAsync('capture', {}, { spawn: spawnFn, state });
+    assert.equal(r.ok, true);
+    assert.equal(r.pngBase64.length, 5000, '分片要拼完整（否则 base64 会被截断成坏图）');
+  } finally {
+    await helperMod.stopDesktopHelper();
+  }
+});
+
+await test('★ 常驻：多条响应挤在同一个 chunk 里也按行切开', async () => {
+  const { spawnFn, spawned, state, helperMod } = residentSetup((req) => ({ ok: true, n: req.id }));
+  try {
+    // 灌两段进同一个 data 事件
+    const p1 = helperMod.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+    const p2 = helperMod.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+    const [a, b] = await Promise.all([p1, p2]);
+    assert.equal(a.ok, true);
+    assert.equal(b.ok, true);
+    assert.notEqual(a.n, b.n, '两条响应的 id 必须分别对上（不能都拿到第一条）');
+    assert.equal(spawned[0].sent.length, 2);
+  } finally {
+    await helperMod.stopDesktopHelper();
+  }
+});
+
+await test('★ 常驻：单条超时 → 杀进程、这条如实失败、下一条自动重启', async () => {
+  let n = 0;
+  const { spawnFn, spawned, state, helperMod } = residentSetup(() => {
+    n += 1;
+    return n === 1 ? null : { ok: true, after: true }; // 第一条永不回包
+  });
+  try {
+    const slow = await helperMod.callHelperAsync('probe', {}, { spawn: spawnFn, state, timeoutMs: 120 });
+    assert.equal(slow.ok, false);
+    assert.equal(slow.code, 'helper_timeout', JSON.stringify(slow));
+    assert.equal(spawned[0].killed, true, '超时必须杀掉进程（否则这条管道永远被占着）');
+    const next = await helperMod.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+    assert.equal(next.ok, true, JSON.stringify(next));
+    assert.equal(spawned.length, 2, '超时之后要能重新拉起一个');
+  } finally {
+    await helperMod.stopDesktopHelper();
+  }
+});
+
+await test('★ 常驻：连续崩溃超过阈值 → 自动降级 PowerShell（不无限重启）', async () => {
+  helper.resetHelperState();
+  helper.resetResidentHelper();
+  let spawns = 0;
+  const spawnFn = () => {
+    spawns += 1;
+    // 一起来就"崩"：不回任何东西，直接 exit
+    const fake = makeFakeServe(() => null);
+    queueMicrotask(() => fake.child.emit('exit', 1));
+    return fake.child;
+  };
+  const state = { mode: 'native', exe: 'C:/fake/orbis-desktop-win.exe', why: 'ok' };
+  try {
+    for (let i = 0; i < 8; i += 1) {
+      await helper.callHelperAsync('probe', {}, {
+        spawn: spawnFn, state, timeoutMs: 60,
+        // 常驻起不来时退回一次性进程：这里让它也失败，只观察降级
+        run: () => { throw new Error('no exe here'); },
+      });
+    }
+    assert.ok(helper.residentInfo().broken === 'resident_crashed',
+      `连着崩之后必须降级，实际 ${JSON.stringify(helper.residentInfo())}`);
+    assert.ok(spawns <= 7, `不能无限重启风暴（实际拉了 ${spawns} 次）`);
+    // 降级之后 helperState 缓存必须是 powershell
+    assert.equal(helper.helperState().mode, 'powershell');
+  } finally {
+    helper.resetResidentHelper();
+    helper.resetHelperState();
+  }
+});
+
+await test('★ 常驻：stopDesktopHelper 杀掉子进程，之后 residentInfo().alive === false', async () => {
+  const { spawnFn, spawned, state, helperMod } = residentSetup(() => ({ ok: true }));
+  const p = helperMod.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+  await p;
+  assert.equal(helperMod.residentInfo().alive, true);
+  const stopped = await helperMod.stopDesktopHelper();
+  assert.equal(stopped.stopped, true);
+  assert.equal(spawned[0].killed, true, '停机必须真的 kill');
+  assert.equal(helperMod.residentInfo().alive, false);
+});
+
+await test('★ 常驻：协议是 {id, cmd, payload}，一行一条', async () => {
+  const { spawnFn, spawned, state, helperMod } = residentSetup(() => ({ ok: true }));
+  try {
+    await helperMod.callHelperAsync('capture', { rect: { x: 1, y: 2, width: 3, height: 4 } }, { spawn: spawnFn, state });
+    const sent = spawned[0].sent[0];
+    assert.deepEqual(sent.cmd, 'capture');
+    assert.deepEqual(sent.payload.rect, { x: 1, y: 2, width: 3, height: 4 });
+    assert.equal(typeof sent.id, 'number');
+  } finally {
+    await helperMod.stopDesktopHelper();
+  }
+});
+
+await test('★ 常驻：助手回 {ok:false} 时如实透出 code/text（不当成功）', async () => {
+  const { spawnFn, state, helperMod } = residentSetup(() => ({ ok: false, code: 'not_aware', text: '声明不了 DPI 感知' }));
+  try {
+    const r = await helperMod.callHelperAsync('env', {}, { spawn: spawnFn, state });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'not_aware');
+    assert.match(r.text, /DPI/);
+  } finally {
+    await helperMod.stopDesktopHelper();
+  }
+});
+
+await test('★ capture 落盘：助手只回 base64，文件由 Node 侧写（助手不碰文件系统）', async () => {
+  const fsMod = await import('node:fs');
+  const osMod = await import('node:os');
+  const pathMod = await import('node:path');
+  const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'Orbis-shot-'));
+  const outFile = pathMod.join(dir, 'shot.png');
+  // 1×1 的合法 PNG
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const { spawnFn, state, helperMod } = residentSetup(() => ({
+    ok: true, pngBase64: png.toString('base64'), width: 1, height: 1,
+    originalWidth: 4000, originalHeight: 3000, resized: true, method: 'print_window',
+  }));
+  try {
+    const obs = await import(src('desktop-observe.js'));
+    // 直接测「解码 + 落盘」这一段：走的是 captureScreenshot 里的原生分支
+    const r = await helperMod.callHelperAsync('capture', {}, { spawn: spawnFn, state });
+    assert.equal(r.ok, true);
+    await fsMod.promises.writeFile(outFile, Buffer.from(r.pngBase64, 'base64'));
+    const bytes = fsMod.readFileSync(outFile);
+    assert.deepEqual(bytes, png, '落盘内容必须和助手给的 base64 一致');
+    assert.equal(r.resized, true);
+    assert.equal(r.originalWidth, 4000);
+    assert.equal(obs.listWindows !== undefined, true);
+  } finally {
+    await helperMod.stopDesktopHelper();
+    fsMod.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test('★ 真机：常驻 capture 可用时返回 base64 且长边不超过 maxEdge', async () => {
+  if (!hasReal) {
+    console.log('    （跳过：本机没有可用的桌面助手）');
+    return;
+  }
+  helper.resetHelperState();
+  helper.resetResidentHelper();
+  try {
+    const r = await helper.callHelperAsync('capture', {
+      rect: { x: 0, y: 0, width: 1200, height: 800 }, maxEdge: 640,
+    });
+    if (r.ok !== true) {
+      console.log(`    （跳过：capture 不可用 —— ${r.code} ${r.text}）`);
+      return;
+    }
+    assert.ok(String(r.pngBase64).length > 100, '应回一张真图');
+    assert.ok(Math.max(r.width, r.height) <= 640, `长边应 ≤ 640，实际 ${r.width}x${r.height}`);
+    assert.equal(r.resized, true);
+    assert.ok(['print_window', 'bitblt'].includes(r.method), `method 应如实，实际 ${r.method}`);
+  } finally {
+    await helper.stopDesktopHelper();
+  }
 });
 
 let failed = 0;

@@ -11,6 +11,7 @@ import { createHttpServer } from './http.js';
 import { createSiteRuntime } from './site-runtime.js';
 import { loadOrCreateKey } from './secrets.js';
 import { issueLocalToken, clearLocalToken } from './local-token.js';
+import { stopDesktopHelper } from './desktop-helper-win.js';
 import { markRetiredPresets } from './mcp-presets.js';
 import { attachWs } from './ws.js';
 import { log } from './util.js';
@@ -471,6 +472,14 @@ async function main() {
     try {
       await Promise.race([
         disposeExtractPool(),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+    } catch { /* 收不掉也照常退出 */ }
+    // ★ 桌面助手常驻进程必须跟着收掉：它是 spawn 出来的子进程，
+    //   我们退了它还在等 stdin，就成了孤儿（§5.4「服务端退出时随之结束」）。
+    try {
+      await Promise.race([
+        stopDesktopHelper(),
         new Promise((resolve) => setTimeout(resolve, 1000)),
       ]);
     } catch { /* 收不掉也照常退出 */ }

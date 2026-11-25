@@ -26,13 +26,15 @@
 
 use std::io::{Read, Write};
 
+mod capture;
 mod json;
+mod serve;
 mod win;
 
 use json::Json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const PROTOCOL: i64 = 1;
+const PROTOCOL: i64 = 2;
 
 /// 移动复核容差（与 desktop-input-win.js 的 CURSOR_TOLERANCE_PX 一致）。
 const CURSOR_TOLERANCE_PX: i32 = 24;
@@ -46,13 +48,27 @@ fn main() {
     let command = args.next().unwrap_or_default();
 
     // ★ DPI 感知必须是**第一件事**：任何窗口/坐标 API 之前。
+    //   常驻模式下也**只在这里调一次** —— 进程级 DPI 感知本来就是一个进程
+    //   只能声明一次的东西（§5.4 说的是不许缓存**显示器/DPI 值/桌面句柄**）。
     let aware = win::make_dpi_aware();
+
+    // ★ `serve`：常驻模式，按行读请求、按行回响应，stdin EOF 就干净退出。
+    if command == "serve" {
+        serve::run(aware);
+        return;
+    }
 
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let req = json::parse(&input).unwrap_or(Json::Null);
+    let out = dispatch(aware, &command, &req);
+    emit_line(&out);
+}
 
-    let out = match command.as_str() {
+/// 一个请求 → 一个响应。单次进程与常驻模式**共用**这一份：
+/// 否则同一个命令在两条路径上会有两套口径，迟早漂移。
+pub fn dispatch(aware: bool, command: &str, req: &Json) -> Json {
+    match command {
         "version" => Json::obj(vec![
             ("ok", Json::Bool(true)),
             ("version", Json::Str(VERSION.to_string())),
@@ -65,16 +81,71 @@ fn main() {
         "perform" => cmd_perform(aware, &req),
         "noise" => cmd_noise(aware, &req),
         "windows" => cmd_windows(aware, &req),
-        "drag-step" => cmd_drag_step(aware, &req),
+        "drag-step" => cmd_drag_step(aware, req),
+        "capture" => cmd_capture(req),
         "" => fail("bad_command", "缺少子命令"),
         other => fail("bad_command", &format!("未知子命令：{}", other)),
-    };
+    }
+}
 
-    let text = out.to_string();
+/// 一行 JSON 写出去并 flush（常驻模式靠这个不被管道缓冲卡住）。
+pub fn emit_line(value: &Json) {
+    let text = value.to_string();
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(text.as_bytes());
-    let _ = stdout.write_all(b"\n");
+    let _ = stdout.write_all(b"
+");
     let _ = stdout.flush();
+}
+
+/// 截图：**不写盘**，把 PNG base64 交回 Node 侧落盘（§5.2「助手不读写用户文件」）。
+///
+/// 这样即使助手被替换或被利用，也没有「任意路径写文件」这个能力 ——
+/// 落盘路径由 Node 侧决定（受控的 outFile）。
+fn cmd_capture(req: &Json) -> Json {
+    // 目标是窗口还是屏幕矩形？窗口优先（有句柄就不用自己算坐标）。
+    let hwnd = req
+        .get("window")
+        .and_then(|w| num_field(w, "handle"))
+        .or_else(|| int_field(req, "handle").map(|n| n as f64))
+        .unwrap_or(0.0) as i64;
+
+    let rect = req.get("rect").and_then(|r| {
+        Some((
+            num_field(r, "x")?.round() as i32,
+            num_field(r, "y")?.round() as i32,
+            num_field(r, "width")?.round() as i32,
+            num_field(r, "height")?.round() as i32,
+        ))
+    });
+    // Node 侧已经有窗口矩形时直接传进来，省一次窗口查询
+    let rect = rect.or_else(|| {
+        Some((
+            int_field(req, "x")? as i32,
+            int_field(req, "y")? as i32,
+            int_field(req, "width")? as i32,
+            int_field(req, "height")? as i32,
+        ))
+    });
+
+    let max_edge = int_field(req, "maxEdge").unwrap_or(capture::DEFAULT_MAX_EDGE as i64) as u32;
+
+    match capture::capture(hwnd, rect, max_edge) {
+        Ok(shot) => match capture::encode_png(&shot.rgba, shot.width, shot.height) {
+            Ok(png) => Json::obj(vec![
+                ("ok", Json::Bool(true)),
+                ("pngBase64", Json::Str(capture::base64_encode(&png))),
+                ("width", Json::Int(shot.width as i64)),
+                ("height", Json::Int(shot.height as i64)),
+                ("originalWidth", Json::Int(shot.original_width as i64)),
+                ("originalHeight", Json::Int(shot.original_height as i64)),
+                ("resized", Json::Bool(shot.resized)),
+                ("method", Json::Str(shot.method.to_string())),
+            ]),
+            Err(err) => fail("encode_failed", &err),
+        },
+        Err(err) => fail("capture_failed", &err),
+    }
 }
 
 fn fail(code: &str, text: &str) -> Json {
@@ -338,7 +409,9 @@ mod tests {
     #[test]
     fn version_is_semver() {
         assert!(VERSION.split('.').count() == 3, "version 应该是 x.y.z");
-        assert_eq!(PROTOCOL, 1);
+        // 阶段 B：版本 0.2.0 + 协议 2（Node 侧 DESKTOP_HELPER_VERSION / HELPER_PROTOCOL
+        // 必须同步，否则会静默连上阶段 A 的旧二进制）
+        assert_eq!(PROTOCOL, 2);
     }
 
     fn code_of(out: &Json) -> String {

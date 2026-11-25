@@ -104,7 +104,9 @@
 | `http-admin.js` | HTTP 管理门的分级表：defense/data/probe，nonce 与审计 |
 | `desktop-observe.js` | 桌面**观察**（列窗口/截指定窗口）；Windows 侧优先走原生助手的 `windows`（DWM 扩展边框 + WS_EX_TOOLWINDOW 过滤），助手不可用再回退 PowerShell |
 | `desktop-input*.js` | 桌面**输入**（`SendInput`，T2 共享桌面）：租约、接管检测、DPI、坐标校验；Windows 侧 `probeEnvironment` / `lastInputAt` / `cursorPosition` / `foregroundTitle` / `sampleInputNoise` / `perform(move·click)` 优先走原生助手，其余动作（scroll / key / text / drag）仍在 PowerShell |
-| `desktop-helper-win.js` | Windows 桌面助手客户端（阶段 A 单次进程）：候选路径、版本/协议/sha256 校验、`callHelper`、**fail-open 回退**（缺失/损坏/版本不符 → PowerShell，只记一次日志）。`ORBIS_DESKTOP_WIN_IMPL` 可强制 `powershell`，`ORBIS_DESKTOP_WIN_HELPER` 是排他覆盖路径 |
+| `native/orbis-desktop-win/src/capture.rs` | 原生截图（Rust）：`PrintWindow(PW_RENDERFULLCONTENT)` 优先、内存 `is_mostly_blank` 判空白后退回屏幕 `BitBlt`；**不写盘**（只回 `pngBase64`，落盘由 Node 决定）；纯 Rust 盒滤波缩放到 `maxEdge`（默认 1600）+ `png` crate `Compression::Fast` 编码 + 轻量 base64；所有 HDC/HBITMAP 走 RAII `Drop`，**不跨请求缓存显示器/DPI/桌面句柄**（§5.4） |
+| `native/orbis-desktop-win/src/serve.rs` | 常驻模式：一行一个 `{id,cmd,payload}`、每条响应写完即 flush、非法 JSON/未知命令只回 `{ok:false}` 不退出、stdin EOF 干净退出 |
+| `desktop-helper-win.js` | Windows 桌面助手客户端（**阶段 B**：常驻 `serve` + 单次进程兜底）。`callHelperAsync()` 走常驻：按自增 id 匹配响应、按行切 stdout（≥64 MB 缓冲容纳 base64 PNG）、单请求超时（默认 15 s / `capture` 20 s）后杀进程重启、崩溃 200 ms→1 s→5 s 退避、连续 5 次异常退出**自动降级 PowerShell**（绝不无限重启风暴）；`stopDesktopHelper()` 由停机钩子与 `process.once('exit')` 调用，不留孤儿。`callHelper()`（一次性进程）保留作兜底。订阅路径 `helperCandidates`/`resolveHelper`/`verifyHelper`（**先 sha256 后版本**）/`helperState` 不变 |
 | `desktop-island.js` | 独立桌面（§5.6 T1）**纯逻辑**：档位选择、启动白名单、窗口消息计划、截帧判定 |
 | `desktop-island-win.js` | 独立桌面的 Windows 实现：每岛一个常驻 island server（按行 JSON） |
 | `desktop-island-tools.js` | 三个主控专属工具：`desktop_island_launch` / `_observe` / `_input` |

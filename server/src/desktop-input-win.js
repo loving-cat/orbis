@@ -77,8 +77,8 @@
  * 实测过的项写在 `docs/WINDOWS.md` 的「桌面输入」一节；没实测的一律标出来，
  * 这份注释里不写"应该可以"。
  */
-import { spawnSync } from 'node:child_process';
-import { callHelper, helperState } from './desktop-helper-win.js';
+import { execFile } from 'node:child_process';
+import { callHelperAsync, helperState } from './desktop-helper-win.js';
 import {
   INPUT_FAIL, planInput, escapeForPsDoubleQuotes, classifyInputNoise,
   describePlatform as describePurePlatform,
@@ -94,10 +94,11 @@ const TIMEOUT_MS = 15_000;
  * `helperState()` 已经做过版本/哈希校验，返回 `mode:'native'` 才走这条；
  * 它自己失败（不是"不可用"）时**不回退** —— 那是真实答案，例如 not_aware。
  */
-function nativeCall(command, payload = {}, opts = {}) {
+async function nativeCall(command, payload = {}, opts = {}) {
   const state = helperState();
   if (state.mode !== 'native') return { ok: false, code: 'helper_unavailable', text: state.why };
-  return callHelper(command, payload, { state, ...opts });
+  // ★ 阶段 B：走**常驻进程**，一次往返 ~1ms；常驻起不来时它内部会退回一次性进程
+  return callHelperAsync(command, payload, { state, ...opts });
 }
 
 /** 原生助手这次能不能用（用来决定走哪条实现）。 */
@@ -252,17 +253,30 @@ public class DeskIn {
 "@
 `;
 
+/**
+ * 跑一段 PowerShell 并等它结束。
+ *
+ * ★ 阶段 B 起这里是**异步**的（`execFile` + Promise）。原来用 `spawnSync`
+ *   —— 一次点击要跑 3–4 段 PowerShell，每段都把整个 Node 事件循环按住
+ *   100–900 ms：所有房间的流式输出、心跳、WS 收发全部停住。
+ *   改用子进程回调之后，等待期间事件循环照常转。
+ */
 function run(script, { timeout = TIMEOUT_MS } = {}) {
-  const res = spawnSync(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-    { encoding: 'utf8', timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
-  );
-  if (res.error) return { ok: false, error: String(res.error.message || res.error) };
-  if (res.status !== 0) {
-    return { ok: false, error: (res.stderr || res.stdout || '').slice(0, 400) || `exit ${res.status}` };
-  }
-  return { ok: true, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim() };
+  return new Promise((resolve) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const detail = String(stderr || '').trim() || String(err.message || err);
+          resolve({ ok: false, error: detail.slice(0, 400) });
+          return;
+        }
+        resolve({ ok: true, stdout: String(stdout || '').trim(), stderr: String(stderr || '').trim() });
+      },
+    );
+  });
 }
 
 /** 这个模块在当前平台能不能用。 */
@@ -279,12 +293,12 @@ export function isSupported() {
  * @returns {{ok:true, screen:object, dpi:number, session:boolean}
  *   | {ok:false, code:string, text:string}}
  */
-export function probeEnvironment() {
+export async function probeEnvironment() {
   if (!isSupported()) {
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入实现` };
   }
   if (nativeAvailable()) return probeEnvironmentNative();
-  const res = run(`${WIN_PRELUDE}
+  const res = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'aware=0'; exit 0 }
 $i = [DeskIn]::ScreenInfo() -split ','
@@ -315,8 +329,8 @@ Write-Output ("aware=1 screen=" + $i[0] + "," + $i[1] + "," + $i[2] + "," + $i[3
  * `aware:false` 翻译成 `INPUT_FAIL.notAware`（与旧实现同码同文案）：
  * 声明不了 DPI 感知时坐标基准不可信，本轮不发输入。
  */
-function probeEnvironmentNative() {
-  const r = nativeCall('env');
+async function probeEnvironmentNative() {
+  const r = await nativeCall('env');
   if (!r.ok) return { ok: false, code: r.code, text: r.text };
   if (r.aware !== true) {
     return {
@@ -352,12 +366,12 @@ function probeEnvironmentNative() {
  *
  * @returns {{ok:true, lastInputAt:number, idleMs:number} | {ok:false, code:string, text:string}}
  */
-export function lastInputAt() {
+export async function lastInputAt() {
   if (!isSupported()) {
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入探针` };
   }
   if (nativeAvailable()) {
-    const r = nativeCall('probe');
+    const r = await nativeCall('probe');
     if (!r.ok) {
       return r.code === 'probe_unavailable'
         ? { ok: false, code: INPUT_FAIL.probeUnavailable, text: r.text }
@@ -365,7 +379,7 @@ export function lastInputAt() {
     }
     return idleFromTicks(Number(r.lastInputTick), Number(r.uptime));
   }
-  const res = run(`${WIN_PRELUDE}
+  const res = await run(`${WIN_PRELUDE}
 Write-Output ("tick=" + [DeskIn]::LastInputTick() + " uptime=" + [DeskIn]::Uptime())
 `);
   if (!res.ok) return { ok: false, code: INPUT_FAIL.callFailed, text: `取最后输入时间失败：${res.error}` };
@@ -407,12 +421,12 @@ function idleFromTicks(tick, uptime) {
  * @param {boolean} [p.verifyCursor] 移动类动作是否需要复核光标（默认 true）
  * @returns {{ok:true, at:object|null, foreground:string} | {ok:false, code:string, text:string}}
  */
-export function perform({ plan, verifyCursor = true, shouldAbort = null, onStep = null } = {}) {
+export async function perform({ plan, verifyCursor = true, shouldAbort = null, onStep = null } = {}) {
   if (!isSupported()) {
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入实现` };
   }
   if (!plan || !plan.action) return { ok: false, code: INPUT_FAIL.invalid, text: '没有可执行的输入计划' };
-  const fg = foregroundTitle();
+  const fg = await foregroundTitle();
   const foreground = fg.ok ? fg.title : '';
 
   if (plan.action === 'drag') return performDrag({ plan, shouldAbort, onStep });
@@ -422,11 +436,11 @@ export function perform({ plan, verifyCursor = true, shouldAbort = null, onStep 
     if (nativeAvailable()) return performNative(plan, foreground);
     const { x, y } = plan.point;
     // ★ 先移到位、复核、必要时重试；**到位之前绝不点击**
-    const moved = verifyCursor ? moveTo({ x, y }) : moveOnce({ x, y });
+    const moved = verifyCursor ? await moveTo({ x, y }) : await moveOnce({ x, y });
     if (!moved.ok) return moved;
     const actual = moved.at;
     if (plan.action === 'click') {
-      const clicked = run(`${WIN_PRELUDE}
+      const clicked = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 ${clickScript(plan)}
@@ -448,7 +462,7 @@ ${clickScript(plan)}
     const move = plan.point
       ? `[void][DeskIn]::SetCursorPos(${Math.round(plan.point.x)}, ${Math.round(plan.point.y)})\nStart-Sleep -Milliseconds 40\n`
       : '';
-    const res = run(`${WIN_PRELUDE}
+    const res = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 ${move}$n = [DeskIn]::Send(@([DeskIn]::Wheel(${notches * 120})))
@@ -468,7 +482,7 @@ Write-Output ("result=sent n=" + $n)
   if (plan.action === 'key' || plan.action === 'keyCombo') {
     const down = plan.codes.map((c) => `[void][DeskIn]::Send(@([DeskIn]::Key(${c}, $false)))`).join('\n');
     const up = [...plan.codes].reverse().map((c) => `[void][DeskIn]::Send(@([DeskIn]::Key(${c}, $true)))`).join('\n');
-    const res = run(`${WIN_PRELUDE}
+    const res = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 ${down}
@@ -488,7 +502,7 @@ Write-Output 'result=sent'
   }
 
   // type_text：剪贴板 + Ctrl+V（中文/emoji 必须这么走，见文件头）
-  const res = run(`${WIN_PRELUDE}
+  const res = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 Add-Type -AssemblyName System.Windows.Forms
@@ -525,8 +539,8 @@ Write-Output 'result=sent'
  * 错误码按老契约翻译：`not_aware` → INPUT_FAIL.notAware，`invalid` →
  * INPUT_FAIL.invalid，其余（含 cursor_not_reached）→ call_failed。
  */
-function performNative(plan, foreground) {
-  const r = nativeCall('perform', {
+async function performNative(plan, foreground) {
+  const r = await nativeCall('perform', {
     plan: {
       action: plan.action,
       point: plan.point,
@@ -572,7 +586,7 @@ const DRAG_BATCH = 4;
  * @returns {{ok:true, at:object, foreground:string, released:true}
  *   | {ok:false, code:string, text:string, released:boolean}}
  */
-export function performDrag({ plan, shouldAbort = null, onStep = null } = {}) {
+export async function performDrag({ plan, shouldAbort = null, onStep = null } = {}) {
   if (!plan || plan.action !== 'drag') {
     return { ok: false, code: INPUT_FAIL.invalid, text: '不是一条拖拽计划', released: true };
   }
@@ -589,14 +603,14 @@ export function performDrag({ plan, shouldAbort = null, onStep = null } = {}) {
     middle: ['MOUSEEVENTF_MIDDLEDOWN', 'MOUSEEVENTF_MIDDLEUP'],
   }[button];
   const stepMs = Math.min(200, Math.max(5, Math.trunc(Number(plan.stepMs)) || 12));
-  const fg = foregroundTitle();
+  const fg = await foregroundTitle();
   const foreground = fg.ok ? fg.title : '';
   let released = false;
 
   /** 松开鼠标键。幂等：已经松开就返回 true。 */
-  const up = () => {
+  const up = async () => {
     if (released) return true;
-    const r = run(`${WIN_PRELUDE}
+    const r = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 $u = [DeskIn]::Send(@([DeskIn]::Btn([DeskIn]::${upFlag})))
@@ -610,8 +624,8 @@ Write-Output ("result=up n=" + $u)
   const heldName = button === 'right' ? '右键' : button === 'middle' ? '中键' : '左键';
 
   /** 中断/失败统一出口：**先抬起再报错**。 */
-  const stop = (code, text) => {
-    const ok = up();
+  const stop = async (code, text) => {
+    const ok = await up();
     return {
       ok: false,
       code,
@@ -624,7 +638,7 @@ Write-Output ("result=up n=" + $u)
 
   /**
    * 还没按下鼠标就失败：**没有需要松开的东西**。
-   * 走 `stop()` 会多发一次 up —— 虽然无害，但审计里会看起来像"按了又松"，
+   * 走 `await stop()` 会多发一次 up —— 虽然无害，但审计里会看起来像"按了又松"，
    * 而真实情况是"一次都没按"。并且多一次 PS 进程启动约 100ms。
    */
   const failBeforeDown = (code, text) => ({
@@ -635,7 +649,7 @@ Write-Output ("result=up n=" + $u)
   });
 
   // ① 移到位 + 按下（同一条脚本，减少中途被抢的机会）
-  const down = run(`${WIN_PRELUDE}
+  const down = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 $n0 = [DeskIn]::MoveTo(${Math.round(Number(plan.from.x))}, ${Math.round(Number(plan.from.y))})
@@ -688,22 +702,22 @@ Write-Output ("result=down n=" + $d + " at=" + $c0[0] + "," + $c0[1])
           + `Start-Sleep -Milliseconds ${stepMs}`;
       })
       .join('\n');
-    const seg = run(`${WIN_PRELUDE}
+    const seg = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 ${body}
 $c = [DeskIn]::Cursor()
 Write-Output ("result=moved at=" + $c[0] + "," + $c[1])
 `);
-    if (!seg.ok) return stop(INPUT_FAIL.callFailed, `拖拽移动失败：${seg.error}`);
+    if (!seg.ok) return await stop(INPUT_FAIL.callFailed, `拖拽移动失败：${seg.error}`);
     if ((seg.stdout || '').includes('result=not_aware')) {
-      return stop(INPUT_FAIL.notAware, 'DPI 感知声明失败，没发输入');
+      return await stop(INPUT_FAIL.notAware, 'DPI 感知声明失败，没发输入');
     }
     if ((seg.stdout || '').includes('result=move_failed')) {
-      return stop(INPUT_FAIL.callFailed, '拖拽途中移动事件没发出去');
+      return await stop(INPUT_FAIL.callFailed, '拖拽途中移动事件没发出去');
     }
     if (!(seg.stdout || '').includes('result=moved')) {
-      return stop(INPUT_FAIL.callFailed, `拖拽没走动：${(seg.stdout || '').slice(0, 200)}`);
+      return await stop(INPUT_FAIL.callFailed, `拖拽没走动：${(seg.stdout || '').slice(0, 200)}`);
     }
     // ★ 段后核对光标真的到了：这台机器上有程序在合成鼠标输入（issue #34），
     //   移动事件可以返回成功、光标却被拉回 —— 不核对就会“报告成功但没拖到”。
@@ -714,7 +728,7 @@ Write-Output ("result=moved at=" + $c[0] + "," + $c[1])
       ? { x: Number(at[1]), y: Number(at[2]) }
       : { x: Number(last.x), y: Number(last.y) };
     if (Math.abs(actual.x - Number(last.x)) > 2 || Math.abs(actual.y - Number(last.y)) > 2) {
-      return stop(
+      return await stop(
         INPUT_FAIL.callFailed,
         `拖到第 ${moved}/${stops.length} 站时光标没到位`
         + `（要到 (${last.x},${last.y})，实际 (${actual.x},${actual.y})）`
@@ -727,13 +741,14 @@ Write-Output ("result=moved at=" + $c[0] + "," + $c[1])
     //   把 1~2px 的正常抖动当成“用户动了鼠标”，然后中止拖拽并吊销租约。
     if (typeof onStep === 'function') onStep({ at: actual, index: moved, total: stops.length });
     if (typeof shouldAbort === 'function') {
-      const verdict = shouldAbort({ at: last, index: moved, total: stops.length });
-      if (verdict) return stop(verdict.code || INPUT_FAIL.yielded, verdict.text || '拖拽被中断');
+      // shouldAbort 可能是 async（会话层要重新探租约/环境），两种都要能等
+      const verdict = await Promise.resolve(shouldAbort({ at: last, index: moved, total: stops.length }));
+      if (verdict) return await stop(verdict.code || INPUT_FAIL.yielded, verdict.text || '拖拽被中断');
     }
   }
 
   // ③ 抬起（终点已经在 stops 里走过了）
-  if (!up()) {
+  if (!await up()) {
     return {
       ok: false,
       code: INPUT_FAIL.callFailed,
@@ -744,7 +759,7 @@ Write-Output ("result=moved at=" + $c[0] + "," + $c[1])
   // ★ 抬起后再看一眼光标：本机上实测过“段校都通过了、抬起时位置却被拉走”（issue #34
   //   的那种合成输入）。消息已经发出去了，撤回不了 —— 所以这不算失败，但必须
   //   如实告诉上层“落在哪儿”，而不是回一个理想的终点。
-  const cur = cursorPosition();
+  const cur = await cursorPosition();
   const at = cur?.ok ? { x: Number(cur.x), y: Number(cur.y) } : { x: Number(plan.to.x), y: Number(plan.to.y) };
   const drifted = cur?.ok
     && (Math.abs(at.x - Number(plan.to.x)) > 2 || Math.abs(at.y - Number(plan.to.y)) > 2);
@@ -762,8 +777,8 @@ Write-Output ("result=moved at=" + $c[0] + "," + $c[1])
 }
 
 /** 一次移动 + 读回光标（不做重试）。 */
-function moveOnce({ x, y }) {
-  const res = run(`${WIN_PRELUDE}
+async function moveOnce({ x, y }) {
+  const res = await run(`${WIN_PRELUDE}
 $aware = [DeskIn]::MakeAware()
 if (-not $aware) { Write-Output 'result=not_aware'; exit 0 }
 [void][DeskIn]::SetCursorPos(${Math.round(x)}, ${Math.round(y)})
@@ -791,10 +806,10 @@ Write-Output ("result=moved x=" + $p[0] + " y=" + $p[1])
  *
  * **仍然不到位时绝不点击** —— 在错的位置上点下去比不点危险得多。
  */
-function moveTo({ x, y }) {
+async function moveTo({ x, y }) {
   let last = null;
   for (let i = 0; i < MOVE_ATTEMPTS; i += 1) {
-    const r = moveOnce({ x, y });
+    const r = await moveOnce({ x, y });
     if (!r.ok) {
       // 平台层硬失败（无会话/无感知）不重试，直接上抛
       if (r.code !== INPUT_FAIL.callFailed) return r;
@@ -805,7 +820,7 @@ function moveTo({ x, y }) {
     if (Math.abs(r.at.x - x) <= CURSOR_TOLERANCE_PX && Math.abs(r.at.y - y) <= CURSOR_TOLERANCE_PX) {
       return r;
     }
-    if (i < MOVE_ATTEMPTS - 1) sleepMs(60);
+    if (i < MOVE_ATTEMPTS - 1) await delay(60);
   }
   if (last?.ok) {
     return {
@@ -817,9 +832,17 @@ function moveTo({ x, y }) {
   return last ?? { ok: false, code: INPUT_FAIL.callFailed, text: '移动失败' };
 }
 
-/** 阻塞一小会儿（这里是同步上下文，用 Atomics.wait 而不是忙等）。 */
-function sleepMs(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Number(ms) || 0));
+/**
+ * 等一下（异步）。
+ *
+ * ★ 阶段 B 起不再用 `Atomics.wait` 忙等：那段代码会把整个事件循环按住，
+ *   而这里的等待常常发生在「点击之后复核光标之前」，正好是所有房间都在流式输出的时刻。
+ */
+function delay(ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, Math.max(0, Number(ms) || 0));
+    t.unref?.();
+  });
 }
 
 /** 点击那一段（在同一个 PS 进程里紧跟移动，减少中间被抢的机会）。 */
@@ -845,14 +868,14 @@ Write-Output 'result=clicked'`;
  *
  * 用途：点了之后**核对结果**（规格 §5.2「观察—确认—重新校验目标—执行—核对结果」）。
  */
-export function cursorPosition() {
+export async function cursorPosition() {
   if (!isSupported()) return { ok: false, code: INPUT_FAIL.notPlatform, text: '当前平台没有 Windows 输入实现' };
   if (nativeAvailable()) {
-    const r = nativeCall('cursor');
+    const r = await nativeCall('cursor');
     if (!r.ok) return { ok: false, code: INPUT_FAIL.callFailed, text: `取光标位置失败：${r.text}` };
     return { ok: true, x: Number(r.x) || 0, y: Number(r.y) || 0 };
   }
-  const res = run(`${WIN_PRELUDE}
+  const res = await run(`${WIN_PRELUDE}
 [void][DeskIn]::MakeAware()
 $p = [DeskIn]::Cursor()
 Write-Output ("x=" + $p[0] + " y=" + $p[1])
@@ -903,7 +926,7 @@ Write-Output ("x=" + $p[0] + " y=" + $p[1])
  * @returns {{ok:true, phantom:boolean, samples:number[], min:number, max:number}
  *   | {ok:false, code:string, text:string}}
  */
-export function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 } = {}) {
+export async function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 } = {}) {
   if (!isSupported()) {
     return { ok: false, code: INPUT_FAIL.notPlatform, text: `当前平台（${process.platform}）没有 Windows 输入探针` };
   }
@@ -911,7 +934,7 @@ export function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 
   // 原生助手：采样与等待都在**它自己的进程里**（消灭 JS 侧 Atomics.wait），
   // 判据仍然是下面那套 classifyInputNoise —— 两个平台共用，不在这里另写一份。
   if (nativeAvailable()) {
-    const r = nativeCall('noise', { samples: n, intervalMs }, { timeoutMs: 20_000 });
+    const r = await nativeCall('noise', { samples: n, intervalMs }, { timeoutMs: 20_000 });
     if (!r.ok) {
       return r.code === 'probe_unavailable'
         ? { ok: false, code: INPUT_FAIL.probeUnavailable, text: r.text }
@@ -941,13 +964,13 @@ export function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 
   const gaps = [];
   const cursors = [];
   for (let i = 0; i < n; i += 1) {
-    const r = lastInputAt();
+    const r = await lastInputAt();
     if (!r.ok) return r;
     gaps.push(Math.max(0, Math.round(Number(r.idleMs) || 0)));
-    const c = cursorPosition();
+    const c = await cursorPosition();
     if (!c.ok) return c;
     cursors.push({ x: c.x, y: c.y });
-    if (i < n - 1) sleepMs(intervalMs);
+    if (i < n - 1) await delay(intervalMs);
   }
   // ★ 光标全程没动 = 这批"输入"没有真的在指东西。
   //   合成输入的常见来源（远程控制心跳、驱动、输入法候选窗）会重置
@@ -976,14 +999,14 @@ export function sampleInputNoise({ samples = 5, intervalMs = 120, quietMs = 250 
 }
 
 /** 当前前台窗口标题（审计用：记下"动的是哪个窗口"，不记窗口内容）。 */
-export function foregroundTitle() {
+export async function foregroundTitle() {
   if (!isSupported()) return { ok: false, code: INPUT_FAIL.notPlatform, text: '当前平台没有 Windows 输入实现' };
   if (nativeAvailable()) {
-    const r = nativeCall('foreground');
+    const r = await nativeCall('foreground');
     if (!r.ok) return { ok: false, code: INPUT_FAIL.callFailed, text: r.text };
     return { ok: true, title: String(r.title ?? '').slice(0, 200) };
   }
-  const res = run(`${WIN_PRELUDE}
+  const res = await run(`${WIN_PRELUDE}
 Write-Output ("title=" + [DeskIn]::ForegroundTitle())
 `);
   if (!res.ok) return { ok: false, code: INPUT_FAIL.callFailed, text: res.error };
@@ -999,7 +1022,7 @@ Write-Output ("title=" + [DeskIn]::ForegroundTitle())
  * @returns {{ok:true, at:object|null, foreground:string, plan:object, screen:object}
  *   | {ok:false, code:string, text:string}}
  */
-export function performAction({ action, point = null, button = 'left', clicks = 1, delta = 0, key = null, keyCombo = null, text = '' } = {}) {
+export async function performAction({ action, point = null, button = 'left', clicks = 1, delta = 0, key = null, keyCombo = null, text = '' } = {}) {
   const env = probeEnvironment();
   if (!env.ok) return env;
   if (!env.session) {

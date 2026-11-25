@@ -78,7 +78,7 @@ const ENTRIES = [
 
 // ---------------------------------------------------------------- 非 darwin 守卫
 for (const [name, call] of ENTRIES) {
-  test(`${name}()：非 darwin 直接返回 not_platform`, () => {
+  test(`${name}()：非 darwin 直接返回 not_platform`, async () => {
     // ★ 这条守的是 Linux CI：desktop-input-session.js 在非 win32 上都会落到
     //   本模块，如果这里不挡，Ubuntu 上会去 spawn 一个 macOS 二进制。
     for (const plat of ['linux', 'win32', 'freebsd']) {
@@ -91,14 +91,14 @@ for (const [name, call] of ENTRIES) {
   });
 }
 
-test('isSupported()：非 darwin 恒为 false，且不抛异常', () => {
+test('isSupported()：非 darwin 恒为 false，且不抛异常', async () => {
   for (const plat of ['linux', 'win32']) {
     assert.equal(withPlatform(plat, () => M.isSupported()), false);
   }
 });
 
 // ---------------------------------------------------------------- 参数拼装
-test('toHelperRequest：六个动作都翻成助手能懂的请求', () => {
+test('toHelperRequest：六个动作都翻成助手能懂的请求', async () => {
   assert.deepEqual(
     M.toHelperRequest({ action: 'move', point: { x: 10, y: 20 } }),
     { action: 'move', point: { x: 10, y: 20 } },
@@ -116,7 +116,7 @@ test('toHelperRequest：六个动作都翻成助手能懂的请求', () => {
   assert.deepEqual(M.toHelperRequest({ action: 'type_text', text: 'hi' }), { action: 'type_text', text: 'hi' });
 });
 
-test('★ scroll 带坐标时透传 point（macOS 滚轮事件发给鼠标下那个窗口）', () => {
+test('★ scroll 带坐标时透传 point（macOS 滚轮事件发给鼠标下那个窗口）', async () => {
   // 不先移动就滚 → 会滚到光标上次停留的无关窗口。用户在 A 窗口让 bot 看着，
   // bot 滚了 B —— 而且不会报错。planInput 对 scroll 本来就允许带 point（叫 at）。
   const withPoint = M.toHelperRequest({ action: 'scroll', delta: -3, point: { x: 500, y: 400 } });
@@ -129,7 +129,7 @@ test('★ scroll 带坐标时透传 point（macOS 滚轮事件发给鼠标下那
   const nullPoint = M.toHelperRequest({ action: 'scroll', delta: 1, point: null });
   assert.equal('point' in nullPoint, false);
 });
-test('★ toHelperRequest：用 keys 不用 codes（Win32 键码在 macOS 上是错的）', () => {
+test('★ toHelperRequest：用 keys 不用 codes（Win32 键码在 macOS 上是错的）', async () => {
   // Win32 里 v = 0x56，macOS 的 CGKeyCode 里 v = 0x09 —— 完全不是一回事。
   // 如果哪天有人「顺手」把 codes 传下去，cmd+V 会变成别的键。
   const req = M.toHelperRequest({ action: 'keyCombo', keys: ['cmd', 'v'], codes: [0x5b, 0x56] });
@@ -137,7 +137,7 @@ test('★ toHelperRequest：用 keys 不用 codes（Win32 键码在 macOS 上是
   assert.equal(JSON.stringify(req).includes('86'), false, '不许把 Win32 码漏进请求');
 });
 
-test('toHelperRequest：缺参数的动作返回 null（交给上层报 invalid）', () => {
+test('toHelperRequest：缺参数的动作返回 null（交给上层报 invalid）', async () => {
   assert.equal(M.toHelperRequest(null), null);
   assert.equal(M.toHelperRequest({}), null);
   assert.equal(M.toHelperRequest({ action: 'move' }), null);
@@ -146,7 +146,7 @@ test('toHelperRequest：缺参数的动作返回 null（交给上层报 invalid�
   assert.equal(M.toHelperRequest({ action: 'nonsense' }), null);
 });
 
-test('★ drag 在参数层就被标出来（不发下去，也不假装支持）', () => {
+test('★ drag 在参数层就被标出来（不发下去，也不假装支持）', async () => {
   assert.deepEqual(M.toHelperRequest({ action: 'drag' }), { action: 'drag' });
   const r = withPlatform('darwin', () => M.perform({ plan: { action: 'drag', from: { x: 0, y: 0 }, to: { x: 9, y: 9 } } }));
   assert.equal(r.ok, false);
@@ -161,7 +161,7 @@ const fakeRun = (out) => (helper, args, input) => {
   return out;
 };
 
-test('parseHelperOutput：解析成功 / 失败 / 坏输出', () => {
+test('parseHelperOutput：解析成功 / 失败 / 坏输出', async () => {
   assert.deepEqual(M.parseHelperOutput('{"ok":true,"x":1}'), { ok: true, x: 1 });
   const bad = M.parseHelperOutput('{"ok":false,"code":"invalid","text":"参数不对"}');
   assert.equal(bad.ok, false);
@@ -175,7 +175,7 @@ test('parseHelperOutput：解析成功 / 失败 / 坏输出', () => {
   assert.match(noDetail.text, /没有说明原因/);
 });
 
-test('★★ not_authorized 原样上抛，不许被降级成 call_failed', () => {
+test('★★ not_authorized 原样上抛，不许被降级成 call_failed', async () => {
   // 授权不足是「用户要去开」，不是「工具坏了」—— 上层对这两种的处理完全不同：
   // call_failed 会被当成故障重试，not_authorized 要引导用户去设置页。
   const r = withPlatform('darwin', () => M.perform({
@@ -188,7 +188,7 @@ test('★★ not_authorized 原样上抛，不许被降级成 call_failed', () =
   assert.match(r.text, /辅助功能/);
 });
 
-test('probeEnvironment：助手的 session/authorized 如实透传', () => {
+test('probeEnvironment：助手的 session/authorized 如实透传', async () => {
   const screen = { x: -100, y: 0, width: 2000, height: 1000 };
   const r = withPlatform('darwin', () => M.probeEnvironment({
     run: fakeRun(JSON.stringify({ ok: true, screen, dpi: 192, session: false, locked: true, authorized: false })),
@@ -201,14 +201,14 @@ test('probeEnvironment：助手的 session/authorized 如实透传', () => {
   assert.equal(r.authorized, false);
 });
 
-test('游标位置不是数字时不许返回 ok', () => {
+test('游标位置不是数字时不许返回 ok', async () => {
   const r = withPlatform('darwin', () => M.cursorPosition({ run: fakeRun('{"ok":true,"x":"abc"}') }));
   assert.equal(r.ok, false);
   assert.equal(r.code, INPUT_FAIL.callFailed);
 });
 
 // ---------------------------------------------------------------- 装配层
-test('★ 装配层在 darwin 上选到的是 mac 实现（不是 Windows 的）', () => {
+test('★ 装配层在 darwin 上选到的是 mac 实现（不是 Windows 的）', async () => {
   // 这条守的是最容易出错的地方：process.platform 判断写错，
   // macOS 上就会跑去调 powershell —— 那不会报错，只会什么都不发生。
   const plat = S.desktopInputPlatform();
@@ -217,7 +217,7 @@ test('★ 装配层在 darwin 上选到的是 mac 实现（不是 Windows 的）
   }
 });
 
-test('★★ 非 darwin 时整条链路是「明确拒绝」，不是静默成功', () => {
+test('★★ 非 darwin 时整条链路是「明确拒绝」，不是静默成功', async () => {
   S.setDesktopInputPlatform({
     probeEnvironment: M.probeEnvironment,
     probeLastInput: M.lastInputAt,
@@ -227,9 +227,9 @@ test('★★ 非 darwin 时整条链路是「明确拒绝」，不是静默成�
     foregroundTitle: M.foregroundTitle,
   });
   const session = S.desktopInputSession();
-  const lease = session.acquireLease({ taskId: 'tr_mac_1', botId: 'bot_main', generation: 'gen-1' });
+  const lease = await session.acquireLease({ taskId: 'tr_mac_1', botId: 'bot_main', generation: 'gen-1' });
   assert.equal(lease.ok, true, '租约是平台无关的，能申请');
-  const r = withPlatform('linux', () => session.act({
+  const r = withPlatform('linux', async () => await session.act({
     identity: { taskId: 'tr_mac_1', botId: 'bot_main', epoch: lease.epoch },
     input: { action: 'move', point: { x: 100, y: 100 } },
   }));
@@ -242,7 +242,7 @@ test('★★ 非 darwin 时整条链路是「明确拒绝」，不是静默成�
     '拒绝要进审计，否则排查时看不到「为什么没动」');
 });
 
-test('平台层失败不污染接管检测状态（失败之后仍可正常重试）', () => {
+test('平台层失败不污染接管检测状态（失败之后仍可正常重试）', async () => {
   S.setDesktopInputPlatform({
     probeEnvironment: () => ({ ok: true, screen: { x: 0, y: 0, width: 800, height: 600 }, dpi: 96, session: true }),
     probeLastInput: () => ({ ok: true, lastInputAt: Date.now() - 60_000, idleMs: 60_000 }),
@@ -252,8 +252,8 @@ test('平台层失败不污染接管检测状态（失败之后仍可正常重�
     foregroundTitle: () => ({ ok: true, title: 'Test' }),
   });
   const session = S.desktopInputSession();
-  const lease = session.acquireLease({ taskId: 'tr_2', botId: 'b', generation: 'g' });
-  const r = session.act({
+  const lease = await session.acquireLease({ taskId: 'tr_2', botId: 'b', generation: 'g' });
+  const r = await session.act({
     identity: { taskId: 'tr_2', botId: 'b', epoch: lease.epoch },
     input: { action: 'move', point: { x: 1, y: 1 } },
   });
@@ -265,7 +265,7 @@ test('平台层失败不污染接管检测状态（失败之后仍可正常重�
   S.setDesktopInputPlatform({});
 });
 
-test('锁屏（session:false）时整条链路返回 no_session 并吊销租约', () => {
+test('锁屏（session:false）时整条链路返回 no_session 并吊销租约', async () => {
   S.setDesktopInputPlatform({
     probeEnvironment: () => ({ ok: true, screen: { x: 0, y: 0, width: 800, height: 600 }, dpi: 96, session: false, locked: true }),
     probeLastInput: () => ({ ok: true, lastInputAt: Date.now() - 60_000, idleMs: 60_000 }),
@@ -275,8 +275,8 @@ test('锁屏（session:false）时整条链路返回 no_session 并吊销租约'
     foregroundTitle: () => ({ ok: true, title: '' }),
   });
   const session = S.desktopInputSession();
-  const lease = session.acquireLease({ taskId: 'tr_3', botId: 'b', generation: 'g' });
-  const r = session.act({
+  const lease = await session.acquireLease({ taskId: 'tr_3', botId: 'b', generation: 'g' });
+  const r = await session.act({
     identity: { taskId: 'tr_3', botId: 'b', epoch: lease.epoch },
     input: { action: 'move', point: { x: 1, y: 1 } },
   });
@@ -286,7 +286,7 @@ test('锁屏（session:false）时整条链路返回 no_session 并吊销租约'
 });
 
 // ---------------------------------------------------------------- 平台表与文档
-test('★ describePlatform 照实标 supported:true，drag 仍在不支持里', () => {
+test('★ describePlatform 照实标 supported:true，drag 仍在不支持里', async () => {
   const d = M.describePlatform();
   assert.equal(d.platform, 'darwin');
   assert.equal(d.supported, true, '实机验收过了才敢写 true');
@@ -298,7 +298,7 @@ test('★ describePlatform 照实标 supported:true，drag 仍在不支持里', 
   }
 });
 
-test('纯逻辑层的 describePlatform(darwin) 与实现说的一致', () => {
+test('纯逻辑层的 describePlatform(darwin) 与实现说的一致', async () => {
   const fromPure = P.describePlatform('darwin');
   const fromImpl = M.describePlatform();
   assert.equal(fromPure.supported, fromImpl.supported, '两处说法必须一致');
@@ -307,7 +307,7 @@ test('纯逻辑层的 describePlatform(darwin) 与实现说的一致', () => {
   assert.deepEqual([...fromPure.actions].sort(), [...fromImpl.actions].sort());
 });
 
-test('待办文档存在且已改成验收记录', () => {
+test('待办文档存在且已改成验收记录', async () => {
   const doc = path.join(import.meta.dirname, '..', '..', 'docs', 'MACOS-DESKTOP-INPUT.md');
   assert.equal(fs.existsSync(doc), true);
   const text = fs.readFileSync(doc, 'utf8');
@@ -322,11 +322,11 @@ test('待办文档存在且已改成验收记录', () => {
 const HAS_HELPER = process.platform === 'darwin' && M.isSupported();
 
 if (!HAS_HELPER) {
-  test('（跳过真机项：当前不是 macOS 或没有助手二进制）', () => {
+  test('（跳过真机项：当前不是 macOS 或没有助手二进制）', async () => {
     assert.ok(true);
   });
 } else {
-  test('真机：探针返回真实秒数（不是 0 / -1）', () => {
+  test('真机：探针返回真实秒数（不是 0 / -1）', async () => {
     const r = M.lastInputAt();
     assert.equal(r.ok, true, '探针不可用：' + r.text);
     assert.equal(Number.isFinite(r.lastInputAt), true);
@@ -334,7 +334,7 @@ if (!HAS_HELPER) {
     assert.ok(r.idleMs >= 0);
   });
 
-  test('真机：探出屏幕矩形与 dpi', () => {
+  test('真机：探出屏幕矩形与 dpi', async () => {
     const r = M.probeEnvironment();
     assert.equal(r.ok, true);
     assert.ok(r.screen.width > 0 && r.screen.height > 0);
@@ -342,7 +342,7 @@ if (!HAS_HELPER) {
     assert.equal(typeof r.session, 'boolean');
   });
 
-  test('真机：光标位置在屏幕矩形内', () => {
+  test('真机：光标位置在屏幕矩形内', async () => {
     const env = M.probeEnvironment();
     const cur = M.cursorPosition();
     assert.equal(cur.ok, true);
@@ -351,13 +351,13 @@ if (!HAS_HELPER) {
     assert.equal(inside, true, '光标 ' + cur.x + ',' + cur.y + ' 不在屏幕 ' + JSON.stringify(env.screen) + ' 里');
   });
 
-  test('真机：不认识的键必须报 invalid（不许猜）', () => {
+  test('真机：不认识的键必须报 invalid（不许猜）', async () => {
     const unknown = M.perform({ plan: { action: 'key', keys: ['definitely_not_a_key'] } });
     assert.equal(unknown.ok, false);
     assert.equal(unknown.code, INPUT_FAIL.invalid, '不认识的键必须报 invalid，不能猜一个键码');
   });
 
-  test('真机：认识的键不会被当成不认识（键码表覆盖）', () => {
+  test('真机：认识的键不会被当成不认识（键码表覆盖）', async () => {
     // 键码表在 Swift 里，JS 侧测不到；这里用助手的真实反应验：
     // 认识的键在没授权时是 not_authorized（说明解析过了），不认识才是 invalid。
     const samples = ['ctrl', 'shift', 'alt', 'cmd', 'enter', 'tab', 'esc', 'space', 'a', 'z', '0', '9', 'f12'];
@@ -367,7 +367,7 @@ if (!HAS_HELPER) {
     }
   });
 
-  test('真机：前台标题不报错（可以是空串）', () => {
+  test('真机：前台标题不报错（可以是空串）', async () => {
     const r = M.foregroundTitle();
     assert.equal(r.ok, true, '读前台标题失败：' + r.text);
     assert.equal(typeof r.title, 'string');
