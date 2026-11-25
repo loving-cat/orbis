@@ -472,6 +472,10 @@ export function createTaskSupervisor({
           if (active.length && inflight.has(id)) return false;
           const botId = taskRun?.owner?.leadBotId ?? null;
           if (botId && busyBots.has(botId)) return false;
+          // ★ 同一个 Bot 也不能跟「父任务内联推进」撞车：
+          //   内联那条路用的是 `childBusyBots`，调度器只看自己的 `busyBots` ——
+          //   两份各看各的，就会把同一份活派给同一个会话两次。
+          if (botId && childBusyBots.has(botId)) return false;
           return true;
         };
 
@@ -849,8 +853,6 @@ export function createTaskSupervisor({
         if (batch.length) {
           // ★ 逐个子任务独立收尾：一个抛异常不能带走同批里别人的进度。
           batchResults = await Promise.allSettled(batch.map((kid) => runKidOnce(kid)));
-          // 有执行收口了 → 根名额已经空出来，立刻叫醒等名额的兄弟。
-          if (progressed) await wakeSlotWaiters(taskRun);
         }
         for (let i = 0; i < batch.length; i += 1) {
           const kid = batch[i];
@@ -876,6 +878,10 @@ export function createTaskSupervisor({
             progressed = true;
           }
         }
+        // ★ 本批真的收口了 → 根名额已经空出，立刻叫醒等名额的兄弟。
+        //   必须写在设 `progressed` 的循环**之后**：写在前面时 progressed 恒为
+        //   false，这句永远不执行，等着名额的子任务只能傻等满 BUSY_RETRY_MS。
+        if (progressed) await wakeSlotWaiters(taskRun);
         if (!progressed) {
           // ★ 本批之外还有「从没试过、现在就能跑」的子任务 → 接着下一波。
           //

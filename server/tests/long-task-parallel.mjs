@@ -385,6 +385,48 @@ await test('★ 4b. 撞到并发门：不执行、不判死，名额空出后接
 });
 
 // ---------------------------------------------------------------------------
+// 4c. 内联收口释放名额 → 立刻唤醒等待中的兄弟
+// ---------------------------------------------------------------------------
+
+await test('★ 4c. 父任务内联收口释放名额 → 立刻叫醒等待中的兄弟（不再傻等 BUSY_RETRY_MS）', async () => {
+  const rootId = await makeRoot({ concurrencyLimit: 2 });
+  // 先把两个名额里的一个占住：只占「预留」，还没开始跑（避免被判成结果未知）。
+  // 这样父任务内联一次放两份进来时，必有一份撞门排队。
+  const root = taskRuns.read(rootId).taskRun;
+  const hold = await taskRuns.mutate(rootId, {
+    mutate: (cur) => ({
+      ...cur,
+      attemptSlots: {
+        [rootId + '::a_hold_1']: {
+          attemptId: 'a_hold_1', taskRunId: rootId, botId: chief.id, revision: root.revision,
+          phase: 'reserved', reservedAt: Date.now(), startedAt: null, settledAt: null,
+        },
+      },
+    }),
+  });
+  assert.equal(hold.ok, true, '占住名额应成功：' + (hold.text ?? ''));
+  const kidIds = [
+    await addKid(rootId, { botId: members[0].id }),
+    await addKid(rootId, { botId: members[1].id }),
+  ];
+
+  const m = meter();
+  const sup = makeSupervisor({ execute: async () => ({ ok: true, stop: 'yielded' }), executeMember: memberRunner(m, 60) });
+  const t0 = Date.now();
+  sup.notify(rootId);
+  const { runs } = await waitFor(sup, kidIds, (rs) => rs.every((r) => r.state === 'completed'));
+  const elapsed = Date.now() - t0;
+  sup.dispose();
+
+  for (const [i, run] of runs.entries()) {
+    assert.equal(run.state, 'completed', `第 ${i + 1} 份分工应完成，实际 ${run.state}（${run.flags?.blockedReason ?? ''}）`);
+  }
+  // 撞门那份排的是 BUSY_RETRY_MS（15s）：能在 8s 内跑完，说明是同批收口就唤醒，
+  // 而不是等定时器到点。这一句正好挡住「progressed 判在循环之前」那种死代码回归。
+  assert.ok(elapsed < 8_000, `撞门的那份应被立刻唤醒，实测总耗时 ${elapsed}ms`);
+});
+
+// ---------------------------------------------------------------------------
 // 5. 上游熔断 → 并发自动降回 1
 // ---------------------------------------------------------------------------
 
