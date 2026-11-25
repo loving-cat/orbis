@@ -251,6 +251,8 @@ export function createTaskSupervisor({
   const advanceLocks = new Map();
   /** 内联推进子任务时，正在被用掉的 Bot（保证同一个 Bot 不并发）。 */
   const childBusyBots = new Set();
+  /** 调度器（launch）正在用掉的 Bot；内联选批时要避开它（另一半互斥）。 */
+  const schedulerBusyBots = new Set();
   /**
    * 因为「根并发名额已满」而让出、正在等名额的子任务。
    *
@@ -384,7 +386,10 @@ export function createTaskSupervisor({
   function pickKidBatch(liveKids, cap) {
     const limit = Math.max(0, Math.floor(Number(cap) || 0));
     if (!limit) return [];
-    const busyBots = new Set();
+    // ★ 从调度器正在用掉的 Bot 起步：`canRun()` 已经会避开 `childBusyBots`（内联在用），
+    //   这里补齐反向那一半 —— 内联也要避开调度器正在跑的会话，否则两条路径各看各的，
+    //   同一份活会被派给同一个 Bot 两次（同一个会话只有一个，第二个必然撞）。
+    const busyBots = new Set(schedulerBusyBots);
     const claimedFiles = new Set();
     const batch = [];
     const ordered = [...liveKids].sort((a, b) => priorityOf(a) - priorityOf(b));
@@ -490,7 +495,7 @@ export function createTaskSupervisor({
           const botId = taskRun?.owner?.leadBotId ?? null;
           queue.delete(id);
           running.add(id);
-          if (botId) busyBots.add(botId);
+          if (botId) { busyBots.add(botId); schedulerBusyBots.add(botId); }
           const p = (async () => {
             let outcome = null;
             try {
@@ -511,7 +516,7 @@ export function createTaskSupervisor({
               } catch {}
             } finally {
               running.delete(id);
-              if (botId) busyBots.delete(botId);
+              if (botId) { busyBots.delete(botId); schedulerBusyBots.delete(botId); }
               active.delete(id);
               // ★ 只有「真的收口了」才算名额空出来。
               //

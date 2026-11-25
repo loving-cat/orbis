@@ -102,6 +102,50 @@ test('旧目录也没被碰过', async () => {
   assert.equal(fs.readFileSync(path.join(legacy, 'state.json'), 'utf8'), '{"version":4}');
 });
 
+test('★ 非本机 /health 不返回路径与命令（局域网看不到本机用户名/node 路径）', async () => {
+  const mod = await import(new URL('../src/pending-migration.js', import.meta.url));
+  const cfg = { serverName: '待迁移的机器', trustLocal: true };
+  const redacted = mod.pendingHealthPayload({
+    cfg,
+    legacy: '/Users/example/Library/Application Support/pi-bot/data',
+    target: '/Users/example/Library/Application Support/Orbis/data',
+    command: '/usr/local/bin/node /opt/orbis/migrate.mjs --legacy ...',
+    local: false,
+  });
+  assert.equal(redacted.needsMigration, true, '仍然要告诉对方「要迁移」');
+  assert.equal(redacted.ok, true);
+  assert.equal(redacted.legacyDataDir, undefined, '非本机不能给旧目录');
+  assert.equal(redacted.targetDataDir, undefined, '非本机不能给新目录');
+  assert.equal(redacted.migrateCommand, undefined, '非本机不能给命令（含用户名与 node 路径）');
+  assert.match(redacted.hint, /本机/);
+  assert.doesNotMatch(JSON.stringify(redacted), /example|opt\/orbis/, '脱敏后的载荷里不能出现本机痕迹');
+
+  // 本机仍然完整（桌面端一键迁移依赖它）
+  const local = mod.pendingHealthPayload({
+    cfg,
+    legacy: '/Users/example/legacy',
+    target: '/Users/example/orbis',
+    command: '/usr/local/bin/node /opt/orbis/migrate.mjs',
+    local: true,
+  });
+  assert.equal(local.legacyDataDir, '/Users/example/legacy');
+  assert.equal(local.migrateCommand, '/usr/local/bin/node /opt/orbis/migrate.mjs');
+});
+
+test('★ 本机请求拿到完整字段，非本机判定按 remoteAddress 走', async () => {
+  const mod = await import(new URL('../src/pending-migration.js', import.meta.url));
+  assert.equal(mod.isLoopbackRequest({ socket: { remoteAddress: '127.0.0.1' } }), true);
+  assert.equal(mod.isLoopbackRequest({ socket: { remoteAddress: '::1' } }), true);
+  assert.equal(mod.isLoopbackRequest({ socket: { remoteAddress: '::ffff:127.0.0.1' } }), true);
+  assert.equal(mod.isLoopbackRequest({ socket: { remoteAddress: '192.168.1.23' } }), false, '局域网地址不是本机');
+  assert.equal(mod.isLoopbackRequest({ socket: { remoteAddress: '10.0.0.9' } }), false);
+  assert.equal(mod.isLoopbackRequest({ socket: {} }), false, '拿不到地址时按非本机处理（保守）');
+
+  // 真的走 HTTPSERVER 本机访问：完整字段
+  const body = await (await fetch(`${base}/health`)).json();
+  assert.equal(body.legacyDataDir, legacy, '本机（127.0.0.1）必须拿到完整路径');
+});
+
 await tests;
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

@@ -16,11 +16,30 @@ export function modelFailure(error) {
 
 function classifyFailure(error) {
   const raw = typeof error === 'string' ? error : String(error?.message ?? error?.errorMessage ?? '');
-  if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || error?.stopReason === 'aborted'
-    || /\baborted\b|\bcancelled\b|\bcanceled\b|已终止|已中止/i.test(raw)) {
+  const status = Number(error?.status ?? error?.statusCode) || Number(raw.match(/\b(400|401|402|403|404|408|429|500|502|503|504)\b/)?.[1]) || null;
+  // ★ 超时**必须排在 aborted 之前**。
+  //
+  //   SDK / undici 的超时错误长得就是中止的样子：
+  //     `TimeoutError: The operation was aborted due to timeout`
+  //   以前先匹配 `aborted`，于是「上游超时」被归成「用户终止」
+  //   → `aborted: true, error: '已终止'` → T6 护栏（不可恢复快停）直接把它判死，
+  //   连一次重试都不给。超时是**上游问题**，必须走重试/退避那条路。
+  const name = String(error?.name ?? '');
+  if (name === 'TimeoutError'
+    || /timeout|timed out|超时|超过.{0,8}未完成/i.test(raw)
+    || status === 408 || status === 504) {
+    return { status, auth: false, timedOut: true, error: '模型请求超时，已停止等待，请稍后重试。' };
+  }
+  // 真正的中止只认**结构化信号**或明确的中文说法。
+  // ★ 不再用宽泛的 `aborted` / `cancelled` 正则：上游断流的文案就长这样
+  //   （`Stream aborted by upstream`），把它当"用户终止"会让一次网络抖动
+  //   变成"这一单被用户取消了"，而且再也不重试。
+  const structuredAbort = name === 'AbortError'
+    || error?.code === 'ABORT_ERR'
+    || error?.stopReason === 'aborted';
+  if (structuredAbort || /已(?:按你的要求)?(?:终止|中止)|用户已终止/i.test(raw)) {
     return { status: null, auth: false, aborted: true, error: '已终止' };
   }
-  const status = Number(error?.status ?? error?.statusCode) || Number(raw.match(/\b(400|401|402|403|404|408|429|500|502|503|504)\b/)?.[1]) || null;
   if (status === 401 || /unauthorized|invalid[ _-]?(?:api[ _-]?)?key|authentication[ _-]?(?:failed|error)/i.test(raw)) {
     return { status: 401, auth: true, error: '模型请求认证失败（HTTP 401），请检查模型组凭据与接口认证配置。' };
   }

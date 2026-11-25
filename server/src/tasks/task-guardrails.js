@@ -88,10 +88,14 @@ export function classifyNonRetriableFailure({
   }
 
   const text = String(error ?? '');
-  // 用户/宿主中止：`decideRetry` 认不出「已按你的要求终止」这种说法，
-  // 这里补一条明确的（仍然只认 abort 语义，不碰普通失败文案）。
-  if (String(stop ?? '') === 'cancelled'
-    || /已(?:按你的要求|被)?(?:终止|中止)|aborted|cancell?ed/i.test(text)) {
+  // 用户/宿主中止：**只认结构化信号与明确的中文说法**。
+  //
+  // ★ 这里不能用宽泛的 `aborted` / `cancelled` 正则：上游断流的文案就长这样
+  //   （`Stream aborted by upstream`）。把它当成「用户终止」会让一次网络抖动被
+  //   T6 护栏永久判死（连一次重试都不给）—— 那正是护栏要避免的误杀。
+  const abortedByUser = String(stop ?? '') === 'cancelled'
+    || /已(?:按你的要求)?(?:终止|中止)|用户已终止/i.test(text);
+  if (abortedByUser) {
     return { kind: NON_RETRIABLE.aborted, why: '这一轮已被终止，不再自动重试', detail: text.slice(0, 160) };
   }
   if (text.trim() && CONFIG_PATTERN.test(text)) {

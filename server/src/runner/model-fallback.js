@@ -22,6 +22,7 @@
  * IO 部分只有 `withFallbackModel` 一个入口。
  */
 import { sessionKey } from './runner-utils.js';
+import { readBrandEnv } from '../brand.js';
 
 /** 同一模型连续第几次临时故障才切（`model-idle` 与熔断另有更早的门槛）。 */
 export const FALLBACK_AFTER_FAILS = 2;
@@ -91,6 +92,8 @@ export function pickAlternateModel({
   isBreakerOpen = () => false,
   needs = {},
   capabilitiesOf = null,
+  /** 策略过滤（端点类型 / 同 provider）；返回 false 表示这个候选不许用。 */
+  allowCandidate = null,
 } = {}) {
   const blocked = new Set([from, ...tried].filter(Boolean));
   const pool = [];
@@ -101,7 +104,9 @@ export function pickAlternateModel({
     if (isBreakerOpen(c.slug, c.groupId ?? '')) continue;
     const caps = capabilitiesOf ? (capabilitiesOf(c) ?? c) : c;
     if (!meetsNeeds(caps, needs)) continue;
-    pool.push({ ...c, ...caps });
+    const merged = { ...c, ...caps };
+    if (allowCandidate && allowCandidate(merged) === false) continue;
+    pool.push(merged);
   }
   if (!pool.length) return null;
   const preferred = defaultModel ? pool.find((c) => c.slug === defaultModel) : null;
@@ -170,11 +175,17 @@ export function attributeModel({ botId, overrideModel = null, bot = null } = {})
  */
 export function planFallbackForBot({
   runner, botId, fails = 0, kind = '', hasImages = false, contextWindow = 0,
-  userLocked = false, alreadySwitched = false, breakerOpen = null,
+  userLocked = null, alreadySwitched = false, breakerOpen = null, env = process.env,
 } = {}) {
+  const mode = fallbackModeFrom(env);
+  if (mode === 'off') return null;
   const bot = runner?.store?.getBot?.(botId);
   const from = String(bot?.model ?? '');
   if (!from) return null;
+  // ★ 只有**显式锁定**（`bot.lockModel === true`）才不切。
+  //   按角色配了 `bot.model` 的成员是很正常的事，把它当成"锁定"等于永远不兜底。
+  const locked = userLocked === null ? bot?.lockModel === true : userLocked === true;
+  if (locked) return null;
   const breakerIsOpen = breakerOpen ?? (runner?.breakerFor?.(botId)?.breaker?.state === 'open');
   const candidates = [];
   for (const entry of runner?.modelGroups?.menuEntries?.() ?? []) {
@@ -187,6 +198,7 @@ export function planFallbackForBot({
       });
     }
   }
+  const fromCaps = runner?.resolveModel?.(from) ?? { provider: providerOfSlug(from) };
   const alt = pickAlternateModel({
     from,
     candidates,
@@ -194,13 +206,95 @@ export function planFallbackForBot({
     defaultModel: runner?.modelLabel?.() ?? null,
     isBreakerOpen: (slug) => runner?.breakerFor?.(botId, slug)?.breaker?.state === 'open',
     needs: { images: hasImages, contextWindow },
-    capabilitiesOf: (c) => runner?.resolveModel?.(c.slug) ?? c,
+    capabilitiesOf: (c) => {
+      const caps = runner?.resolveModel?.(c.slug) ?? c;
+      return { ...c, ...caps, provider: caps?.provider ?? providerOfSlug(c.slug) };
+    },
+    // 策略过滤：端点类型（本地不外泄 / 同 provider / 不限）
+    allowCandidate: (c) => allowedByPolicy(
+      { ...fromCaps, provider: fromCaps?.provider ?? providerOfSlug(from) },
+      { ...c, provider: c.provider ?? providerOfSlug(c.slug) },
+      mode,
+    ),
   });
   if (!alt) return null;
   const go = shouldSwitchEarly({
     fails, kind, breakerOpen: breakerIsOpen, userLocked, hasAlternate: true, alreadySwitched,
   });
   return go ? alt : null;
+}
+
+
+// ---------------------------------------------------------------- 策略：隐私 / 费用边界
+
+/**
+ * 现在允许怎么自动兜底。
+ *
+ * | 值 | 含义 |
+ * |---|---|
+ * | `cloud`（默认） | 在**用户已启用的健康云端模型组**之间兜底；本地/内网模型绝不被自动换到公有云 |
+ * | `same-provider` | 只切到与当前模型**同一个 provider** 的健康候选 |
+ * | `any` | 不限端点类型（老行为） |
+ * | `off` | 关掉自动切模型 |
+ */
+export const FALLBACK_MODES = Object.freeze(['cloud', 'same-provider', 'any', 'off']);
+export const DEFAULT_FALLBACK_MODE = 'cloud';
+
+export function fallbackModeFrom(env = process.env) {
+  const raw = String(readBrandEnv(env, 'MODEL_FALLBACK') || '').trim().toLowerCase();
+  return FALLBACK_MODES.includes(raw) ? raw : DEFAULT_FALLBACK_MODE;
+}
+
+const LOCAL_PROVIDERS = new Set(['ollama', 'lmstudio', 'local', 'llamacpp', 'llama.cpp', 'vllm', 'localai']);
+
+/**
+ * 这个模型/组是不是**本地或内网**端点。
+ *
+ * 为什么要它：用户本机跑 Ollama 时，模型只在自己机器上 —— 一旦「自动切到备用模型」
+ * 把它换成公有云候选，代码/文档就被悄悄上传到第三方了。这不是性能问题，是数据外泄。
+ *
+ * 认的依据（任一命中即本地）：provider 名是本地推理栈、endpoint/baseUrl 指向
+ * loopback / RFC1918 私网 / `.local`，或模型 id/别名里带 `ollama:` 之类前缀。
+ */
+export function isLocalEndpoint(modelOrGroup) {
+  if (!modelOrGroup) return false;
+  const source = typeof modelOrGroup === 'string' ? { provider: modelOrGroup } : modelOrGroup;
+  const provider = String(source.provider ?? source.providerId ?? '').trim().toLowerCase();
+  if (provider && LOCAL_PROVIDERS.has(provider)) return true;
+
+  const urls = [source.baseUrl, source.base_url, source.endpoint, source.url, source.host]
+    .filter((v) => typeof v === 'string' && v.trim());
+  for (const raw of urls) {
+    const text = raw.trim().toLowerCase();
+    if (/localhost|127\.0\.0\.1|\[::1\]|::1|0\.0\.0\.0/.test(text)) return true;
+    if (/^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(text.replace(/^ht*tps?:\/\//, ''))) return true;
+    if (/\.local(:|\/|$)/.test(text)) return true;
+  }
+
+  const label = `${source.id ?? ''} ${source.model ?? ''} ${source.label ?? ''}`.toLowerCase();
+  if (/(ollama|lmstudio|localai|localhost)/.test(label)) return true;
+  return false;
+}
+
+/** 候选能不能用：`from` 是当前用的模型（用于判本地/同 provider）。 */
+export function allowedByPolicy(from = {}, candidate = {}, mode = DEFAULT_FALLBACK_MODE) {
+  if (mode === 'off') return false;
+  if (mode === 'any') return true;
+  if (mode === 'same-provider') {
+    const a = String(from.provider ?? '').toLowerCase();
+    const b = String(candidate.provider ?? '').toLowerCase();
+    return Boolean(a) && a === b;
+  }
+  // cloud（默认）：本地模型只允许切到另一个本地候选，绝不外泄到公有云
+  if (isLocalEndpoint(from)) return isLocalEndpoint(candidate);
+  return true;
+}
+
+/** 从 slug 里取 provider（模型组 slug 形如 `group/model`，组的 provider 由调用方给）。 */
+export function providerOfSlug(slug = '') {
+  const text = String(slug ?? '');
+  const idx = text.indexOf('/');
+  return idx > 0 ? text.slice(0, idx) : '';
 }
 
 /**

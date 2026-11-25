@@ -40,12 +40,14 @@ const {
   executeGroupRound,
   dispatchGroupRound,
   interruptRoundForUser,
+  roundEpoch,
 } = await import('../src/runner/group-orchestrator.js');
 const {
   retrySchedulerFor,
   isUpstreamTransient,
   nextRetryDelay,
   describeWait,
+  cancelGroupRetries,
 } = await import('../src/runner/group-retry.js');
 
 const model = { provider: 'fixture', id: 'fixture', contextWindow: 16000, maxTokens: 1000 };
@@ -358,6 +360,66 @@ await test('④ 身份/参数类失败（401 / 400）走原来的失败回执，
   await executeGroupRound(runner, room.id, { openerText, openerBotId: null });
   assert.equal(timers.alive(), 0, '401 等一下也不会好，不该排期');
   assert.equal(viaCount(room.id, 'failed'), 1);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 1（高危）：同一轮 A、B 同时 429，续派键必须按房间+成员独立
+// ---------------------------------------------------------------------------
+
+await test('★ 同一轮 A/B 同时 429：两个续派各自保留、各自第 1 档、到期各自触发', async () => {
+  const { runner, room, lead, member, timers, scheduler } = setup();
+  const epoch = roundEpoch(runner, room.id);
+  const fired = [];
+  const make = (bot) => scheduler.schedule({
+    runner, roomId: room.id, roomName: room.name, botId: bot.id, botName: bot.name, epoch,
+    onFire: ({ attempt }) => { fired.push({ botId: bot.id, attempt }); },
+  });
+
+  const a = make(lead);
+  const b = make(member);
+  assert.equal(a.scheduled, true);
+  assert.equal(b.scheduled, true);
+  assert.equal(a.delay, b.delay, '两条都应是第一档，B 不该把 A 推高');
+  assert.equal(timers.alive(), 2, '两个成员必须各留一个定时器（旧实现只剩一个）');
+  assert.ok(scheduler.pending(room.id, lead.id), 'A 的续派必须还在');
+  assert.ok(scheduler.pending(room.id, member.id), 'B 的续派必须还在');
+
+  await Promise.allSettled(timers.fire());
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(
+    fired.map((f) => f.botId).sort(),
+    [lead.id, member.id].sort(),
+    '两个成员都应在到期时被续派一次（A 的承诺不能失约）',
+  );
+  assert.ok(fired.every((f) => f.attempt === 1), '都应是第 1 次续派');
+});
+
+await test('★ 房间级 cancel 仍能一次清掉该房间下所有成员的续派', async () => {
+  const { runner, room, lead, member, timers, scheduler } = setup();
+  const epoch = roundEpoch(runner, room.id);
+  const make = (bot) => scheduler.schedule({
+    runner, roomId: room.id, botId: bot.id, botName: bot.name, epoch, onFire: () => {},
+  });
+  make(lead);
+  make(member);
+  assert.equal(timers.alive(), 2);
+  assert.equal(cancelGroupRetries(runner, room.id, '用户插话'), true);
+  assert.equal(timers.alive(), 0, '房间级 cancel 必须把两个成员一起清掉');
+  assert.equal(scheduler.pending(room.id, lead.id), null);
+  assert.equal(scheduler.pending(room.id, member.id), null);
+});
+
+await test('★ 成员级 cancel 不碰兄弟成员', async () => {
+  const { runner, room, lead, member, timers, scheduler } = setup();
+  const epoch = roundEpoch(runner, room.id);
+  const make = (bot) => scheduler.schedule({
+    runner, roomId: room.id, botId: bot.id, botName: bot.name, epoch, onFire: () => {},
+  });
+  make(lead);
+  make(member);
+  assert.equal(scheduler.cancel(room.id, '只取消 A', { botId: lead.id }), true);
+  assert.equal(timers.alive(), 1, '只该少掉 A 那一条');
+  assert.ok(scheduler.pending(room.id, member.id), 'B 的续派必须留着');
 });
 
 console.log(`\n${pass}/${pass + fail} 通过`);
