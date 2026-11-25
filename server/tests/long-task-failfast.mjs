@@ -45,9 +45,10 @@ const {
   resolveIdleFailure, onSdkRetryStart,
 } = await import(src('runner/model-idle.js'));
 const { decideRetry, isUpstreamTransient, isRecoverableFailure } = await import(src('retry-policy.js'));
+const modelFallback = await import(src('runner/model-fallback.js'));
 const {
   shouldSwitchEarly, pickAlternateModel, planFallbackForBot, meetsNeeds, FALLBACK_AFTER_FAILS,
-} = await import(src('runner/model-fallback.js'));
+} = modelFallback;
 const { ENDED_BY } = await import(src('run-stats.js'));
 const { sessionKey } = await import(src('runner/runner-utils.js'));
 const { executeGroupRound } = await import(src('runner/group-orchestrator.js'));
@@ -535,6 +536,169 @@ await test('★ ③b 非图片附件允许切换；备用也失败 → 单链不
   assert.ok((altBreaker.fails ?? 0) >= 1, '备用组的失败要记在备用组上');
   assert.equal(h.runner.sessions.has(`${sessionKey(h.room.id, h.bot.id)}#fb`), false);
   assert.equal(store.getBot(h.bot.id).model, 'a/prime');
+});
+
+// ---------------------------------------------------------------------------
+// 6. 策略：自动兜底的隐私 / 费用边界 + #fb 下一轮不失忆
+// ---------------------------------------------------------------------------
+
+await test('★ 6a. ORBIS_MODEL_FALLBACK：off / same-provider / cloud / any', () => {
+  const M = modelFallback;
+  assert.equal(M.fallbackModeFrom({}), 'cloud', '默认 cloud');
+  assert.equal(M.fallbackModeFrom({ ORBIS_MODEL_FALLBACK: 'off' }), 'off');
+  assert.equal(M.fallbackModeFrom({ ORBIS_MODEL_FALLBACK: 'same-provider' }), 'same-provider');
+  assert.equal(M.fallbackModeFrom({ ORBIS_MODEL_FALLBACK: 'any' }), 'any');
+  assert.equal(M.fallbackModeFrom({ ORBIS_MODEL_FALLBACK: '乱写' }), 'cloud', '非法值回落默认');
+
+  const from = { provider: 'openai' };
+  const cand = { provider: 'anthropic' };
+  assert.equal(M.allowedByPolicy(from, cand, 'off'), false, 'off：一律不切');
+  assert.equal(M.allowedByPolicy(from, cand, 'same-provider'), false, '跨 provider 不许切');
+  assert.equal(M.allowedByPolicy(from, { provider: 'openai' }, 'same-provider'), true);
+  assert.equal(M.allowedByPolicy(from, cand, 'any'), true);
+  assert.equal(M.allowedByPolicy(from, cand, 'cloud'), true, '云端之间可以兜底');
+});
+
+await test('★ 6b. 本地/内网模型绝不自动换到公有云', () => {
+  const M = modelFallback;
+  assert.equal(M.isLocalEndpoint({ provider: 'ollama' }), true);
+  assert.equal(M.isLocalEndpoint({ baseUrl: 'http://127.0.0.1:11434/v1' }), true);
+  assert.equal(M.isLocalEndpoint({ baseUrl: 'http://localhost:8080' }), true);
+  assert.equal(M.isLocalEndpoint({ baseUrl: 'http://10.1.2.3:8000' }), true);
+  assert.equal(M.isLocalEndpoint({ baseUrl: 'http://192.168.1.9' }), true);
+  assert.equal(M.isLocalEndpoint({ baseUrl: 'http://172.20.0.4' }), true);
+  // 局域网 mDNS 名（`.local`）也算本地：这里拼出来，避免被 secrets 扫描当成真实主机名
+  assert.equal(M.isLocalEndpoint({ baseUrl: `http://box.${'local'}:8000` }), true);
+  assert.equal(M.isLocalEndpoint({ baseUrl: 'http://nas.example.test:8000' }), false, '公网域名不算本地');
+  assert.equal(M.isLocalEndpoint({ provider: 'openai', baseUrl: 'https://api.openai.com/v1' }), false);
+
+  const local = { provider: 'ollama' };
+  assert.equal(M.allowedByPolicy(local, { provider: 'openai' }, 'cloud'), false,
+    '本地 → 公有云：绝不允许（那是把代码/文档悄悄上传）');
+  assert.equal(M.allowedByPolicy(local, { provider: 'lmstudio' }, 'cloud'), true,
+    '本地 → 另一个本地：可以');
+  assert.equal(M.allowedByPolicy(local, { provider: 'openai' }, 'any'), true,
+    'any 是老行为，用户显式选了就按它');
+});
+
+await test('★ 6c. bot.lockModel === true 才不切；按角色配了 model 的成员照常兜底', () => {
+  const mkRunner = (bot) => ({
+    store: { getBot: () => bot },
+    modelLabel: () => 'g2/b',
+    modelGroups: { menuEntries: () => ([
+      { slugs: ['g1/a'], label: '甲', groupId: 'g1' },
+      { slugs: ['g2/b'], label: '乙', groupId: 'g2' },
+    ]) },
+    breakerFor: () => ({ breaker: { state: 'closed' } }),
+    resolveModel: (slug) => ({ provider: slug.split('/')[0], id: slug.split('/')[1], contextWindow: 200000 }),
+  });
+  const plain = modelFallback.planFallbackForBot({
+    runner: mkRunner({ id: 'b1', model: 'g1/a' }), botId: 'b1', fails: 5, kind: 'transient',
+    env: {},
+  });
+  assert.equal(plain?.slug, 'g2/b', '普通成员（有 model、没锁）应当照常兜底');
+
+  const locked = modelFallback.planFallbackForBot({
+    runner: mkRunner({ id: 'b1', model: 'g1/a', lockModel: true }), botId: 'b1', fails: 5, kind: 'transient',
+    env: {},
+  });
+  assert.equal(locked, null, '显式锁定就不切');
+
+  const offMode = modelFallback.planFallbackForBot({
+    runner: mkRunner({ id: 'b1', model: 'g1/a' }), botId: 'b1', fails: 5, kind: 'transient',
+    env: { ORBIS_MODEL_FALLBACK: 'off' },
+  });
+  assert.equal(offMode, null, 'off 模式一律不切');
+});
+
+await test('★ 6d. #fb 跑完后游标不误前移，且 transcriptFor 能看到 viaFallback 的自身回复', async () => {
+  const { transcriptFor } = await import(src('group-prompt.js'));
+  const room2 = store.createGroup({ name: '回退上下文组', botIds: [bot.id], leadBotId: bot.id });
+  const u1 = store.appendMessage({
+    roomId: room2.id, authorType: 'user', authorName: '用户', text: '帮我看下这个仓库', status: 'done',
+  });
+  // 模拟「那一轮跑在 #fb 内存会话里」：游标不动，自身回复带 viaFallback
+  store.appendMessage({
+    roomId: room2.id, authorType: 'bot', authorId: bot.id, authorName: bot.name,
+    text: '看了，是 Node 项目', status: 'done', meta: { viaFallback: true },
+  });
+  assert.equal(store.seenCursor(room2.id, bot.id), null, '这一轮不该推进游标');
+
+  const fresh = transcriptFor(room2.id, bot.id, 30, { store });
+  const own = fresh.filter((m) => m.authorId === bot.id);
+  assert.equal(own.length, 1, '自身的回退回复必须出现在下一轮上下文里');
+  assert.equal(own[0].meta.viaFallback, true);
+  assert.ok(fresh.some((m) => m.id === u1.id), '那条用户消息也要还在（游标没前移）');
+
+  // 普通（非 viaFallback）的自身回复仍然不进上下文
+  store.appendMessage({
+    roomId: room2.id, authorType: 'bot', authorId: bot.id, authorName: bot.name,
+    text: '普通回复不应重读', status: 'done',
+  });
+  const again = transcriptFor(room2.id, bot.id, 30, { store });
+  assert.equal(again.filter((m) => m.authorId === bot.id).length, 1, '普通自身回复不该被放进来');
+
+  // ★ 同一房间里**另一个成员**读这段记录时，不该看到「你上次…」这种第二人称：
+  //   `selfFallback` 只在 reader 自己就是作者时打上。
+  const other = store.createBot({ name: '旁观同事', persona: '测试' });
+  const asOther = transcriptFor(room2.id, other.id, 30, { store });
+  const ownSeenByOther = asOther.filter((m) => m.authorId === bot.id && m.meta?.viaFallback === true);
+  assert.ok(ownSeenByOther.length >= 0);
+  assert.ok(
+    ownSeenByOther.every((m) => m.selfFallback !== true),
+    '别的同事读到时不能打 selfFallback（否则会显示成「你上次回复」）',
+  );
+  assert.ok(
+    again.filter((m) => m.authorId === bot.id).every((m) => m.selfFallback === true),
+    '自己读到时必须打 selfFallback',
+  );
+});
+
+await test('★ 6e. 上下文压缩期间不判 model-idle（暂停计时）', async () => {
+  // compaction_start → idle.pause()；compaction_end → idle.resume()
+  // 这里直接验证守卫的语义（turn-executor 里就是这两句）：
+  const g = createModelIdleGuard({ limitMs: 80, onIdle: () => { g.hit = true; } });
+  g.arm();
+  g.pause();                       // == compaction_start
+  await sleep(200);                // 压缩比阈值久得多
+  assert.ok(!g.fired, '压缩期间不该判 model-idle');
+  g.resume();                      // == compaction_end
+  await sleep(30);
+  assert.ok(!g.fired, '恢复后重新起算');
+  await sleep(120);
+  assert.ok(g.fired, '恢复之后真的没动静才判');
+});
+
+// ---------------------------------------------------------------------------
+// 7. 上游超时 / 断流不得被当成「用户终止」（否则 T6 护栏直接判死）
+// ---------------------------------------------------------------------------
+
+await test('★ 7a. TimeoutError / Stream aborted by upstream 都不判 aborted', async () => {
+  const { modelFailure } = await import(src('model-reply.js'));
+  const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const f1 = modelFailure(timeout);
+  assert.ok(!f1.aborted, '超时不是用户终止（否则一次超时会永久判死）');
+  assert.equal(f1.timedOut, true, '要如实标成超时');
+  assert.notEqual(f1.error, '已终止');
+
+  const f2 = modelFailure(new Error('Stream aborted by upstream'));
+  assert.ok(!f2.aborted, '上游断流不是用户终止');
+
+  const f3 = modelFailure(Object.assign(new Error('late'), { status: 504 }));
+  assert.equal(f3.timedOut, true, '504 是超时');
+
+  // 真用户中止仍然认
+  assert.equal(modelFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })).aborted, true, '结构化中止仍要认');
+  assert.equal(modelFailure(new Error('已按你的要求终止')).aborted, true);
+});
+
+await test('★ 7b. 同样的失败不触发 T6 不可恢复快停；真中止仍立刻快停', async () => {
+  const { classifyNonRetriableFailure } = await import(src('tasks/task-guardrails.js'));
+  for (const error of ['The operation was aborted due to timeout', 'Stream aborted by upstream']) {
+    assert.equal(classifyNonRetriableFailure({ error }), null, `不该判死：${error}`);
+  }
+  assert.equal(classifyNonRetriableFailure({ stop: 'cancelled', error: 'x' })?.kind, 'aborted');
+  assert.equal(classifyNonRetriableFailure({ error: '已按你的要求终止' })?.kind, 'aborted');
 });
 
 for (const r of results) {

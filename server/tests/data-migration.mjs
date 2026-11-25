@@ -224,6 +224,23 @@ await test('要搬的清单覆盖服务端读写的所有顶层数据', () => {
   for (const name of names) assert.ok(ENTRIES.includes(name), `${name} 在数据目录里，但迁移不会搬它`);
 });
 
+await test('★ 桌面岛独立登录（island-login）必须在迁移清单里', () => {
+  // 用了「桌面岛独立登录」的用户，登录态在 island-login 目录里。
+  // 不搬的话升级后要重新登一次 —— 那是浏览器 profile + 凭据，用户自己恢复不了。
+  assert.ok(ENTRIES.includes('island-login'), 'island-login 必须被迁移');
+  const { legacy, target } = fresh();
+  makeLegacy(legacy);
+  fs.mkdirSync(path.join(legacy, 'island-login'), { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'island-login', 'profile.json'), '{"token":"x"}');
+  const r = migrateLegacyData({ legacy, target, log: quiet });
+  assert.equal(r.migrated, true);
+  assert.equal(
+    fs.readFileSync(path.join(target, 'island-login', 'profile.json'), 'utf8'),
+    '{"token":"x"}',
+    '岛登录态要被真的复制过去',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // ★ 只有真的起服务端才动数据：单纯 import config 的脚本（诊断、维护）不能改写用户的 state.json
 // ---------------------------------------------------------------------------

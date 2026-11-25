@@ -855,7 +855,20 @@ export async function executeGroupRound(
               ...progressSource,
             });
           }
-          runner.store.setCursor(roomId, bot.id, lastMessageId(roomId, runner.store));
+          // ★ 这一轮跑的是**内存会话**（`#fb`）：原主会话的 JSONL 里没有这些消息。
+          //   两条后果必须一起处理：
+          //     ① 游标**不推进** —— 下一轮切回原模型时还要从这条用户消息继续读；
+          //     ② 本条回复标 `meta.viaFallback`，让下一轮 transcript 里能看到
+          //        「自己上次经备用模型回过什么」（否则它会把同一件事再答一遍）。
+          if (overrideModel && res.ok && res.messageId) {
+            const cur = runner.store.getMessage(roomId, res.messageId);
+            runner.store.updateMessage(roomId, res.messageId, {
+              meta: { ...(cur?.meta ?? {}), viaFallback: true },
+            }, { silent: true });
+          }
+          if (!overrideModel) {
+            runner.store.setCursor(roomId, bot.id, lastMessageId(roomId, runner.store));
+          }
 
           if (!res.ok) {
             log(

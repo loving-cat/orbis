@@ -263,6 +263,55 @@ alpha.1 的教训（这次照做）：
 - **发版前复核公告**（ROADMAP T1.9 的验收项）：§2.0 的破坏性变更表 / 常见问答 / 回滚步骤
   必须与本次真正删掉的东西逐条对得上 —— 公告写错比不写更糟，用户会照着错的指引回滚。
 
+### `v2.0.0-rc.1` → `v2.0.0` GA 清单（本轮审完后的统一合栈）
+
+> rc.1 是**预发布**（`--prerelease`）：先把整条栈合进 `main`、切 rc.1、跑真机验收；
+> 验收全绿后才切 GA。rc.1 与 GA 的**代码相同**，差的是真机结论。
+
+```bash
+# 0. 合栈（顺序不能变：栈底 → 栈顶，每个 PR 都是 Draft，逐个 Ready + merge）
+#    #39 long-task-autonomy → #40 perf-v1 → #41 cluster-parallel → #42 perf-failfast
+#    → #43 task-guardrails → #44 desktop-win-stage-b → 本分支 pre-rc1-polish
+gh pr ready 39 && gh pr merge 39 --merge && ...（逐个）
+
+# 1. 版本号（唯一真源，两处必须一致）
+#    server/package.json → 2.0.0-rc.1
+#    app/pubspec.yaml    → 2.0.0-rc.1+NN
+node scripts/check-consistency.mjs
+
+# 2. 全量门禁（rc.1 与 GA 各跑一次，结果贴进 release notes）
+cd server && node tests/all.mjs            # 期望 200/200
+cargo test --release --manifest-path ../native/orbis-desktop-win/Cargo.toml   # 期望 29/29
+cd .. && node scripts/check-style.mjs && node scripts/check-legacy.mjs --strict   && node scripts/check-spec-progress.mjs && node scripts/check-secrets.mjs   && node scripts/check-licenses.mjs --check
+cd server && node scripts/check-consistency.mjs && node scripts/check-capability-drift.mjs
+cd ../app && flutter analyze && flutter test        # 期望 1059 通过 / 3 跳过
+
+# 3. 原生助手产物（阶段 B：常驻 serve + 原生截图）
+powershell -File scripts/build-desktop-win.ps1          # → resources/orbis-desktop-win.exe + .sha256
+powershell -File scripts/build-desktop-win.ps1 -Check   # 必须**秒退** OK（version 不再等 stdin）
+cd server && node tests/perf-stall.mjs --impl=native    # 指标写进 release notes
+node tools/desktop-parity.mjs                           # 必须「口径一致 ✅ / 0px」
+
+# 4. 真机验收门禁（**rc.1 必须全绿才允许切 GA**）
+#    docs/REAL-MACHINE-CHECKLIST.md → 4b 进程清理 / 4c 阶段 A / 4d 阶段 B
+#    重点三项：① 停机后无 orbis-desktop-win.exe 残留；② 连点连截 200 次 GDI 对象回到基线；
+#             ③ 多显示器负原点全屏截图区域正确
+#    另：#43 的 T6 护栏在真机上跑一次 401（应 1 次即停，不空转 3 轮）
+
+# 5. rc.1 发布（预发布）
+git tag v2.0.0-rc.1 && git push origin main v2.0.0-rc.1
+powershell -File scripts/pack-windows.ps1 -WithNode -Zip
+node scripts/pack-android.mjs
+cd server && npm pack                                   # orbis-agent-2.0.0-rc.1.tgz
+gh release create v2.0.0-rc.1 --prerelease --title "Orbis v2.0.0-rc.1" --notes-file <说明> ...
+
+# 6. GA（真机全绿之后，代码不再改，只切版本 + tag）
+#    server/package.json → 2.0.0 ; app/pubspec.yaml → 2.0.0+NN
+#    重复 2–5（不带 --prerelease），并勾选 "Set as the latest release"
+```
+
+rc.1 → GA 之间**只允许**改版本号与 release notes；任何代码改动都要回到分支重新审。
+
 ### 2.0 的破坏性变更（相对 1.7）
 
 > **升级路径：1.4 / 1.7 → 先升 1.7.1 → 再升 2.0。**
@@ -289,7 +338,7 @@ alpha.1 的教训（这次照做）：
 旧 env / 旧数据目录 / 旧请求头写进日志 —— 那一串弃用提醒就是你的「2.0 待办清单」，
 按它把启动脚本里的 `PI_BOT_*` 改成 `ORBIS_*`（1.7.1 两种名字都认），并确认手机 App 到了 1.7.1。
 
-**2) 再装 2.0。** `orbis migrate` 从 `2.0.0-alpha.1` 起才有 —— 1.7.1 上没有这个命令，
+**2) 再装 2.0。** `orbis migrate` 从 `2.0.0-rc.1` 起才有 —— 1.7.1 上没有这个命令，
 所以迁移只能在新版本上做。2.0 首次启动会发现旧目录有数据但新目录没有：**它不建空库**，
 只在日志里给出两条真实路径 + 一条可复制执行的命令，并给 `/health` 落一个
 `needsMigration=true`。

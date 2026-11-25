@@ -169,21 +169,27 @@ export function decideRetry({
   if (attempt > maxRetries) {
     return { retry: false, why: `已经试了 ${attempt} 次`, kind: 'exhausted', delayMs: 0 };
   }
-  // 用户主动中止（"已被终止""这一轮已中止"这类都要认出来）
-  if (/已.{0,2}(终止|中止)|aborted|cancelled/i.test(text)) {
+  // 超时：**必须排在中止之前**。
+  //
+  //   上游/底层库的超时文案长得就像中止：
+  //     `TimeoutError: The operation was aborted due to timeout`
+  //   先匹配 `aborted` 会把它归成「用户终止」→ 一次不重试，
+  //   进而被 T6 护栏当成不可恢复直接判死。
+  if (/超时|timeout|timed out/i.test(text)) {
+    return attempt <= 1
+      ? { retry: true, why: '上次超时了，再给一次机会', kind: 'timeout', delayMs: RETRY_DELAY_MS }
+      : { retry: false, why: '连续超时，可能是任务太重或模型不稳', kind: 'timeout-twice', delayMs: 0 };
+  }
+  // 用户主动中止：只认**中文明确说法**。
+  // ★ 不再用宽泛的 `aborted` / `cancelled`：上游断流、底层中止、超时都会带这些字，
+  //   把它们当成「用户取消」会让一次抖动变成「这一单没了」。
+  if (/已(?:按你的要求|按用户要求|被)?(?:终止|中止)|用户已终止/.test(text)) {
     return { retry: false, why: '这一轮已被终止', kind: 'aborted', delayMs: 0 };
   }
   // 空回复：这是最值得重试的一类（模型偶发不出内容）
   if (/没有给出内容|空回复|empty/i.test(text)) {
     return { retry: true, why: '它上次没出内容，值得再来一次', kind: 'empty', delayMs: RETRY_DELAY_MS };
   }
-  // 超时：重试有价值，但只给一次机会（第二次还超时就别耗了）
-  if (/超时|timeout|timed out/i.test(text)) {
-    return attempt <= 1
-      ? { retry: true, why: '上次超时了，再给一次机会', kind: 'timeout', delayMs: RETRY_DELAY_MS }
-      : { retry: false, why: '连续超时，可能是任务太重或模型不稳', kind: 'timeout-twice', delayMs: 0 };
-  }
-
   // 其余（工具报错、模型抽风、未知）：默认给一次重试
   return attempt <= 1
     ? { retry: true, why: '上次没跑成，再试一次', kind: 'unknown', delayMs: RETRY_DELAY_MS }

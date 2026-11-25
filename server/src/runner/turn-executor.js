@@ -298,8 +298,7 @@ async function runWithLease(
   entry.startedAt = Date.now();
   entry.progressAt = entry.startedAt;
   entry.stallNotified = false;
-  // 此刻有几个工具在执行（看门狗据此放宽阈值：安静跑着的构建/测试不是卡死）
-  entry.toolsRunning = 0;
+  entry.toolsRunning = 0; // 工具在跑时看门狗放宽阈值（安静跑着的构建不是卡死）
   const { idle, sdkWatch } = wireModelWait({ runner, entry, botId: bot.id, botName: bot.name, log, limitMs: modelIdleMs });
   const beat = () => {
     entry.progressAt = Date.now();
@@ -334,9 +333,7 @@ async function runWithLease(
     }, {});
   }
   entry.liveMsgId = botMsg.id;
-  // ★ 本轮聚合键**在轮次开始时钉死**，换条（P0-2 插话）也不改：
-  //   派活时用的是 msg:<首条气泡>，若封口时用 entry.liveMsgId（可能已被换成第二条），
-  //   两边 key 对不上 → 批次永远卡在 dispatchOpen=true。
+  // ★ 聚合键在轮次开始时钉死，换条也不改（否则派活与封口 key 对不上，批次永远不收敛）
   entry.originTurnKey = `msg:${botMsg.id}`;
   entry.goalText = String(prompt ?? '').slice(0, 600);
   beat();
@@ -475,6 +472,7 @@ async function runWithLease(
           reason: event.reason,
         });
         log(`[${bot.name}] 上下文压缩开始（${event.reason}）`);
+        idle.pause(); // 压缩是 SDK 在干活，不是"模型没进展"
         break;
       case 'compaction_end': {
         runner.bus.emit('event', {
@@ -486,6 +484,7 @@ async function runWithLease(
           error: event.errorMessage ? modelFailure(event.errorMessage).error : null,
         });
         log(`[${bot.name}] 上下文压缩结束（${event.reason}）`);
+        idle.resume();
         entry.compactedSinceInjection = true;
         entry.skillsInjected = null;
         const res = event.result;

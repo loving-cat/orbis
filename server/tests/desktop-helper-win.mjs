@@ -263,13 +263,13 @@ await test('★ 真机：perform(move) 走到位，且不点击（默认不抢�
     x: Math.round(env.screen.x + env.screen.width / 2),
     y: Math.round(env.screen.y + env.screen.height / 2),
   };
-  const r = perform({ plan: { action: 'move', point: target } });
+  const r = await perform({ plan: { action: 'move', point: target } });
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.ok(Math.abs(r.at.x - target.x) <= 24 && Math.abs(r.at.y - target.y) <= 24,
     `光标没到位：目标 ${JSON.stringify(target)} 实际 ${JSON.stringify(r.at)}`);
   // 再读一次：真实环境里可能有别的程序在动光标（本机就有合成输入的远程控制类程序），
   // 所以只断言「还在目标附近的容差内」，不断言逐像素不动。
-  const back = cursorPosition();
+  const back = await cursorPosition();
   assert.equal(back.ok, true);
   assert.ok(Math.abs(back.x - target.x) <= 24 && Math.abs(back.y - target.y) <= 24,
     `移动后光标漂出了容差：目标 ${JSON.stringify(target)} 实际 ${JSON.stringify(back)}`);
@@ -614,15 +614,27 @@ await test('★ 常驻：已降级（broken）后 callHelperAsync 直接说不�
   }
 });
 
-await test('★ performAction：异步路径真的走到规划与发送（漏 await 会静默全挂）', async () => {
-  // 用假的平台依赖装配一个会话无关的最小验证：直接打 desktop-input-win 的导出。
-  // 无桌面/无助手时它应返回结构化失败，而不是 `undefined.ok` 这类崩溃。
-  const di = await import(src('desktop-input-win.js'));
-  const r = await di.performAction({ action: 'move', point: { x: 5, y: 5 } });
-  assert.equal(typeof r, 'object', 'performAction 必须是已 resolve 的对象，不能是 Promise');
-  assert.equal(typeof r.ok, 'boolean', '必须带明确的 ok 字段（漏 await 时这里是 undefined）');
-  if (!r.ok) {
-    assert.equal(typeof r.code, 'string', '失败要给 code：' + JSON.stringify(r));
+await test('★ performAction：异步路径真的走到规划与发送（且绝不移动真实鼠标）', async () => {
+  // ★ 这条用例**绝不能**真的动鼠标：`node tests/all.mjs` 会在用户机器上跑，
+  //   把光标拽到 (5,5) 就是在抢用户的鼠标。所以：
+  //     · 强制走 PowerShell 实现（不碰原生助手）；
+  //     · 屏幕外坐标 → 规划阶段就被拒，平台发送一次都不会发生。
+  const prevImpl = process.env.ORBIS_DESKTOP_WIN_IMPL;
+  process.env.ORBIS_DESKTOP_WIN_IMPL = 'powershell';
+  try {
+    const di = await import(src('desktop-input-win.js'));
+    const r = await di.performAction({ action: 'move', point: { x: -99999, y: -99999 } });
+    assert.equal(typeof r, 'object', 'performAction 必须是已 resolve 的对象，不能是 Promise');
+    assert.equal(typeof r.ok, 'boolean', '必须带明确的 ok 字段（漏 await 时这里是 undefined）');
+    assert.equal(r.ok, false, '这一步必须失败（不能真的发输入）：' + JSON.stringify(r));
+    // 平台无关地只要求「有结构化 code」：非 Windows 上是 not_platform，
+    // Windows 上是 out_of_screen / no_session / not_aware 之类 —— 都是明确的拒绝。
+    assert.equal(typeof r.code, 'string', '失败要给结构化 code：' + JSON.stringify(r));
+    assert.ok(r.code.length > 0);
+  } finally {
+    if (prevImpl === undefined) delete process.env.ORBIS_DESKTOP_WIN_IMPL;
+    else process.env.ORBIS_DESKTOP_WIN_IMPL = prevImpl;
+    helper.resetHelperState();
   }
 });
 

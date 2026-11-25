@@ -143,9 +143,28 @@ export class GroupRetryScheduler {
     this.backoff = new Map();
   }
 
-  /** 这个房间有没有挂起的续派（测试与日志用）。 */
-  pending(roomId) {
-    return this.timers.get(roomId) ?? null;
+  /** 排期键：`${roomId}:${botId}`；没有 botId 时退回 roomId。 */
+  static keyFor(roomId, botId = '') {
+    return botId ? `${roomId}:${botId}` : String(roomId);
+  }
+
+  /**
+   * 这个房间（或这个房间里的某个成员）有没有挂起的续派。
+   *
+   * ★ 键从 `roomId` 改成 `${roomId}:${botId}`：同一轮里 A、B 同时撞 429 时，
+   *   原来共用一把键 —— B 排期会把 A 的定时器 cancel 掉（A 承诺的「自动续派」
+   *   永远失约），还把累计推到第 2 档。查到 roomId 但没给 botId 时返回该房间
+   *   第一个挂起项（测试/日志用），给 botId 就精确到那一条。
+   */
+  pending(roomId, botId = '') {
+    const exact = this.timers.get(GroupRetryScheduler.keyFor(roomId, botId));
+    if (exact) return exact;
+    if (botId) return null;
+    const prefix = `${roomId}:`;
+    for (const [key, entry] of this.timers) {
+      if (key === roomId || key.startsWith(prefix)) return entry;
+    }
+    return null;
   }
 
   /** 当前挂起的房间数。 */
@@ -167,7 +186,8 @@ export class GroupRetryScheduler {
    * @returns {{scheduled:boolean, delay:number, dueAt:number, attempt:number, waitedMs:number, reason?:string}}
    */
   schedule({ runner, roomId, roomName = roomId, botId = '', botName = '', epoch = 0, onFire }) {
-    const prev = this.backoff.get(roomId) ?? null;
+    const key = GroupRetryScheduler.keyFor(roomId, botId);
+    const prev = this.backoff.get(key) ?? null;
     const attempt = prev ? prev.attempt : 0;
     const waitedMs = prev ? prev.waitedMs : 0;
     const delay = nextRetryDelay({
@@ -178,16 +198,17 @@ export class GroupRetryScheduler {
     });
     if (delay == null) {
       // 到上限：累计清掉，交给调用方如实失败（下次再抽风从第一档重新算起）
-      this.backoff.delete(roomId);
+      this.backoff.delete(key);
       return { scheduled: false, reason: 'exhausted', delay: 0, dueAt: 0, attempt, waitedMs };
     }
-    // 同一房间只保留一个挂起项：新的故障覆盖旧的（旧的作废，不做并行排期）。
+    // 同一**成员**只保留一个挂起项：新的故障覆盖旧的（旧的作废，不做并行排期）。
+    // ★ 只取消自己这条（带 botId）：兄弟成员 A 的续派不能被 B 的排期顺手干掉。
     // ★ 这里**不能**清累计 —— 我们正是要接着上一档往上走。
-    this.cancel(roomId, '重新排期', { resetBackoff: false });
+    this.cancel(roomId, '重新排期', { resetBackoff: false, botId });
     const dueAt = this.now() + delay;
     const entry = { timer: null, dueAt, attempt, waitedMs: waitedMs + delay, botId };
     const fire = () => {
-      this.timers.delete(roomId);
+      this.timers.delete(key);
       // ★ 到期复核：终止/插话/新消息都会让这一条作废
       if (runner?.aborting?.has?.(roomId)) {
         log(`【${roomName}】续派作废：房间已被终止（${botName || botId}）`);
@@ -212,9 +233,9 @@ export class GroupRetryScheduler {
     // 不阻塞进程退出：这是个"有空再试"的定时器，不是必须完成的工作
     timer?.unref?.();
     entry.timer = timer;
-    this.timers.set(roomId, entry);
+    this.timers.set(key, entry);
     // 累计跟着这一档一起往上走（fire 时不清，见 backoff 的注释）
-    this.backoff.set(roomId, { attempt: attempt + 1, waitedMs: entry.waitedMs });
+    this.backoff.set(key, { attempt: attempt + 1, waitedMs: entry.waitedMs });
     return { scheduled: true, delay, dueAt, attempt, waitedMs: entry.waitedMs };
   }
 
@@ -224,30 +245,80 @@ export class GroupRetryScheduler {
    * `resetBackoff` 默认 true：用户插话/终止/来了新消息都意味着「重来」，
    * 下次抽风该从第一档 1 分钟排起。只有「本轮就是那次续派」要传 false。
    */
-  cancel(roomId, why = '', { resetBackoff = true } = {}) {
-    const entry = this.timers.get(roomId);
-    const hadBackoff = this.backoff.has(roomId);
-    if (!entry && !hadBackoff) return false;
-    if (entry?.timer) this.clearTimer(entry.timer);
-    this.timers.delete(roomId);
-    if (resetBackoff) this.backoff.delete(roomId);
-    if (why && (entry || (resetBackoff && hadBackoff))) log(`续派已取消（${roomId}）：${why}`);
-    return true;
+  /**
+   * 取消续派。
+   *
+   * - **按房间批量**（默认）：清掉该房间下所有 `${roomId}:*` 以及老的 `roomId` 项，
+   *   用户插话/终止/重新开始就是这一种；
+   * - **按成员精确**（传 `botId`）：只动那一条，兄弟成员的续派留着
+   *   （`schedule()` 内部重排自己时用这个）。
+   */
+  cancel(roomId, why = '', { resetBackoff = true, botId = '' } = {}) {
+    if (botId) {
+      const key = GroupRetryScheduler.keyFor(roomId, botId);
+      const entry = this.timers.get(key);
+      const hadBackoff = this.backoff.has(key);
+      if (!entry && !hadBackoff) return false;
+      if (entry?.timer) this.clearTimer(entry.timer);
+      this.timers.delete(key);
+      if (resetBackoff) this.backoff.delete(key);
+      if (why && (entry || (resetBackoff && hadBackoff))) log(`续派已取消（${key}）：${why}`);
+      return true;
+    }
+    const keys = this.#keysOfRoom(roomId);
+    if (!keys.length) return false;
+    let touched = false;
+    for (const key of keys) {
+      const entry = this.timers.get(key);
+      const hadBackoff = this.backoff.has(key);
+      if (!entry && !hadBackoff) continue;
+      if (entry?.timer) this.clearTimer(entry.timer);
+      this.timers.delete(key);
+      if (resetBackoff) this.backoff.delete(key);
+      touched = true;
+    }
+    if (why && touched) log(`续派已取消（${roomId}）：${why}`);
+    return touched;
   }
 
-  /** 只清累计，不动挂起的定时器。 */
-  resetBackoff(roomId, why = '') {
-    const had = this.backoff.delete(roomId);
+  /** 只清累计，不动挂起的定时器（可按成员精确）。 */
+  resetBackoff(roomId, why = '', { botId = '' } = {}) {
+    if (botId) {
+      const key = GroupRetryScheduler.keyFor(roomId, botId);
+      const had = this.backoff.delete(key);
+      if (had && why) log(`上游退避累计已清零（${key}）：${why}`);
+      return had;
+    }
+    let had = false;
+    for (const key of this.#keysOfRoom(roomId)) {
+      if (this.backoff.delete(key)) had = true;
+    }
     if (had && why) log(`上游退避累计已清零（${roomId}）：${why}`);
     return had;
+  }
+
+  /** 该房间名下的所有键（含老的无成员后缀项）。 */
+  #keysOfRoom(roomId) {
+    const prefix = `${roomId}:`;
+    const keys = new Set();
+    for (const map of [this.timers, this.backoff]) {
+      for (const key of map.keys()) {
+        if (key === roomId || key.startsWith(prefix)) keys.add(key);
+      }
+    }
+    return [...keys];
   }
 
   /** 取消全部挂起的续派（并清空累计）。 */
   cancelAll(why = '') {
     let n = 0;
-    for (const roomId of [...this.timers.keys()]) {
-      if (this.cancel(roomId, why)) n++;
+    for (const key of [...this.timers.keys()]) {
+      const entry = this.timers.get(key);
+      if (entry?.timer) this.clearTimer(entry.timer);
+      this.timers.delete(key);
+      n++;
     }
+    if (why && n) log(`全部续派已取消：${why}`);
     // 只剩累计、没有定时器的房间也要清掉，否则进程收工后状态还赖在内存里
     n += this.backoff.size;
     this.backoff.clear();

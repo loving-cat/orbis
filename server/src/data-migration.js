@@ -37,6 +37,11 @@ export const ENTRIES = Object.freeze([
   // 首次接单的持久请求回执与命令回执（批次 06）：不搬会丢去重与命令结果。
   'task-requests',
   'task-commands',
+  // 桌面岛（island）的独立登录态。
+  //
+  // ★ 不搬的话，用了「桌面岛独立登录」的用户升级后必须重新登一次 ——
+  //   那是浏览器 profile + 凭据，用户自己恢复不了。它属于服务端自己的数据。
+  'island-login',
   // 子进程的私有 HOME / TMP（沙箱用）。
   //
   // ★ 内容都是可弃的：里面只有 shell 的 rc、临时文件、MCP 落地的缓存。
