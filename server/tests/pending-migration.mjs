@@ -107,7 +107,7 @@ test('★ 非本机 /health 不返回路径与命令（局域网看不到本机�
   const cfg = { serverName: '待迁移的机器', trustLocal: true };
   const redacted = mod.pendingHealthPayload({
     cfg,
-    legacy: '/Users/example/Library/Application Support/pi-bot/data',
+    legacy: '/Users/example/Library/Application Support/orbis-old/data',
     target: '/Users/example/Library/Application Support/Orbis/data',
     command: '/usr/local/bin/node /opt/orbis/migrate.mjs --legacy ...',
     local: false,
