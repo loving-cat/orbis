@@ -424,15 +424,33 @@ async function screenSize() {
       const r = await callHelperAsync('env').catch(() => null);
       const w = Number(r?.screen?.width) || 0;
       const h = Number(r?.screen?.height) || 0;
-      if (r?.ok === true && w > 0 && h > 0) return { width: w, height: h };
+      // ★ 一定要带 x/y：多显示器时左边/上面的副屏原点是**负数**
+      //   （比如主屏在右、副屏在左：虚拟屏 x = -1920）。只回 width/height
+      //   然后用 0,0 当起点，截出来的是「主屏那块 + 一块黑边」。
+      if (r?.ok === true && w > 0 && h > 0) {
+        return {
+          x: Number(r.screen?.x) || 0,
+          y: Number(r.screen?.y) || 0,
+          width: w,
+          height: h,
+        };
+      }
     }
     const res = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
       `${PS_DPI_AWARE}
 Add-Type -AssemblyName System.Windows.Forms
-$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "$($s.Width)x$($s.Height)"`]);
+$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "$($s.X),$($s.Y),$($s.Width)x$($s.Height)"`]);
     if (res.ok) {
-      const m = /^(\d+)x(\d+)$/.exec((res.stdout || '').trim());
-      if (m) return { width: Number(m[1]), height: Number(m[2]) };
+      // ★ 带原点：副屏在主屏左侧时 X 是负数，用 0 当起点会截错区域
+      const m = /^(-?\d+),(-?\d+),(\d+)x(\d+)$/.exec((res.stdout || '').trim());
+      if (m) {
+        return {
+          x: Number(m[1]) || 0,
+          y: Number(m[2]) || 0,
+          width: Number(m[3]),
+          height: Number(m[4]),
+        };
+      }
     }
     return null;
   }
@@ -441,11 +459,33 @@ $s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "$($s.Width)x$($s.He
     if (res.ok) {
       const nums = (res.stdout || '').match(/-?\d+/g);
       if (nums && nums.length >= 4) {
-        return { width: Number(nums[2]) - Number(nums[0]), height: Number(nums[3]) - Number(nums[1]) };
+        return {
+          x: Number(nums[0]) || 0,
+          y: Number(nums[1]) || 0,
+          width: Number(nums[2]) - Number(nums[0]),
+          height: Number(nums[3]) - Number(nums[1]),
+        };
       }
     }
   }
   return null;
+}
+
+/**
+ * 虚拟屏矩形 → 截全屏要用的 rect。
+ *
+ * 单独抽出来是为了能单测：**多显示器时原点可能是负数**
+ * （主屏在右、副屏在左 → 虚拟屏 `x = -1920`）。钉死 `{x:0,y:0}` 会截到
+ * 「主屏那块 + 一块黑边」，而截图本身不报错 —— 是最难发现的那类错。
+ */
+export function fullScreenRect(size) {
+  if (!size || !(Number(size.width) > 0) || !(Number(size.height) > 0)) return null;
+  return {
+    x: Number(size.x) || 0,
+    y: Number(size.y) || 0,
+    width: Number(size.width),
+    height: Number(size.height),
+  };
 }
 
 /**
@@ -526,7 +566,8 @@ export async function captureScreenshot({ outFile, window: target = null, fullSc
   let scope = 'window';
   if (fullScreen) {
     const size = await screenSize();
-    rect = size ? { x: 0, y: 0, width: size.width, height: size.height } : null;
+    // ★ 用虚拟屏真实原点：多显示器左侧/上方副屏是负坐标，钉死 0,0 会截到黑边
+    rect = fullScreenRect(size);
     scope = 'screen';
     if (!rect) return { ok: false, error: '取不到屏幕尺寸' };
   } else {

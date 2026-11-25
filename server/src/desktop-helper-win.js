@@ -285,6 +285,8 @@ const resident = {
   lastCrashAt: 0,
   /** 常驻不可用（降级后）的原因；null = 还能用 */
   broken: null,
+  /** 崩溃退避窗口的截止时刻（`ensureResident` 会等它过去） */
+  nextRestartAt: 0,
 };
 
 /** stdout 缓冲上限：capture 的 base64 PNG 可以是几 MB，给 64 MB 很宽松。 */
@@ -321,6 +323,7 @@ export function resetResidentHelper() {
   resident.crashes = 0;
   resident.lastCrashAt = 0;
   resident.broken = null;
+  resident.nextRestartAt = 0;
 }
 
 /** 这一条待处理请求作废（超时 / 进程挂了）。 */
@@ -338,7 +341,20 @@ function failPending(id, result) {
  * ★ 降级要**改掉 helperState 的缓存** —— 否则下一次 `helperState()` 还说
  *   "native 可用"，我们又把它拉起来，变成「崩溃 → 重启 → 崩溃」的风暴。
  */
-function handleResidentExit() {
+function handleResidentExit(exitedChild = null) {
+  // ★ 三条独立守卫，缺一条都会实盘出事：
+  //
+  //   ① **旧子进程的迟到 exit 不能动新进程**：超时路径会先 kill 再重启，
+  //      被杀的 child1 的 'exit' 常常晚于 child2 的创建才到。不过滤的话这一刀
+  //      会把 resident.child（此刻是 child2）抹成 null —— 要么制造孤儿 child2，
+  //      要么把它在途请求全判死。
+  //   ② **同一次退出只算一次**：timeout 自己调一次、'error' 一次、'exit' 一次，
+  //      同一 child 会被数到 3 次，5 次阈值几秒就撞穿，直接误降级 PowerShell。
+  //   ③ 只有当前 child（或未传）才清状态与 fail pending。
+  if (exitedChild && exitedChild.__exitHandled) return;
+  if (exitedChild) exitedChild.__exitHandled = true;
+  if (exitedChild && resident.child && exitedChild !== resident.child) return;
+
   const child = resident.child;
   resident.child = null;
   resident.ready = null;
@@ -364,7 +380,23 @@ function handleResidentExit() {
     return;
   }
   const backoff = RESTART_BACKOFF_MS[Math.min(resident.crashes - 1, RESTART_BACKOFF_MS.length - 1)];
+  // ★ 退避要**真的等**：只打一行日志等于没有退避，一次上游问题能让它
+  //   1 秒内重启 5 次。ensureResident 会看这个时间戳。
+  resident.nextRestartAt = now + backoff;
   log(`桌面助手常驻进程异常退出，${backoff}ms 后重启（第 ${resident.crashes} 次）`);
+}
+
+/** 等到退避窗口过去（没有退避时立刻返回）。 */
+async function waitRestartBackoff() {
+  const at = Number(resident.nextRestartAt) || 0;
+  if (!at) return;
+  const left = at - Date.now();
+  resident.nextRestartAt = 0;
+  if (left > 0) {
+    // ★ 这个定时器**不能 unref**：它是"有人正在等退避结束"的唯一强引用，
+    //   unref 掉之后事件循环会立刻空转退出（node 报 unsettled top-level await）。
+    await new Promise((resolve) => { setTimeout(resolve, left); });
+  }
 }
 
 /** 拉起（或复用）常驻进程；返回可用的 child，不可用返回 null。 */
@@ -375,6 +407,16 @@ async function ensureResident({ spawn: spawnFn = defaultSpawn, state = null } = 
 
   const current = state ?? helperState();
   if (current.mode !== 'native' || !current.exe) return null;
+
+  // ★ 退避窗口内不重启：不然「200ms→1s→5s」只是三行日志。
+  //   注意只在**真有窗口**时才 await —— 否则这一个 await 会让并发进来的第二条
+  //   请求看不见下面刚占位的 `resident.ready`，各自拉起一个常驻进程（实测双 spawn）。
+  if (resident.nextRestartAt) {
+    await waitRestartBackoff();
+    if (resident.broken) return null;
+    if (resident.child && !resident.closed) return resident.child;
+    if (resident.ready) return resident.ready;
+  }
 
   resident.closed = false;
   resident.ready = (async () => {
@@ -394,8 +436,8 @@ async function ensureResident({ spawn: spawnFn = defaultSpawn, state = null } = 
     child.stdout?.on?.('data', (chunk) => onResidentData(String(chunk)));
     // 助手的 stderr 只做诊断，不进协议
     child.stderr?.on?.('data', () => {});
-    child.once?.('exit', () => handleResidentExit());
-    child.once?.('error', () => handleResidentExit());
+    child.once?.('exit', () => handleResidentExit(child));
+    child.once?.('error', () => handleResidentExit(child));
     child.stdin?.on?.('error', () => {});
     // ★ 子进程与它的管道必须 unref：常驻进程是「服务端活着它就活着」的附属物，
     //   但它**不能**成为「进程为什么退不出去」的原因。
@@ -468,6 +510,16 @@ export async function callHelperAsync(command, payload = {}, {
   if (current.mode !== 'native' || !current.exe) {
     return { ok: false, code: 'helper_unavailable', text: `桌面助手不可用（${current.why}）` };
   }
+  // ★ 已经降级（连着崩）时直接说不可用：绝不能在这里退回 `callHelper()` ——
+  //   那是 execFileSync，会在事件循环上同步阻塞，而「降级」的前提恰恰是
+  //   「这条路已经不可靠」，用它兜底等于把卡顿重新引回来。
+  if (resident.broken) {
+    return {
+      ok: false,
+      code: 'helper_unavailable',
+      text: `桌面助手常驻不可用（${resident.broken}），已降级 PowerShell`,
+    };
+  }
   const child = await ensureResident({ spawn: spawnFn, state: current });
   if (!child) {
     // 常驻起不来 → 退回一次性进程（阶段 A 的路径），功能不降级
@@ -481,9 +533,11 @@ export async function callHelperAsync(command, payload = {}, {
   const answer = await new Promise((resolve) => {
     const timer = setTimeout(() => {
       resident.pending.delete(id);
-      // 单条卡死：杀进程（下次请求自动重启），这条如实超时
-      try { resident.child?.kill?.(); } catch {}
-      handleResidentExit();
+      // 单条卡死：杀进程（下次请求自动重启），这条如实超时。
+      // 传当前 child 进去，让它在同一个「一次性已处理」标记下只算一次崩溃。
+      const dying = resident.child;
+      try { dying?.kill?.(); } catch {}
+      handleResidentExit(dying);
       resolve({ ok: false, code: 'helper_timeout', text: `桌面助手 ${limit}ms 内没有响应（已重启）` });
     }, limit);
     resident.pending.set(id, { resolve, timer });
@@ -504,6 +558,7 @@ export async function callHelperAsync(command, payload = {}, {
 export async function stopDesktopHelper() {
   resident.closed = true;
   resident.broken = null;
+  resident.nextRestartAt = 0;
   const child = resident.child;
   resident.child = null;
   resident.ready = null;
@@ -524,6 +579,7 @@ export function residentInfo() {
     pending: resident.pending.size,
     crashes: resident.crashes,
     broken: resident.broken,
+    nextRestartAt: resident.nextRestartAt,
   };
 }
 

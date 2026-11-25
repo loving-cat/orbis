@@ -43,47 +43,71 @@ pub fn run(aware: bool) {
 
     loop {
         buf.clear();
-        // 用 read_until 而不是 read_line：非法 UTF-8 也不能让常驻进程崩掉，
+        // 逐字节读而不是 read_line：非法 UTF-8 也不能让常驻进程崩掉，
         // 那种情况回一条 bad_json 继续服务即可。
         let read = match read_line_limited(&mut reader, &mut buf) {
             Ok(n) => n,
-            Err(_) => break,
+            // ★ 超长行：明确回一条错误并**继续服务**（不是退出，也不是静默吞掉）
+            Err(LineError::TooLong) => {
+                emit_line(&crate::fail(
+                    "line_too_long",
+                    &format!("单行请求超过 {} 字节，已丢弃", MAX_LINE),
+                ));
+                continue;
+            }
+            Err(LineError::Io) => break,
         };
         if read == 0 {
             break; // stdin EOF：干净退出（不留孤儿）
         }
         let text = String::from_utf8_lossy(&buf);
         let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+        if trimmed.is_empty() { continue; }
         emit_line(&handle_line(aware, trimmed));
     }
     // 退出前把 stdout 刷干净：Node 侧是按行读的，少一条响应它会一直等到超时。
     let _ = std::io::stdout().flush();
 }
 
-/// 读一行（含 `\n`），但最多 `MAX_LINE` 字节；返回实际读到的字节数。
-fn read_line_limited<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+/// Read one line (including the trailing newline), bounded by MAX_LINE.
+///
+/// An over-long line (no newline in sight, e.g. a client sending a whole file as
+/// one request) is *discarded* with a fixed-size buffer instead of being appended
+/// to `buf` forever -- otherwise a single bad client OOMs the resident process.
+fn read_line_limited<R: BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> Result<usize, LineError> {
     let mut total = 0usize;
+    let mut over = false;
     loop {
         let mut byte = [0u8; 1];
-        let n = reader.read(&mut byte)?;
+        let n = match reader.read(&mut byte) {
+            Ok(n) => n,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(LineError::Io),
+        };
         if n == 0 {
-            return Ok(total);
+            return if over { Err(LineError::TooLong) } else { Ok(total) };
         }
         total += 1;
         if byte[0] == b'\n' {
-            return Ok(total);
+            return if over { Err(LineError::TooLong) } else { Ok(total) };
         }
-        if total > MAX_LINE {
-            // 超长行：丢掉这一行剩余部分，回一条明确的错误而不是把内存吃光
-            let mut sink = Vec::new();
-            let _ = reader.read_until(b'\n', &mut sink);
-            return Ok(total);
+        if over { continue; }
+        if buf.len() >= MAX_LINE {
+            buf.clear();
+            over = true;
+            continue;
         }
         buf.push(byte[0]);
     }
+}
+
+/// 读一行时可能遇到的两类失败。
+#[derive(Debug, PartialEq)]
+pub enum LineError {
+    /// 超过 `MAX_LINE`（已安全丢弃，可以继续服务）
+    TooLong,
+    /// 真正的 IO 错误（应当退出）
+    Io,
 }
 
 /// 一条请求 → 一条响应（带上原来的 `id`）。
@@ -164,6 +188,38 @@ mod tests {
         let text = handle_line(true, r#"{"id":2,"cmd":"capture","payload":{}}"#).to_string();
         assert!(text.contains(r#""ok":false"#), "{text}");
         assert!(text.contains("capture_failed") || text.contains("bad_command"), "{text}");
+    }
+
+    #[test]
+    fn over_long_line_is_dropped_and_service_continues() {
+        // 一条 5 MiB 没有换行的输入：必须被安全丢弃、回 line_too_long，
+        // 之后**正常请求仍可服务**（这才是"有界丢弃"的意义）。
+        let mut payload = vec![b'x'; 5 * 1024 * 1024];
+        payload.push(b'\n');
+        payload.extend_from_slice(b"{\"id\":9,\"cmd\":\"version\"}
+");
+        let mut cur = std::io::Cursor::new(payload);
+
+        let mut buf = Vec::new();
+        match read_line_limited(&mut cur, &mut buf) {
+            Err(LineError::TooLong) => {}
+            other => panic!("超长行必须返回 TooLong，实际 {:?}", other),
+        }
+        assert!(buf.is_empty(), "丢弃时要清空缓冲，不能留着半个巨型请求");
+
+        buf.clear();
+        let n = read_line_limited(&mut cur, &mut buf).expect("下一条正常行必须还能读");
+        assert!(n > 0);
+        let out = handle_line(true, String::from_utf8_lossy(&buf).trim()).to_string();
+        assert!(out.contains("\"id\":9"), "后续请求仍应被正常处理：{out}");
+        assert!(out.contains("\"ok\":true"));
+    }
+
+    #[test]
+    fn line_too_long_is_reported_with_a_code() {
+        // 走 run() 的那条分支用的是同一套判定：这里直接验错误码文案的存在
+        let text = crate::fail("line_too_long", "x").to_string();
+        assert!(text.contains("line_too_long"));
     }
 
     #[test]

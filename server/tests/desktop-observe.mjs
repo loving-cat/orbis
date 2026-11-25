@@ -173,6 +173,29 @@ await test('全屏截图必须显式要求（默认路径不截全屏）', async
   assert.match(out.error, /没有指定窗口/);
 });
 
+// ---------------------------------------------------------------------------
+// 多显示器负原点（P1-3）：全屏截图的 rect 必须用虚拟屏的真实原点
+// ---------------------------------------------------------------------------
+
+await test('★ 全屏：负原点虚拟屏（副屏在左）要透传真实的 x/y，不能钉死 0,0', async () => {
+  const obs = await import(new URL('../src/desktop-observe.js', import.meta.url));
+  // 主屏在右，副屏在左 → 虚拟屏 x = -1920、总宽 3840
+  assert.deepEqual(
+    obs.fullScreenRect({ x: -1920, y: 0, width: 3840, height: 1080 }),
+    { x: -1920, y: 0, width: 3840, height: 1080 },
+  );
+  // 副屏在上（y 为负）同样要透传
+  assert.deepEqual(
+    obs.fullScreenRect({ x: 0, y: -1200, width: 2560, height: 2640 }),
+    { x: 0, y: -1200, width: 2560, height: 2640 },
+  );
+  // 单屏 / 没有原点信息时退 0
+  assert.deepEqual(obs.fullScreenRect({ width: 2560, height: 1440 }), { x: 0, y: 0, width: 2560, height: 1440 });
+  // 尺寸为 0 → null（调用方明确报「取不到屏幕尺寸」）
+  assert.equal(obs.fullScreenRect({ x: 0, y: 0, width: 0, height: 0 }), null);
+  assert.equal(obs.fullScreenRect(null), null);
+});
+
 const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

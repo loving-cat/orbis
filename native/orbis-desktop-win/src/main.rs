@@ -58,6 +58,14 @@ fn main() {
         return;
     }
 
+    // ★ `version` 绝不能等 stdin：`build-desktop-win.ps1 -Check` 会直接用当前终端
+    //   跑 `orbis-desktop-win.exe version` —— 终端上的 stdin 是**打开但永远没有 EOF**
+    //   的，read_to_string 会把构建脚本挂死在那里（实测）。
+    if command == "version" {
+        emit_line(&dispatch(aware, "version", &Json::Null));
+        return;
+    }
+
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let req = json::parse(&input).unwrap_or(Json::Null);
@@ -128,7 +136,14 @@ fn cmd_capture(req: &Json) -> Json {
         ))
     });
 
-    let max_edge = int_field(req, "maxEdge").unwrap_or(capture::DEFAULT_MAX_EDGE as i64) as u32;
+    // ★ 负数不能直接 `as u32`：-1 会回绕成 4294967295，等于「永远不缩放」，
+    //   一张 4K 图就原样吐出去（base64 十几 MB）。范围外一律回落默认。
+    let raw_edge = int_field(req, "maxEdge").unwrap_or(capture::DEFAULT_MAX_EDGE as i64);
+    let max_edge = if raw_edge <= 0 || raw_edge > 16384 {
+        capture::DEFAULT_MAX_EDGE
+    } else {
+        raw_edge as u32
+    };
 
     match capture::capture(hwnd, rect, max_edge) {
         Ok(shot) => match capture::encode_png(&shot.rgba, shot.width, shot.height) {
@@ -412,6 +427,24 @@ mod tests {
         // 阶段 B：版本 0.2.0 + 协议 2（Node 侧 DESKTOP_HELPER_VERSION / HELPER_PROTOCOL
         // 必须同步，否则会静默连上阶段 A 的旧二进制）
         assert_eq!(PROTOCOL, 2);
+    }
+
+    #[test]
+    fn negative_max_edge_falls_back_to_default() {
+        // -1 若直接 `as u32` 会回绕成 4294967295 → 永远不缩放，
+        // 一张 4K 图原样吐十几 MB base64。这里验"回落默认"这条规则本身。
+        let pick = |raw: i64| {
+            if raw <= 0 || raw > 16384 {
+                capture::DEFAULT_MAX_EDGE
+            } else {
+                raw as u32
+            }
+        };
+        assert_eq!(pick(-1), capture::DEFAULT_MAX_EDGE);
+        assert_eq!(pick(0), capture::DEFAULT_MAX_EDGE);
+        assert_eq!(pick(16385), capture::DEFAULT_MAX_EDGE);
+        assert_eq!(pick(640), 640);
+        assert_eq!(pick(16384), 16384);
     }
 
     fn code_of(out: &Json) -> String {

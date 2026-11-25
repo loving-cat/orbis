@@ -1023,7 +1023,9 @@ Write-Output ("title=" + [DeskIn]::ForegroundTitle())
  *   | {ok:false, code:string, text:string}}
  */
 export async function performAction({ action, point = null, button = 'left', clicks = 1, delta = 0, key = null, keyCombo = null, text = '' } = {}) {
-  const env = probeEnvironment();
+  // ★ 阶段 B 起这两个平台函数是 async：漏掉 await 会拿到 Promise，
+  //   `env.ok` 恒为 undefined → 每个动作都以「平台环境失败」告终（静默全挂）。
+  const env = await probeEnvironment();
   if (!env.ok) return env;
   if (!env.session) {
     return { ok: false, code: INPUT_FAIL.noSession, text: '当前没有可操作会话（可能锁屏或已断开），交还用户' };
@@ -1032,7 +1034,7 @@ export async function performAction({ action, point = null, button = 'left', cli
     action, point, screen: env.screen, button, clicks, delta, key, keyCombo, text,
   });
   if (!planned.ok) return planned;
-  const sent = perform({ plan: planned.plan });
+  const sent = await perform({ plan: planned.plan });
   if (!sent.ok) return sent;
   return { ok: true, at: sent.at, foreground: sent.foreground, plan: planned.plan, screen: env.screen };
 }

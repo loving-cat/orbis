@@ -540,6 +540,92 @@ await test('★ 真机：常驻 capture 可用时返回 base64 且长边不超�
   }
 });
 
+await test('★ 常驻：旧进程迟到 exit 不抹掉新进程、不多计崩溃、child2 请求照常成功', async () => {
+  helper.resetResidentHelper();
+  helper.resetHelperState();
+  const spawned = [];
+  // 第一个 child：起来后不回包（用它触发超时 → 被杀 → 重启 child2）
+  const spawnFn = () => {
+    const idx = spawned.length;
+    const fake = makeFakeServe(() => (idx === 0 ? null : { ok: true, from: idx }));
+    spawned.push(fake);
+    return fake.child;
+  };
+  const state = { mode: 'native', exe: 'C:/fake/orbis-desktop-win.exe', why: 'ok' };
+  try {
+    // ① 第一条超时 → 杀掉 child1 并计 1 次崩溃
+    const slow = await helper.callHelperAsync('probe', {}, { spawn: spawnFn, state, timeoutMs: 100 });
+    assert.equal(slow.code, 'helper_timeout', JSON.stringify(slow));
+    assert.equal(spawned.length, 1);
+    const crashesAfterTimeout = helper.residentInfo().crashes;
+    assert.equal(crashesAfterTimeout, 1, `超时只该计 1 次崩溃，实际 ${crashesAfterTimeout}`);
+
+    // ② 退避窗口内再请求：会等退避结束后拉起 child2
+    const ok = await helper.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+    assert.equal(ok.ok, true, 'child2 的请求必须正常成功：' + JSON.stringify(ok));
+    assert.equal(ok.from, 1, '应答必须来自 child2');
+    assert.equal(spawned.length, 2, '应当只有两个子进程（不是重启风暴）');
+
+    // ③ child1 的迟到 exit：模拟「被杀之后，exit 事件晚到」。
+    //   先把一次性标记清掉，逼它走**第一行守卫**（旧进程 !== 当前进程）——
+    //   这才是真实场景：kill() 那一刻的事件可能还没到，之后才补发。
+    spawned[0].child.__exitHandled = false;
+    spawned[0].child.emit('exit', 0);
+    // 不能把 child2 抹掉
+    assert.equal(helper.residentInfo().alive, true, 'child2 不能被旧进程的迟到 exit 抹掉');
+    assert.equal(helper.residentInfo().crashes, 1, '同一次退出不能再计一次崩溃（双计）');
+
+    // ④ child2 仍然可用：再来一条请求要成功（没被误判成崩溃/孤儿）
+    const again = await helper.callHelperAsync('probe', {}, { spawn: spawnFn, state });
+    assert.equal(again.ok, true, 'child2 仍应可用：' + JSON.stringify(again));
+    assert.equal(spawned.length, 2, '不该因为迟到 exit 又拉起第三个');
+  } finally {
+    await helper.stopDesktopHelper();
+    helper.resetResidentHelper();
+  }
+});
+
+await test('★ 常驻：已降级（broken）后 callHelperAsync 直接说不可用，绝不退回同步 run', async () => {
+  helper.resetResidentHelper();
+  helper.resetHelperState();
+  // 手动置成"连着崩过、已降级"的状态
+  const spawnFn = () => {
+    const fake = makeFakeServe(() => null);
+    queueMicrotask(() => fake.child.emit('exit', 1));
+    return fake.child;
+  };
+  const state = { mode: 'native', exe: 'C:/fake/orbis-desktop-win.exe', why: 'ok' };
+  let syncRunCalls = 0;
+  const run = () => { syncRunCalls += 1; return '{}'; };
+  try {
+    for (let i = 0; i < 8; i += 1) {
+      await helper.callHelperAsync('probe', {}, { spawn: spawnFn, state, run, timeoutMs: 60 });
+    }
+    assert.equal(helper.residentInfo().broken, 'resident_crashed');
+    syncRunCalls = 0;
+    const r = await helper.callHelperAsync('probe', {}, { spawn: spawnFn, state, run });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'helper_unavailable', JSON.stringify(r));
+    assert.match(r.text, /降级|resident_crashed/);
+    assert.equal(syncRunCalls, 0, '降级之后绝不能退回 execFileSync（会把卡顿重新引回来）');
+  } finally {
+    helper.resetResidentHelper();
+    helper.resetHelperState();
+  }
+});
+
+await test('★ performAction：异步路径真的走到规划与发送（漏 await 会静默全挂）', async () => {
+  // 用假的平台依赖装配一个会话无关的最小验证：直接打 desktop-input-win 的导出。
+  // 无桌面/无助手时它应返回结构化失败，而不是 `undefined.ok` 这类崩溃。
+  const di = await import(src('desktop-input-win.js'));
+  const r = await di.performAction({ action: 'move', point: { x: 5, y: 5 } });
+  assert.equal(typeof r, 'object', 'performAction 必须是已 resolve 的对象，不能是 Promise');
+  assert.equal(typeof r.ok, 'boolean', '必须带明确的 ok 字段（漏 await 时这里是 undefined）');
+  if (!r.ok) {
+    assert.equal(typeof r.code, 'string', '失败要给 code：' + JSON.stringify(r));
+  }
+});
+
 let failed = 0;
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : '\n    ' + r.err}`);
