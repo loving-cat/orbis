@@ -373,13 +373,17 @@ export class PiRunner {
   // ---------------------------------------------------------------- 会话池、并发槽位与熔断
 
   async ensureSession(roomId, botId, opts = {}) {
-    const key = sessionKey(roomId, botId);
-    retireStaleSession(this.sessions, key);
-    const existing = this.sessions.get(key);
-    if (existing?.session) return reserveSession(existing);
-    if (existing?.pending) {
-      await existing.pending;
-      return this.ensureSession(roomId, botId);
+    // ★ 临时模型用独立键、且**不复用**缓存：复用原键会直接返回旧模型那个会话，
+    //   modelOverride 就成了假开关（说切了，请求还发往老模型）。
+    const key = opts.modelOverride ? `${sessionKey(roomId, botId)}#fb` : sessionKey(roomId, botId);
+    if (!opts.modelOverride) {
+      retireStaleSession(this.sessions, key);
+      const existing = this.sessions.get(key);
+      if (existing?.session) return reserveSession(existing);
+      if (existing?.pending) {
+        await existing.pending;
+        return this.ensureSession(roomId, botId);
+      }
     }
 
     this.__buildSession ??= createSessionBuilder({
@@ -428,15 +432,17 @@ export class PiRunner {
     return slots.acquire({ priority: human ? PRIORITY.human : PRIORITY.normal, name, group: roomId, timeoutMs, signal });
   }
 
-  recordRun({ roomId, botId, startedAt, ok, usage, taskRunId = '', attemptIndex = 1, sdkRetries = 0, kind = '', timing = null, endedBy = '' }) {
+  recordRun({ roomId, botId, startedAt, ok, usage, taskRunId = '', attemptIndex = 1, sdkRetries = 0, kind = '', timing = null, endedBy = '', modelOverride = null }) {
     try {
       const bot = this.store.getBot(botId);
-      const model = bot?.model ? String(bot.model) : (this.model?.id ?? '');
+      // ★ 统计按**实际执行的**模型归属（§4.2 d）：临时切过就记它，并标 switchedModel
+      const model = modelOverride ? String(modelOverride) : (bot?.model ? String(bot.model) : (this.model?.id ?? ''));
       // 埋点归一（endedBy / TTFT / SDK 重试等待 / 失败分类）全在 run-stats 里做，
       // 这里只把执行器的 RunTiming 递过去 —— 外观层不该长出新逻辑
       this.stats?.record({
-        roomId, botId, model, provider: this.providerForBot(botId) ?? '',
+        roomId, botId, model, provider: modelOverride ? String(model).split('/')[0] : (this.providerForBot(botId) ?? ''),
         ms: Date.now() - startedAt, usage, taskRunId, attemptIndex, sdkRetries, ok, kind, timing, endedBy,
+        ...(modelOverride ? { switchedModel: true } : {}),
       });
     } catch (error) {
       log('记录运行统计失败：', error?.message || error);

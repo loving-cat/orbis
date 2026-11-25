@@ -124,23 +124,22 @@ export function pickAlternateModel({
  *   3. 用户点「终止」要能打到它：键是 `${sessionKey}#fb`，`${roomId}:` 前缀仍在，
  *      `runner.abort(roomId)` 照旧能中止。
  */
-export async function withFallbackModel({ runner, roomId, botId, model, log = () => {} }, fn) {
-  if (!model || !runner?.__buildSession) return fn(null);
+/**
+ * 释放一次性回退会话（`#fb`）。
+ *
+ * 三条都要做：从 `runner.sessions` 摘掉、退订、`dispose()` 掉 SDK 会话。
+ * 少做一条就是泄漏：内存会话不落盘，但订阅与工具回调会一直挂着。
+ * 只有「这一轮是临时模型」时才调用（`modelOverride` 非空），原持久化 JSONL 一律不碰。
+ */
+export function disposeFallbackSession(runner, roomId, botId, entry = null) {
   const key = `${sessionKey(roomId, botId)}#fb`;
-  const entry = await runner.__buildSession(roomId, botId, {
-    reportTool: false, modelOverride: model, persist: false,
-  });
-  entry.busy = false;
-  entry.unsubscribe = null;
-  entry.pending = null;
-  runner.sessions.set(key, entry);
-  log(`临时切到备用模型（本轮有效，不改配置）：${botId} → ${model}`);
   try {
-    return await fn(entry);
-  } finally {
-    runner.sessions.delete(key);
-    try { entry.unsubscribe?.(); } catch {}
-    try { await entry.session?.dispose?.(); } catch {}
+    const found = entry ?? runner?.sessions?.get?.(key) ?? null;
+    runner?.sessions?.delete?.(key);
+    try { found?.unsubscribe?.(); } catch {}
+    return Promise.resolve(found?.session?.dispose?.()).catch(() => {});
+  } catch {
+    return Promise.resolve();
   }
 }
 
@@ -171,12 +170,12 @@ export function attributeModel({ botId, overrideModel = null, bot = null } = {})
  */
 export function planFallbackForBot({
   runner, botId, fails = 0, kind = '', hasImages = false, contextWindow = 0,
-  userLocked = false, alreadySwitched = false,
+  userLocked = false, alreadySwitched = false, breakerOpen = null,
 } = {}) {
   const bot = runner?.store?.getBot?.(botId);
   const from = String(bot?.model ?? '');
   if (!from) return null;
-  const breakerOpen = runner?.breakerFor?.(botId)?.breaker?.state === 'open';
+  const breakerIsOpen = breakerOpen ?? (runner?.breakerFor?.(botId)?.breaker?.state === 'open');
   const candidates = [];
   for (const entry of runner?.modelGroups?.menuEntries?.() ?? []) {
     for (const slug of entry.slugs ?? []) {
@@ -199,7 +198,27 @@ export function planFallbackForBot({
   });
   if (!alt) return null;
   const go = shouldSwitchEarly({
-    fails, kind, breakerOpen, userLocked, hasAlternate: true, alreadySwitched,
+    fails, kind, breakerOpen: breakerIsOpen, userLocked, hasAlternate: true, alreadySwitched,
   });
   return go ? alt : null;
+}
+
+/**
+ * 这次请求真的需要 vision 吗？
+ *
+ * ★ 只认图片：把 `.csv` / `.md` / `.pdf` 一律当成「要 vision」，会让每一次带附件的
+ * 请求都拒绝切模型 —— 早切换等于永远不生效。按 mime 与扩展名两头认，
+ * 拿不到类型就当作不是图片（保守地不因为附件而禁用切换）。
+ */
+export function hasImageAttachments(attachments = [], resolve = null) {
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|heic|avif)$/i;
+  for (const item of attachments ?? []) {
+    if (!item) continue;
+    const detail = typeof resolve === 'function' ? resolve(item) : item;
+    const mime = String(detail?.mime ?? detail?.mimeType ?? detail?.type ?? '');
+    if (/^image\//i.test(mime)) return true;
+    const name = String(detail?.name ?? detail?.filename ?? detail?.path ?? detail?.id ?? '');
+    if (IMAGE_EXT.test(name) && (!mime || /^image\//i.test(mime))) return true;
+  }
+  return false;
 }

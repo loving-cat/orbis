@@ -15,7 +15,7 @@ import { isMainChatBusy } from './chief-summary-runner.js';
 import { shouldMirrorProgress, mirrorProgress, MIRROR_SKIPPED_NO_DM } from '../dm.js';
 import { settleRetryMessage } from '../retry-messages.js';
 import { decideRetry, failureNote, retryHint, transientBackoffMs } from '../retry-policy.js';
-import { planFallbackForBot } from './model-fallback.js';
+import { planFallbackForBot, hasImageAttachments } from './model-fallback.js';
 import { continuationPrompt } from '../turn-continuation.js';
 import {
   isUpstreamTransient,
@@ -649,10 +649,35 @@ export async function executeGroupRound(
           const taskRunId = newId('run_');
 
           const itemManaged = isManagedRound ? managedContext : null;
+          // ★ 只有图片附件才需要 vision：把 csv/md/pdf 也当成「要 vision」，
+          //   会让带任何附件的请求永远拒绝早切换。
+          const imageAttached = hasImageAttachments(attachments, (a) => (typeof a === 'string' ? { name: a } : a));
+          // 这条重试链临时切到的模型（null = 用配置里的模型）；单链最多切 1 次
+          let overrideModel = null;
+          // 单链最多切 1 次：备用也失败就回原模型按既有路径收敛，绝不连环乱跳
+          let switchedOnce = false;
+          const altFor = (kind, fails, extra = {}) => planFallbackForBot({
+            runner, botId: bot.id, fails, kind, hasImages: imageAttached,
+            alreadySwitched: switchedOnce, ...extra,
+          });
           let res;
           if (!gateCheck.allow) {
-            log(`【${room.name}】${bot.name} 跳过：${gateCheck.reason}`);
-            res = {
+            // ★ 单端点组熔断打开时，端点轮转没得选 —— 但有健康替代模型就该直接切过去，
+            //   而不是停下来等 group-retry 的分钟级续派（§4.2 d）。
+            const alt = altFor('breaker-open', 1, { breakerOpen: true });
+            if (alt) {
+              overrideModel = alt.slug;
+              switchedOnce = true;
+              runner.bus.emit('event', {
+                t: 'bot.retrying', roomId, botId: bot.id, attempt: 1, delayMs: 0,
+                kind: 'breaker-open', switchedTo: alt.label,
+              });
+            }
+            if (!overrideModel) log(`【${room.name}】${bot.name} 跳过：${gateCheck.reason}`);
+            res = overrideModel ? await runner.run(roomId, bot.id, prompt, {
+              groupTurn: true, retryManaged: true, taskRunId, attemptIndex: 1,
+              attachments, managedContext: itemManaged, modelOverride: overrideModel,
+            }) : {
               ok: false,
               text: '',
               ms: 0,
@@ -691,8 +716,6 @@ export async function executeGroupRound(
           let lastError = res.ok ? '' : String(res.error ?? '未知原因');
           let lastStatus = res.ok ? null : (res.status ?? null);
           let lastKind = res.breakerSkipped ? 'breaker-open' : '';
-          // 这条重试链临时切到的模型（null = 还在用配置里的模型）；单链最多切一次
-          let overrideModel = null;
           const retries = [];
 
           while (!res.ok) {
@@ -711,9 +734,21 @@ export async function executeGroupRound(
             }
             const afterFail = runner.breakerFor(bot.id);
             if (afterFail && afterFail.breaker.state === BREAKER_STATE.open) {
-              log(`【${room.name}】${bot.name} 熔断已打开，停止重试`);
-              lastKind = 'breaker-open';
-              break;
+              // 熔断打开时先试早切换（§4.2 d）：有健康替代就换一条路继续，
+              // 没有才走 breakerSkipped / group-retry 的分钟级续派。
+              const alt = altFor('breaker-open', attempt, { breakerOpen: true });
+              if (alt) {
+                overrideModel = alt.slug;
+                switchedOnce = true;
+                runner.bus.emit('event', {
+                  t: 'bot.retrying', roomId, botId: bot.id, attempt,
+                  delayMs: 0, kind: 'breaker-open', switchedTo: alt.label,
+                });
+              } else {
+                log(`【${room.name}】${bot.name} 熔断已打开，停止重试`);
+                lastKind = 'breaker-open';
+                break;
+              }
             }
             attempt++;
             retries.push(`${attempt}. ${decision.why}`);
@@ -736,12 +771,10 @@ export async function executeGroupRound(
             settleRetryMessage(runner.store, roomId, res, { willRetry: true });
             // ★ 早切换（§4.2 d）：连续第 2 次临时故障 / 第 1 次 model-idle / 所属组熔断打开
             //   → 这一轮换一个健康的已启用模型跑（一次性会话，不改 bot.model）
-            const alt = planFallbackForBot({
-              runner, botId: bot.id, fails: attempt - 1, kind: decision.kind,
-              hasImages: (attachments?.length ?? 0) > 0, alreadySwitched: overrideModel !== null,
-            });
+            const alt = altFor(decision.kind, attempt - 1);
             if (alt) {
               overrideModel = alt.slug;
+              switchedOnce = true;
               runner.bus.emit('event', {
                 t: 'bot.retrying', roomId, botId: bot.id, attempt,
                 delayMs: waitMs, kind: decision.kind, switchedTo: alt.label,
@@ -769,6 +802,8 @@ export async function executeGroupRound(
                 status: res.status ?? null,
                 model: overrideModel,
               });
+              // 备用也失败：回到原模型，别再拿一个同样坏的通路死循环
+              overrideModel = null;
             }
           }
 

@@ -38,6 +38,7 @@ import {
 } from './turn-slicing.js';
 import { emitContext, sessionKey, summarizeArgs, textOf, throttle } from './runner-utils.js';
 import { wireModelWait, resolveIdleFailure, onSdkRetryStart } from './model-idle.js';
+import { disposeFallbackSession } from './model-fallback.js';
 
 /** 执行一次 bot 会话回合（带 provider 配置更新租约与受管报告通道作用域） */
 export async function executeTurn(runner, roomId, botId, prompt, options = {}) {
@@ -753,8 +754,7 @@ async function runWithLease(
         : prompt;
       const finalPrompt = withLessons(withSkills(promptWithSide));
       // 从这里开始算「等模型」：到第一个 message_update 为止（附件提取不算）
-      timing.beginWait();
-      idle.arm();
+      timing.beginWait(); idle.arm();
       try {
         return images.length
           ? await entry.session.prompt(finalPrompt, { images })
@@ -951,7 +951,7 @@ async function runWithLease(
       runner.bus.emit('event', { t: 'msg.error', roomId, msgId: botMsg.id, error: msg.error, msg });
       runner.recordRun({
         roomId, botId, startedAt: started, ok: false, usage: meter.snapshot(),
-        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'empty', timing,
+        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'empty', timing, modelOverride,
       });
       return withAttempt({
         ok: false,
@@ -1000,7 +1000,7 @@ async function runWithLease(
     runner.bus.emit('event', { t: 'msg.done', msg });
     runner.recordRun({
       roomId, botId, startedAt: started, ok: true, usage: meter.snapshot(),
-      taskRunId, attemptIndex, sdkRetries: meter.retries, timing,
+      taskRunId, attemptIndex, sdkRetries: meter.retries, timing, modelOverride,
       ...(sliceEnding ? { kind: 'slice' } : {}),
     });
     turnSucceeded = true;
@@ -1053,7 +1053,7 @@ async function runWithLease(
       runner.bus.emit('event', { t: 'msg.done', msg });
       runner.recordRun({
         roomId, botId, startedAt: started, ok: true, usage: meter.snapshot(),
-        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'step-cap', timing,
+        taskRunId, attemptIndex, sdkRetries: meter.retries, kind: 'step-cap', timing, modelOverride,
       });
       // 轮数到上限也算"跑完了"（真实落出了回复），只是被收住 —— 照样可以评估
       turnSucceeded = true;
@@ -1138,7 +1138,7 @@ async function runWithLease(
     }
     runner.recordRun({
       roomId, botId, startedAt: started, ok: false, usage: meter.snapshot(),
-      taskRunId, attemptIndex, sdkRetries: meter.retries, timing,
+      taskRunId, attemptIndex, sdkRetries: meter.retries, timing, modelOverride,
       kind: idle.fired ? 'model-idle' : (recoverable ? 'retrying' : 'error'),
       // kind 保持兼容（外面还在按它判 retrying/error），真实结局单独给它
       endedBy: endedByOf({
@@ -1167,7 +1167,7 @@ async function runWithLease(
   } finally {
     // 定时器回调可能还挂着：标记结束，回调里一律不再动会话（不再 steer / abort）
     runFinished = true; idle.stop();
-    if (modelOverride) { try { runner.sessions.delete(sessionKey(roomId, botId) + '#fb'); } catch {} } // 一次性回退会话必须释放
+    if (modelOverride) disposeFallbackSession(runner, roomId, botId, entry);
     runner.releaseReportScope(scopeKey, reports);
     if (entry) entry.managedContext = null;
     if (timeoutHandle) clearTimeout(timeoutHandle);

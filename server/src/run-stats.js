@@ -225,6 +225,8 @@ export function makeRecord({
   ok = true, kind = '',
   // ---- 长任务埋点（SPEC-PERF-V1 §4.2 a；旧记录没有这些字段也要能读） ----
   endedBy = '', ttftMsP50 = null, ttftMsMax = null, sdkRetryWaitMs = null, failKinds = null,
+  /** 这一轮是临时切到备用模型跑的（§4.2 d）；组别名/序号之外不落任何敏感信息 */
+  switchedModel = false,
   // 执行器直接递 RunTiming 时，五个字段在这里一次性取齐
   timing = null,
 } = {}) {
@@ -245,6 +247,7 @@ export function makeRecord({
   const ttftMax = count(ttftMsMax);
   return {
     at, roomId, botId, model, provider,
+    ...(switchedModel === true ? { switchedModel: true } : {}),
     ms: Math.round(count(ms) ?? 0),
     ...normalized,
     missingUsage: Math.max(nonnegativeInt(usage?.missingUsage),
