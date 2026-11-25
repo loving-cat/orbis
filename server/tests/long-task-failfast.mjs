@@ -42,6 +42,7 @@ const { PiRunner } = await import(src('pi-runner.js'));
 const { executeTurn } = await import(src('runner/turn-executor.js'));
 const {
   createModelIdleGuard, createSdkRetryWatch, modelIdleMsFrom, DEFAULT_MODEL_IDLE_MS, announceSdkRetry,
+  resolveIdleFailure, onSdkRetryStart,
 } = await import(src('runner/model-idle.js'));
 const { decideRetry, isUpstreamTransient, isRecoverableFailure } = await import(src('retry-policy.js'));
 const { ENDED_BY } = await import(src('run-stats.js'));
@@ -160,6 +161,26 @@ await test('0c. 守卫本身：暂停不计时、进展重置、SDK 退避顺延
   assert.equal(g3.fired, false, 'SDK 退避睡眠期间不该判挂死');
 });
 
+await test('0e. resolveIdleFailure：把自家 abort 改写成「上游超时」，用户真取消时不动', () => {
+  const fixed = resolveIdleFailure({ fired: true, limitMs: 180_000 }, false, { aborted: true, error: '已终止', status: 0 });
+  assert.equal(fixed.aborted, false, '不能标成用户终止');
+  assert.equal(fixed.timedOut, true);
+  assert.equal(fixed.status, null);
+  assert.match(fixed.error, /没有进展|model-idle/);
+  assert.doesNotMatch(fixed.error, /已终止|已中止/, '文案不能踩 isRecoverableFailure 的「已终止/已中止」判据');
+  assert.equal(isRecoverableFailure({ error: fixed.error }), true);
+  assert.equal(resolveIdleFailure({ fired: true }, true, { error: 'x' }), null, '用户真取消时不改写');
+  assert.equal(resolveIdleFailure({ fired: false }, false, { error: 'x' }), null, '没触发时不动');
+
+  // onSdkRetryStart 不能走 beat()：beat 会把顺延的期限抹平
+  const entry = { progressAt: 0 };
+  let beatCalls = 0;
+  const fakeIdle = { sdkRetry: () => {}, beat: () => { beatCalls += 1; } };
+  onSdkRetryStart({ entry, idle: fakeIdle, event: { delayMs: 5000 } });
+  assert.ok(entry.progressAt > 0, '必须刷心跳，否则看门狗会先判卡死');
+  assert.equal(beatCalls, 0, '不能调 beat()');
+});
+
 await test('0d. SDK 重试收敛：连续 2 次算一次通路失败，成功清零', () => {
   const reported = [];
   const w = createSdkRetryWatch({ onUpstreamFailure: (info) => reported.push(info) });
@@ -186,7 +207,7 @@ await test('★ 1. 永不吐字：在 modelIdleMs 内判 model-idle，endedBy �
     throw Object.assign(new Error('已中止'), { name: 'AbortError' });
   }, { modelIdleMs: 150 });
   const t0 = Date.now();
-  await h.run();
+  const res = await h.run();
   const elapsed = Date.now() - t0;
   assert.equal(h.abortCalls.length, 1, '超时后必须中止本次请求');
   assert.ok(elapsed < 3_000, `应在 modelIdleMs 附近就判定（实测 ${elapsed}ms，旧行为要等看门狗 6 分钟）`);
@@ -195,6 +216,18 @@ await test('★ 1. 永不吐字：在 modelIdleMs 内判 model-idle，endedBy �
   assert.equal(rec.kind, 'model-idle');
   assert.equal(rec.endedBy, ENDED_BY.modelIdle, 'endedBy 必须是 model-idle');
   assert.ok(rec.timing, '计时对象要一起落盘');
+
+  // ★ 关键：自己 abort 出来的 AbortError 不能被当成「用户终止」。
+  //   否则 isRecoverableFailure / decideRetry / isUpstreamTransient 全部否掉，
+  //   0 次重试、不喂熔断、不进分钟级续派，气泡还变红「已终止」。
+  assert.match(String(res.error ?? ''), /没有进展|model-idle/);
+  assert.doesNotMatch(String(res.error ?? ''), /已终止/, '用户没取消，不能说被终止');
+  const decision = decideRetry({ error: res.error, attempt: 1 });
+  assert.equal(decision.retry, true, '必须还能重试');
+  assert.equal(decision.kind, 'model-idle');
+  assert.equal(decision.switchModel, true, '第 1 次重试就提示换模型');
+  assert.equal(isUpstreamTransient({ error: res.error }), true, '要走分钟级续派，别把活当失败');
+  assert.equal(rec.timing.failKinds['model-idle'], 1, 'failKinds 里要能看见 model-idle');
 });
 
 // ---------------------------------------------------------------------------

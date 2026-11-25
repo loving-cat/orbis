@@ -37,7 +37,7 @@ import {
   STEP_CAP_GRACE, isBlockingAsk, managedIsAutonomous, runContinuationGuard, scheduleDmContinuation, softDeadlineTimeout,
 } from './turn-slicing.js';
 import { emitContext, sessionKey, summarizeArgs, textOf, throttle } from './runner-utils.js';
-import { wireModelWait, announceSdkRetry } from './model-idle.js';
+import { wireModelWait, resolveIdleFailure, onSdkRetryStart } from './model-idle.js';
 
 /** 执行一次 bot 会话回合（带 provider 配置更新租约与受管报告通道作用域） */
 export async function executeTurn(runner, roomId, botId, prompt, options = {}) {
@@ -339,7 +339,6 @@ async function runWithLease(
   entry.originTurnKey = `msg:${botMsg.id}`;
   entry.goalText = String(prompt ?? '').slice(0, 600);
   beat();
-  idle.arm();
   runner.bus.emit('event', { t: 'typing', roomId, botId: bot.id, active: true, lane: 'work', msgId: botMsg.id });
 
   const committed = [];
@@ -549,8 +548,7 @@ async function runWithLease(
         // 事件在 SDK Sleep **之前**触发，所以锚点要挪到"睡醒之后"，
         // 否则退避睡眠会被重复算进 TTFT（见 RunTiming.onSdkRetry 的注释）。
         timing.onSdkRetry(event.delayMs ?? event.delay ?? event.retryAfterMs ?? 0);
-        idle.sdkRetry(event.delayMs ?? event.delay ?? event.retryAfterMs ?? 0);
-        announceSdkRetry({ emit: (p) => runner.bus.emit('event', p), roomId, botId, event, watch: sdkWatch });
+        onSdkRetryStart({ entry, idle, sdkWatch, emit: (p) => runner.bus.emit('event', p), roomId, botId, event });
         break;
       case 'auto_retry_end':
         // SDK 说重试结束了：不管成不成，等模型的计时从现在重新起算
@@ -754,8 +752,9 @@ async function runWithLease(
         ? `${consumedSide.promptBlock}\n\n${prompt}`
         : prompt;
       const finalPrompt = withLessons(withSkills(promptWithSide));
-      // 从这里开始算「等模型」：到第一个 message_update 为止
+      // 从这里开始算「等模型」：到第一个 message_update 为止（附件提取不算）
       timing.beginWait();
+      idle.arm();
       try {
         return images.length
           ? await entry.session.prompt(finalPrompt, { images })
@@ -1020,8 +1019,9 @@ async function runWithLease(
       needsApproval: firstNewApproval(),
     });
   } catch (err) {
-    const failure = cancelled() ? modelFailure(turnController.signal.reason ?? { name: 'AbortError' })
+    let failure = cancelled() ? modelFailure(turnController.signal.reason ?? { name: 'AbortError' })
       : responseFailure ?? modelFailure(err);
+    failure = resolveIdleFailure(idle, cancelled(), failure) ?? failure;
     const current = runner.store.getMessage(roomId, botMsg.id);
     const previousError = current?.error;
     const message = failure.aborted && previousError === '已按你的要求终止'
@@ -1132,7 +1132,7 @@ async function runWithLease(
     const stalled = timedOut || failure.timedOut === true;
     const wasAborted = !stalled && (keepAborted || failure.aborted === true);
     if (!responseFailure) {
-      timing.countFail(stalled ? 'stall' : wasAborted ? 'abort'
+      timing.countFail(idle.fired ? 'model-idle' : stalled ? 'stall' : wasAborted ? 'abort'
         : failure.auth ? 'auth' : failure.quota ? 'quota'
           : recoverable ? 'transient' : 'error');
     }

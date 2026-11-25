@@ -249,3 +249,46 @@ export function wireModelWait({
   });
   return { idle, sdkWatch };
 }
+
+/**
+ * `model-idle` 的失败口径：它**不是**「用户终止」。
+ *
+ * 上游一个字都不吐的时候是我们自己 `abort()` 的，SDK 抛出来的就是 AbortError。
+ * 如果照实当成 `aborted`，下游会全线短路：
+ *   · `isRecoverableFailure` / `decideRetry` / `isUpstreamTransient` 全部否掉
+ *     → 0 次重试、不喂熔断、不进分钟级续派；
+ *   · 气泡直接变红「已终止」，用户以为是自己取消的。
+ *
+ * 所以这里把它改写成「上游超时」：`timedOut`、`aborted: false`、`status: null`。
+ * **文案里不能出现「中止/终止」** —— `isRecoverableFailure` 用 `/已.{0,2}(终止|中止)/`
+ * 判「用户终止」，写进去就又把这条路堵死了。
+ *
+ * @returns {object|null} 需要覆盖时返回新的失败对象；用户真取消或没触发则返回 null
+ */
+export function resolveIdleFailure(idle, userCancelled = false, failure = null) {
+  if (!idle?.fired || userCancelled) return null;
+  const seconds = Math.round((Number(idle.limitMs) || 0) / 1000);
+  return {
+    ...(failure ?? {}),
+    status: null,
+    auth: false,
+    quota: false,
+    aborted: false,
+    timedOut: true,
+    error: `模型超过 ${seconds} 秒没有进展（model-idle），本次等待已放弃`,
+  };
+}
+
+/**
+ * `auto_retry_start` 的一处接线（心跳 + 顺延 + 广播）。
+ *
+ * ★ 心跳要写 `entry.progressAt`，但**不能**走 `beat()`：`beat()` 里带着
+ *   `idle.beat()`，会把刚刚 `idle.sdkRetry(delayMs)` 顺延出来的期限又抹平 ——
+ *   SDK 一次 60 s 退避立刻被当成「模型 60 s 没进展」。
+ */
+export function onSdkRetryStart({ entry = null, idle = null, sdkWatch = null, emit = null, roomId = '', botId = '', event = {} } = {}) {
+  if (entry) entry.progressAt = Date.now();
+  const delayMs = Number(event.delayMs ?? event.delay ?? event.retryAfterMs ?? 0) || 0;
+  idle?.sdkRetry(delayMs);
+  return announceSdkRetry({ emit, roomId, botId, event, watch: sdkWatch });
+}
