@@ -64,6 +64,12 @@
 | [`HTML-PREVIEW.md`](HTML-PREVIEW.md) | HTML 预览面板 |
 | [`AVATAR.md`](AVATAR.md) | 头像绘制与动画约束 |
 
+## 性能
+
+| 文件 | 讲什么 |
+|---|---|
+| [`SPEC-PERF-V1.md`](SPEC-PERF-V1.md) | 性能治理规格：时间花在哪、哪些在主线程阻塞、Rust 只进平台层（Windows 桌面助手） |
+
 ## 写作约定
 
 1. **写系统，不写过程。** "为什么这样设计"能写；"这次我做了什么 / 下一步做啥"不写。

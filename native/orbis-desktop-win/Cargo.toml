@@ -1,0 +1,31 @@
+[package]
+name = "orbis-desktop-win"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Orbis 的 Windows 桌面助手：单次进程，JSON over stdin/stdout"
+
+[[bin]]
+name = "orbis-desktop-win"
+path = "src/main.rs"
+
+[dependencies]
+# 与 orbis-sandbox 同版本、同许可（MIT OR Apache-2.0）。
+# 阶段 A 只用 -sys 这一层薄 FFI：命令很少、参数很直白，
+# typed 包装反而多一层间接。截图 / PNG 编码留到阶段 B（§11·1 已拍板用 png crate）。
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+strip = true

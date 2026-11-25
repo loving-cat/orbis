@@ -428,22 +428,15 @@ export class PiRunner {
     return slots.acquire({ priority: human ? PRIORITY.human : PRIORITY.normal, name, group: roomId, timeoutMs, signal });
   }
 
-  recordRun({ roomId, botId, startedAt, ok, usage, taskRunId = '', attemptIndex = 1, sdkRetries = 0, kind = '' }) {
+  recordRun({ roomId, botId, startedAt, ok, usage, taskRunId = '', attemptIndex = 1, sdkRetries = 0, kind = '', timing = null, endedBy = '' }) {
     try {
       const bot = this.store.getBot(botId);
       const model = bot?.model ? String(bot.model) : (this.model?.id ?? '');
+      // 埋点归一（endedBy / TTFT / SDK 重试等待 / 失败分类）全在 run-stats 里做，
+      // 这里只把执行器的 RunTiming 递过去 —— 外观层不该长出新逻辑
       this.stats?.record({
-        roomId,
-        botId,
-        model,
-        provider: this.providerForBot(botId) ?? '',
-        ms: Date.now() - startedAt,
-        usage,
-        taskRunId,
-        attemptIndex,
-        sdkRetries,
-        ok,
-        kind,
+        roomId, botId, model, provider: this.providerForBot(botId) ?? '',
+        ms: Date.now() - startedAt, usage, taskRunId, attemptIndex, sdkRetries, ok, kind, timing, endedBy,
       });
     } catch (error) {
       log('记录运行统计失败：', error?.message || error);

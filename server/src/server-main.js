@@ -17,6 +17,7 @@ import { log } from './util.js';
 import { servePendingMigrationMode } from './pending-migration.js';
 import { installChildEnvScrub } from './child-env.js';
 import { shells } from './shells.js';
+import { disposeExtractPool } from './extract-pool.js';
 import { createAutomationScheduler } from './automations.js';
 import { createTaskHost } from './bootstrap/task-host.js';
 import { desktopInputSession } from './desktop-input-session.js';
@@ -447,7 +448,7 @@ async function main() {
   });
 
   let closing = false;
-  const shutdown = (signal) => {
+  const shutdown = async (signal) => {
     if (closing) return;
     closing = true;
     log(`${signal} → 收工`);
@@ -459,7 +460,20 @@ async function main() {
     scheduler.stop();
     clearInterval(housekeeping);
     runner.health?.stop();
-    shells.stopAll();
+    // ★ 等后台进程树真的收掉再继续（最多 3 s）。
+    //   以前是同步"发个 taskkill 就走"：服务端自己退了，taskkill 还没枚举完，
+    //   孙进程（dev server / watch）就留在机器上。真收尾是异步的，这里必须等。
+    await Promise.race([
+      shells.stopAll(),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    // 附件解析 worker 也要收干净：活着的 worker 会拖住进程退出
+    try {
+      await Promise.race([
+        disposeExtractPool(),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+    } catch { /* 收不掉也照常退出 */ }
     taskHost.dispose();
     runner.disposeAll();
     store.saveNow();

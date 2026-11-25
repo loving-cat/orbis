@@ -201,23 +201,21 @@ class _StreamingMarkdownViewState extends State<StreamingMarkdownView>
       );
     }
 
-    return AnimatedBuilder(
-      animation: pulse,
-      builder: (context, _) {
-        final alpha = 0.28 + pulse.value * 0.67;
-        return MdText(
-          visible,
-          selectable: false,
-          style: widget.style,
-          mono: widget.mono,
-          mentions: widget.mentions,
-          onMentionTap: widget.onMentionTap,
-          onLinkTap: widget.onLinkTap,
-          linkColor: widget.linkColor,
-          mentionOf: widget.mentionOf,
-          streamingCursorColor: cursorBase.withValues(alpha: alpha),
-        );
-      },
+    // ★ 不再用 AnimatedBuilder 包住整个 MdText：那等于**每帧重建整条消息**
+    //   （闪烁 60 次/秒 × 消息越来长 = 流式卡顿的主因）。现在把动画交给
+    //   MdText 内部的末尾光标叶节点，正文一帧都不重建。
+    return MdText(
+      visible,
+      selectable: false,
+      style: widget.style,
+      mono: widget.mono,
+      mentions: widget.mentions,
+      onMentionTap: widget.onMentionTap,
+      onLinkTap: widget.onLinkTap,
+      linkColor: widget.linkColor,
+      mentionOf: widget.mentionOf,
+      streamingCursorColor: cursorBase,
+      streamingCursorPulse: pulse,
     );
   }
 }

@@ -22,7 +22,7 @@
 | `version.js` | 服务端版本唯一来源（读 package.json） |
 | `update-check.js` | 版本比较与更新判定、按平台挑安装包（纯函数） |
 | `update-checker.js` | 查 GitHub Releases（可换镜像）、超时与缓存；只查不装 |
-| `store.js` | 实例化存储与落盘工厂（`createStore` + 延迟默认单例）：bots/rooms/devices/sessions/tasks/automations/approvals/policy |
+| `store.js` | 实例化存储与落盘工厂（`createStore` + 延迟默认单例）：bots/rooms/devices/sessions/tasks/automations/approvals/policy。落盘有 `stateDirty` 门：纯消息变更（`scheduleSave({state:false})`）不重写 `state.json`，且只在 `writeJsonAtomic` **成功后**才清 dirty |
 | `pi-runner.js` | 运行时外观层与生命周期管理（模型注册/熔断/端点轮转/会话池/abort/reset），向 `runner/*` 子模块委派执行与编排 |
 | `runner/turn-executor.js` | 单轮会话执行主干（`executeTurn`：受管 scope/租约、主动压缩、技能与经验增量注入、流式事件、三层恢复与产物收集、单轮软截止、续跑守卫与续段标记） |
 | `runner/turn-slicing.js` | 时间片与续段接线：软截止超时（`softDeadlineTimeout`）、收尾后工具还在跑就再宽限、续跑守卫（`runContinuationGuard`）、私聊自动续段（`scheduleDmContinuation`）、`STEP_CAP_GRACE` |
@@ -50,7 +50,7 @@
 | `group-round.js` | 群轮次决策：该跳过/排队/打断/派发、收尾轮判定（纯函数） |
 | `policy-version.js` | 部门规矩的版本标识与变更影响判定：哪些字段影响授权、变更该通知哪些在跑的活（纯函数） |
 | `run-slots.js` | 全局运行槽位：同时开跑上限、给人留保底位、等待超时与取消、释放幂等（纯逻辑） |
-| `run-stats.js` | 单次运行内汇总模型用量、重试及缺失字段；有界本地明细与按日统计，不保存提示词或凭据 |
+| `run-stats.js` | 单次运行内汇总模型用量、重试及缺失字段；有界本地明细与按日统计，不保存提示词或凭据。M1 起带长任务埋点：`endedBy`（ok / retry-exhausted / model-idle / stall / abort / auth / quota / slice）、`ttftMsP50/Max`、`sdkRetryWaitMs`、`failKinds`（`RunTiming`；旧记录缺字段照常聚合） |
 | `memory-digest.js` | 记忆材料筛选、输入裁剪及稳定消息 ID 增量游标；窗口滑动时不以数组长度替代进度。`buildSummarizePrompt` 拼递归更新提示词（有旧摘要时增量并入，不整份重写） |
 | `memory-sanitize.js` | 记忆摘要写入脱敏：抹掉邮箱、PEM 私钥块、Bearer 令牌、赋值式 key/secret；**不处理文件路径**，且不误伤「token 预算」这类正常用语（纯函数） |
 | `transcript-budget.js` | 群聊记录按字数预算裁剪、单条超长保留头尾（纯函数） |
@@ -89,7 +89,8 @@
 | `model-reply.js` | 模型错误分类与脱敏展示、认证失败终止重试、真正空回复的限定模型恢复 |
 | `providers.js` | 额外 provider 注册与默认模型解析 |
 | `context-budget.js` | 上下文预算：容量覆盖、压缩阈值与保留原文上限，为压缩摘要预留空间 |
-| `attachments.js` / `extract.js` / `upload-sessions.js` | 附件存取、正文提取、**分片上传**；附件按房间存放，删除先持久化最小标记再清理文件，历史读取与实时推送统一过滤 |
+| `attachments.js` / `extract.js` / `upload-sessions.js` | 附件存取、正文提取、**分片上传**；附件按房间存放，删除先持久化最小标记再清理文件，历史读取与实时推送统一过滤。`extract.js` 只做门面：小文本主线程读，其余交给线程池（`extract-pool.js`），`parseFileInline()` 是主线程与 worker 共用的同一份实现 |
+| `extract-pool.js` / `extract-worker.js` | 附件解析线程池：懒启动、默认 1 个 worker（可配 2）、单任务 60 s 超时、`maxOldGenerationSizeMb 1024`；超时/崩溃 terminate 并重建，返回 `extract_timeout` / `extract_crashed`；起不来时调用方回退主线程解析 |
 | `shells.js` | 后台进程注册表（启动/读/写/杀、容量与回收） |
 | `shell-policy.js` | 命令级规则：归一化、解析、通配匹配、判不了就拒绝（纯函数） |
 | `policy-hook.js` | 命令规则的执行点（pi 内联扩展，拦 `tool_call`），并在这里逐次过授权网关 |
@@ -99,8 +100,9 @@
 | `grant-gate.js` | 授权网关：候选→有效性→父链→覆盖→审计；迁移授权与运行期补登记 |
 | `confirm.js` | 不可撤销动作的确认：通道分级（本机 vs 手机）、目标摘要绑定、有效期 |
 | `http-admin.js` | HTTP 管理门的分级表：defense/data/probe，nonce 与审计 |
-| `desktop-observe.js` | 桌面**观察**（列窗口/截指定窗口） |
-| `desktop-input*.js` | 桌面**输入**（`SendInput`，T2 共享桌面）：租约、接管检测、DPI、坐标校验 |
+| `desktop-observe.js` | 桌面**观察**（列窗口/截指定窗口）；Windows 侧优先走原生助手的 `windows`（DWM 扩展边框 + WS_EX_TOOLWINDOW 过滤），助手不可用再回退 PowerShell |
+| `desktop-input*.js` | 桌面**输入**（`SendInput`，T2 共享桌面）：租约、接管检测、DPI、坐标校验；Windows 侧 `probeEnvironment` / `lastInputAt` / `cursorPosition` / `foregroundTitle` / `sampleInputNoise` / `perform(move·click)` 优先走原生助手，其余动作（scroll / key / text / drag）仍在 PowerShell |
+| `desktop-helper-win.js` | Windows 桌面助手客户端（阶段 A 单次进程）：候选路径、版本/协议/sha256 校验、`callHelper`、**fail-open 回退**（缺失/损坏/版本不符 → PowerShell，只记一次日志）。`ORBIS_DESKTOP_WIN_IMPL` 可强制 `powershell`，`ORBIS_DESKTOP_WIN_HELPER` 是排他覆盖路径 |
 | `desktop-island.js` | 独立桌面（§5.6 T1）**纯逻辑**：档位选择、启动白名单、窗口消息计划、截帧判定 |
 | `desktop-island-win.js` | 独立桌面的 Windows 实现：每岛一个常驻 island server（按行 JSON） |
 | `desktop-island-tools.js` | 三个主控专属工具：`desktop_island_launch` / `_observe` / `_input` |
@@ -115,7 +117,7 @@
 | `relay/frames.js` | 中转帧编解码（base64 + deflateRaw 无损压缩，纯函数） |
 | `relay/server.js` | 云侧中转：按 code 把 HTTP/WS 转给电脑侧（可选，默认不启动） |
 | `relay/agent.js` | 电脑侧外连客户端（可选，`npm run relay-agent`） |
-| `render-html.js` | 把附件渲染成可嵌入展示栏的 HTML：xlsx/csv 表格、docx（图片不内联，换占位）；PDF 不在此列，交给 webview 内核阅读器 |
+| `render-html.js` | 把附件渲染成可嵌入展示栏的 HTML：xlsx/csv 表格、docx（图片不内联，换占位）；PDF 不在此列，交给 webview 内核阅读器。sheet/docx 的解析走线程池，`renderFileAsHtmlInline()` 是 worker 与主线程共用的实现 |
 | `memory-policy.js` | 记忆摘要的自动触发策略：首次满 10 轮，之后按重要度（决策/口径/纠错/待办/路径）提前触发，琐事攒得更久；纯函数 |
 | `web.js` | 搜索与抓网页 |
 | `util.js` | id/时间/原子写/日志/错误分类 |
@@ -128,6 +130,14 @@
 - 新的**执行期拦截**：走 `policy-hook.js` 这类 pi 内联扩展，不往 runner 里塞判断；
 - 新的**能产生副作用的动作**：在 `action-catalog.js` 登记（动作条目 + 工具映射 + 目标认法），
   否则网关看不见它。迁移授权的动作清单从目录推导，不用手改第二处。
+
+### 命令行工具 `server/tools`
+
+| 文件 | 讲什么 |
+|---|---|
+| `perf-report.mjs` | 只读性能报告：读 `run-stats.json` 与 `sessions/*.jsonl`，输出时间花在哪、失败运行时长占比与判定耗时、`endedBy` 分布、TTFT、缓存命中。**只打聚合**，不含正文 / 路径 / 供应商身份；`--data=DIR` 指定数据目录，`--json` 出机器可读结果 |
+| `desktop-parity.mjs` | 桌面口径对拍：同一台机器上分别用 PowerShell 与原生助手取一遍屏幕/DPI/会话/光标/前台标题/窗口矩形，逐项比对并给出误差（构成 §5.5 的验收证据） |
+| `check-desktop-helper-version.mjs` | 校验助手 exe 的版本与协议号和 Node 侧常量一致（CI 与构建脚本共用，避免两边各写一份解析） |
 
 ### 「一个事实只存一份」的几处约定
 

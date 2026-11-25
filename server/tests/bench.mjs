@@ -50,6 +50,13 @@ bench.push(['appendMessage × 1000', ms(() => {
   }
 }, 1), 1]);
 bench.push(['saveNow() 落盘（脏房间 1 个）', ms(() => store.saveNow(), 20), 20]);
+// 流式落盘：只改消息（state.json 没变）。这是 §8 要优化的那条热路径。
+bench.push(['流式 updateMessage × 50（含落盘）', ms(() => {
+  for (let i = 0; i < 50; i += 1) {
+    store.updateMessage(rooms[0].id, store.listMessages(rooms[0].id, { limit: 1 })[0].id, { text: `流式${i}` });
+    store.saveNow();
+  }
+}, 1), 1]);
 bench.push(['parseMentions × 1000', ms(() => {
   const members = botIds.map((id, i) => ({ id, name: `员工${i}` }));
   for (let i = 0; i < 1000; i++) parseMentions('@员工1 @员工3 你们处理下', members);
@@ -93,6 +100,31 @@ const check = (ok, msg) => {
 };
 check(dirty === 1, `改一个房间只该标记 1 个脏房间（实际 ${dirty}）`);
 check(rewritten === 1, `落盘只该重写 1 个房间文件（实际 ${rewritten}）`);
+
+// ---- §8 验证：流式只改消息时，state.json 一次都不该重写
+const stateFile = path.join(process.env.ORBIS_HOME, 'state.json');
+store.saveNow(); // 先把 state 落干净（此刻 stateDirty=false）
+const stateBefore = fs.statSync(stateFile).mtimeMs;
+const sizeBefore = fs.statSync(stateFile).size;
+await new Promise((r) => setTimeout(r, 30));
+const streamTarget = store.listMessages(rooms[2].id, { limit: 1 })[0];
+let stateWrites = 0;
+for (let i = 0; i < 30; i += 1) {
+  store.updateMessage(rooms[2].id, streamTarget.id, { text: `流式输出第 ${i} 段` });
+  store.saveNow(); // 每次都想落盘：state 不该跟着写
+  if (fs.statSync(stateFile).mtimeMs !== stateBefore) stateWrites += 1;
+}
+console.log(`流式 30 次 updateMessage+saveNow：state.json 被重写 ${stateWrites} 次（期望 0），`
+  + `体积 ${(sizeBefore / 1024).toFixed(1)} KB`);
+check(stateWrites === 0, `流式期间不该重写 state.json（实际 ${stateWrites} 次）`);
+check(store.stateDirty === false, 'state 没变时不该留下 dirty');
+
+// ---- 反过来：state 真的变了就必须写（漏写就是数据丢失）
+store.updateBot(botIds[0], { name: '改个名字' });
+store.saveNow();
+check(store.stateDirty === false, 'state 变了并落盘后 dirty 应清掉');
+const stateAfter = fs.statSync(stateFile);
+check(stateAfter.mtimeMs !== stateBefore, 'state 变了必须真的重写 state.json');
 check(store.dirtyRooms.size === 0, '落盘后脏房间要清空');
 console.log(failed ? `基准断言：${failed} 条失败` : '基准断言：全部通过');
 process.exit(failed ? 1 : 0);

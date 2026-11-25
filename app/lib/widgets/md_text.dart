@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 
 import 'package:flutter/material.dart';
@@ -33,6 +35,7 @@ class MdText extends StatefulWidget {
     this.linkColor,
     this.mentionOf,
     this.streamingCursorColor,
+    this.streamingCursorPulse,
   });
 
   final String text;
@@ -46,6 +49,9 @@ class MdText extends StatefulWidget {
 
   /// 流式输出尾标颜色（非 null 时不拼接进原始 Markdown 字符串，直接画在末块末尾）。
   final Color? streamingCursorColor;
+
+  /// 光标闪烁动画：只驱动末尾那个 `▍`，**不**触发 [MdText] 重建。
+  final Animation<double>? streamingCursorPulse;
 
   /// 要高亮的名字（不含 @）—— 部门成员。agent 之间用 @ 派活，高亮后一眼看得出谁被点名了。
   final List<String> mentions;
@@ -90,12 +96,45 @@ class _MdTextState extends State<MdText> {
   String? _parsedFor;
   List<_Block> _blocksCache = const [];
 
+  /// 流式增量解析的游标（SPEC-PERF-V1 §7.2 第 1 条）。
+  final _IncrementalMarkdown _incremental = _IncrementalMarkdown();
+
+  /// 已闭合稳定块的 Widget 缓存（§7.2 第 2 条）。
+  ///
+  /// 流式追加时只有**最后一块**在变，前面的块每帧重建纯属浪费：
+  /// 那就是"帧开销随消息长度线性增长"的来源。
+  List<Widget> _stableWidgets = const [];
+  String _widgetKey = '';
+
   List<_Block> _blocksFor(String text) {
     if (text != _parsedFor) {
-      _blocksCache = _parse(text);
+      _blocksCache = _incremental.blocksFor(text);
       _parsedFor = text;
     }
     return _blocksCache;
+  }
+
+  /// 影响块渲染外观的全部输入 —— 任一变化都必须让块缓存整体失效。
+  String _widgetCacheKey(BuildContext context, TextStyle base, TextStyle code, int generation) {
+    final colors = PB.colors(context);
+    return [
+      base.hashCode,
+      code.hashCode,
+      widget.mono.hashCode,
+      widget.linkColor?.toARGB32() ?? 0,
+      // ★ 用**值签名**而不是 `mentions.hashCode`：父级每帧传一个新的字面量列表
+      //   （内容一样、对象不同）时，引用哈希每次都变 → 缓存每帧失效、退化成全量重建。
+      widget.mentions.join(String.fromCharCode(0)),
+      widget.compact ? 1 : 0,
+      // 前缀重置（编辑/回滚）也必须让缓存整体失效
+      generation,
+      colors.accent.toARGB32(),
+      Theme.of(context).brightness.index,
+      // 流式结束 false→true：可选中渲染是**另一棵树**，必须失效
+      widget.selectable ? 1 : 0,
+      // 系统字号/缩放变了同样要重建，否则字号不跟系统走
+      MediaQuery.textScalerOf(context).scale(100),
+    ].join('|');
   }
 
   @override
@@ -171,20 +210,55 @@ class _MdTextState extends State<MdText> {
 
     final blocks = _blocksFor(widget.text);
     final cursorColor = widget.streamingCursorColor;
+    // ★ 缓存键必须把所有影响**渲染外观**的东西都算进来，少一个就会
+    //   在"开了选中复制 / 系统改了字号 / 换主题"之后复用一批旧配置画出来的 widget：
+    //   表现是选中不了、字号不跟系统走，而且不报错。
+    // ★ 前缀重置（编辑/回滚/换条）时必须整体失效：块结构可能完全不同，
+    //   复用旧消息的 widget 会在界面上残留上一版正文。
+    final generation = _incremental.generation;
+    final key = _widgetCacheKey(context, base, code, generation);
+    final stableCount = _incremental.stableCount.clamp(0, blocks.length);
+    // ★ 带光标的末块**永不进缓存**：它每帧都在变（追加字 / 光标动画），
+    //   缓存它会把光标字符固化进正文（空白尾再追加内容的场景尤其明显）。
+
+    final stableLimit = cursorColor != null
+        ? math.min(stableCount, math.max(0, blocks.length - 1))
+        : stableCount;
+    if (key != _widgetKey) {
+      _stableWidgets = const [];
+      _widgetKey = key;
+    }
     final children = <Widget>[];
     if (blocks.isEmpty && cursorColor != null) {
-      children.add(Text('▍', style: base.copyWith(color: cursorColor)));
+      children.add(_StreamingCursor(
+        color: cursorColor,
+        style: base,
+        pulse: widget.streamingCursorPulse,
+      ));
     } else {
-      for (var i = 0; i < blocks.length; i++) {
-        children.add(
-          _renderBlock(
-            context,
-            blocks[i],
-            base,
-            code,
-            cursorColor: i == blocks.length - 1 ? cursorColor : null,
-          ),
+      // 已缓存的稳定块：实例直接复用（Flutter 会跳过完全相同的 widget 子树）
+      final reuse = math.min(stableLimit, _stableWidgets.length);
+      for (var i = 0; i < reuse; i += 1) {
+        children.add(_stableWidgets[i]);
+      }
+      final nextStable = <Widget>[..._stableWidgets.take(reuse)];
+      for (var i = children.length; i < blocks.length; i += 1) {
+        final w = _renderBlock(
+          context,
+          blocks[i],
+          base,
+          code,
+          cursorColor: i == blocks.length - 1 ? cursorColor : null,
+          cursorPulse: i == blocks.length - 1 ? widget.streamingCursorPulse : null,
         );
+        children.add(w);
+        // ★ 必须**追加**到已有缓存，不能整体替换：一次新闭合 2 段以上时，
+        //   替换会把已经在缓存里的前几段丢掉 —— 界面上表现为第 1 段凭空消失、
+        //   后面的段落前移并重复渲染。
+        if (i < stableLimit) nextStable.add(w);
+      }
+      if (nextStable.length != _stableWidgets.length || nextStable.isNotEmpty) {
+        _stableWidgets = nextStable;
       }
     }
 
@@ -221,6 +295,7 @@ class _MdTextState extends State<MdText> {
     TextStyle base,
     TextStyle code, {
     Color? cursorColor,
+    Animation<double>? cursorPulse,
   }) {
     switch (block) {
       case _Heading(:final level, :final text):
@@ -254,7 +329,7 @@ class _MdTextState extends State<MdText> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             line,
-            Text('▍', style: base.copyWith(color: cursorColor)),
+            _StreamingCursor(color: cursorColor, style: base, pulse: cursorPulse),
           ],
         );
 
@@ -264,6 +339,7 @@ class _MdTextState extends State<MdText> {
           code: code_,
           style: code,
           cursorColor: cursorColor,
+          cursorPulse: cursorPulse,
         );
 
       case _Quote(:final text):
@@ -331,13 +407,13 @@ class _MdTextState extends State<MdText> {
             table,
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text('▍', style: base.copyWith(color: cursorColor)),
+              child: _StreamingCursor(color: cursorColor, style: base, pulse: cursorPulse),
             ),
           ],
         );
 
       case _Para(:final text):
-        return _rich(text, base, code, cursorColor: cursorColor);
+        return _rich(text, base, code, cursorColor: cursorColor, cursorPulse: cursorPulse);
     }
   }
 
@@ -347,6 +423,7 @@ class _MdTextState extends State<MdText> {
     TextStyle code, {
     bool quote = false,
     Color? cursorColor,
+    Animation<double>? cursorPulse,
   }) {
     final spans = _inline(
       source,
@@ -355,12 +432,14 @@ class _MdTextState extends State<MdText> {
       linkColor: quote ? PB.colors(context).link : widget.linkColor,
     );
     if (cursorColor != null) {
-      spans.add(
-        TextSpan(
-          text: '▍',
-          style: base.copyWith(color: cursorColor),
-        ),
-      );
+      // ★ 用 WidgetSpan 而不是 TextSpan：光标是**独立小部件**，
+      //   闪烁动画只重绘它自己（不带 baseline 对齐会改变行高/换行行为，
+      //   所以 alignment/baseline 显式给上，语义与原来的文字光标一致）。
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: _StreamingCursor(color: cursorColor, style: base, pulse: cursorPulse),
+      ));
     }
     // 选中交给最外层那一个 SelectionArea（见 build），这里只画文本。
     // 不用 SelectableText.rich：它不支持 WidgetSpan，而 @提及 要画头像 chip。
@@ -546,6 +625,141 @@ List<String> _splitRow(String line) {
   return s.split('|').map((c) => c.trim()).toList();
 }
 
+/// 流式增量解析：只重解析「还没闭合」的尾巴。
+///
+/// ## 为什么可以这样切
+///
+/// `_parse` 是逐行分块的状态机，但它在**代码围栏之外的连续空行**处状态完全清空
+/// （段落 flush、列表/引用/表格都已经收口）。所以对文本里的某个位置 offset：
+///
+/// ```
+/// parse(full) == parse(full[0..offset]) + parse(full[offset..])
+/// ```
+///
+/// 只要 offset 落在「围栏外、且是连续两个换行之后」。
+///
+/// ## 三条不能错的细节
+///
+/// 1. **末尾单个换行符不是空行**：`split` 之后会多出一个空尾串，
+///    把它当空行就会把「下一行还没写完的围栏/表格」提前当成闭合 ——
+///    offset 切在半个块中间，增量结果与整段解析对不上（属性测试守着这条）。
+/// 2. **必须识别围栏**：代码围栏里的空行不是块边界。
+/// 3. **前缀不成立就整段重来**（编辑、回滚、换条消息），不做"猜测式"修补。
+class _IncrementalMarkdown {
+  String _src = '';
+  int _offset = 0;
+  List<_Block> _stable = const [];
+
+  /// 已闭合（不会再变）的块数 —— 块 Widget 缓存只对前缀这部分有效。
+  int get stableCount => _stable.length;
+
+  int _generation = 0;
+
+  /// 前缀重置次数：每次「整段重来」+1，块 Widget 缓存据此整体失效。
+  int get generation => _generation;
+
+  List<_Block> blocksFor(String text) {
+    // 不是「上一段的前缀」：编辑/回滚/换消息，整段重来
+    if (!text.startsWith(_src)) {
+      // 编辑 / 回滚 / 换条消息：块结构可能完全不同，缓存必须整体失效
+      _generation += 1;
+      _src = text;
+      _offset = _stableStart(text);
+      _stable = _parse(text.substring(0, _offset));
+      return [..._stable, ..._parse(text.substring(_offset))];
+    }
+    // 前缀成立：只把新变成"稳定"的那一段追加进来（从旧 offset 起扫，O(tail)）
+    final next = _stableStart(text, startFrom: _offset);
+    if (next > _offset) {
+      _stable = [..._stable, ..._parse(text.substring(_offset, next))];
+      _offset = next;
+    }
+    _src = text;
+    return [..._stable, ..._parse(text.substring(_offset))];
+  }
+
+  /// 最后一个「围栏外、连续空行之后」的位置。
+  ///
+  /// 只看 text 本身（不依赖增量状态），保证同一个文本永远得到同一个切点。
+  static int _stableStart(String text, {int startFrom = 0}) {
+    // ★ 从 startFrom 开始扫：前缀成立时不再每帧从 0 扫全篇（那和整段解析一样贵）。
+    //   startFrom 永远是"围栏外的稳定边界"，所以这里可以从 inFence=false 起算。
+    var from = startFrom < 0 ? 0 : (startFrom > text.length ? text.length : startFrom);
+    var inFence = false;
+    var offset = from;
+    var lineStart = from;
+    for (var i = from; i < text.length; i += 1) {
+      if (text.codeUnitAt(i) != 0x0A) continue;
+      final line = text.substring(lineStart, i);
+      // ★ 围栏的开/关必须与 `_parse` 逐字对齐：
+      //   _parse 先试开围栏（`_fence`），只有已在一段围栏里才试关（`_fenceEnd`）。
+      //   原来这里用 `inFence = !inFence` 一刀切，遇到 ``` 与 ``` 混排、
+      //   或者围栏行里带语言标注时会算出与解析器不同的状态。
+      if (!inFence && _fence.hasMatch(line)) {
+        inFence = true;
+      } else if (inFence && _fenceEnd.hasMatch(line)) {
+        inFence = false;
+      } else if (!inFence && line.trim().isEmpty && i + 1 < text.length) {
+        // 真空行、且后面还有内容：前面的块才闭合。
+        // 「末尾单个换行」产生的空尾串后面没有内容，绝不能当边界。
+        offset = i + 1;
+      }
+      lineStart = i + 1;
+    }
+    return offset;
+  }
+}
+
+/// 测试入口：把块结构压成一个确定性的字符串（属性测试拿它逐块对拍）。
+///
+/// 用「类型 + 关键内容」而不是 `toString()`：块类型都是私有类，默认 toString
+/// 只会打印实例地址，那样的「相等」什么也证明不了。
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+String debugBlocksSignature(List<_Block> blocks) {
+  final parts = <String>[];
+  for (final b in blocks) {
+    switch (b) {
+      case _Heading(:final level, :final text):
+        parts.add('H$level:${text.length}:$text');
+      case _Para(:final text):
+        parts.add('P:${text.length}:$text');
+      case _Code(:final language, :final code_, :final closed):
+        // ★ 必须比内容，不只比长度：增量切错时长度可能正好相同（换行/空行互换），
+        //   那样的"相等"会让属性测试放过一个真实回归。
+        parts.add('C${closed ? '1' : '0'}:$language:${code_.length}:$code_');
+      case _Hr():
+        parts.add('HR');
+      case _Quote(:final text):
+        parts.add('Q:${text.length}:$text');
+      case _ListBlock(:final items):
+        parts.add('L:${items.map((i) => '${i.indent}/${i.marker}/${i.text}').join(',')}');
+      case _Table(:final header, :final rows):
+        parts.add('T:${header.join(',')}|${rows.map((r) => r.join(',')).join(';')}');
+    }
+  }
+  return parts.join(String.fromCharCode(10));
+}
+
+/// 测试入口：走增量解析器（与 [MdText] 内部用的是同一个实现）。
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+List<_Block> debugParseIncremental(List<String> chunks) {
+  final it = _IncrementalMarkdown();
+  var text = '';
+  var blocks = <_Block>[];
+  for (final chunk in chunks) {
+    text += chunk;
+    blocks = it.blocksFor(text);
+  }
+  return blocks;
+}
+
+/// 测试入口：整段解析（对照用）。
+@visibleForTesting
+// ignore: library_private_types_in_public_api
+List<_Block> debugParseFull(String src) => _parse(src);
+
 List<_Block> _parse(String src) {
   final lines = src.split('\n');
   final blocks = <_Block>[];
@@ -697,12 +911,14 @@ class _CodeBlock extends StatelessWidget {
     required this.code,
     required this.style,
     this.cursorColor,
+    this.cursorPulse,
   });
 
   final String language;
   final String code;
   final TextStyle style;
   final Color? cursorColor;
+  final Animation<double>? cursorPulse;
 
   @override
   Widget build(BuildContext context) {
@@ -969,6 +1185,38 @@ class MentionInfo {
 ///   · 鼠标移上去变手型，看着像"可以拖"
 ///   · 而它比点击只多了"提前看到一句话简介"这点信息 —— 不划算
 /// 所以去掉了。要看他是谁，点进去就是了。
+/// 流式光标：**独立小部件**，闪烁只重绘它自己（SPEC-PERF-V1 §7.2 第 3 条）。
+///
+/// 为什么不是把 `▍` 拼进正文：那样光标颜色一变（每帧的闪烁相位）就得重建
+/// 整条 `MdText` —— 长消息上等于每帧全量重排。做成叶节点之后，
+/// 稳定块走缓存、光标走自己的动画，`MdText.build` 一帧都不必跑。
+///
+/// 换行语义：在 `Text.rich` 里用 WidgetSpan + baseline 对齐，
+/// 与原来的 `TextSpan('▍')` 完全一致（不会把光标挤到下一行或改变行高）。
+class _StreamingCursor extends StatelessWidget {
+  const _StreamingCursor({required this.color, required this.style, this.pulse});
+
+  final Color color;
+  final TextStyle style;
+  final Animation<double>? pulse;
+
+  @override
+  Widget build(BuildContext context) {
+    final glyph = Text('▍', style: style.copyWith(color: color));
+    final animation = pulse;
+    if (animation == null) return glyph;
+    return AnimatedBuilder(
+      animation: animation,
+      // child 是静态的：每帧只重建这层 Opacity，不碰 MdText
+      builder: (context, child) => Opacity(
+        opacity: 0.28 + animation.value * 0.67,
+        child: child,
+      ),
+      child: glyph,
+    );
+  }
+}
+
 class _MentionChip extends StatelessWidget {
   const _MentionChip({required this.name, this.info, this.onTap});
 

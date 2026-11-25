@@ -15,7 +15,9 @@ on:
       - 'README.md'
       - '.github/workflows/ci.yml'
   pull_request:
-    branches: [main]
+    # 除了 main，也允许 PR 到长任务/性能这类**栈式分支**上跑 CI：
+    # 否则「先合 A、B 基于 A」的 PR 永远拿不到绿灯，只能等全并进 main 才发现红。
+    branches: [main, 'feat/**']
     paths:
       - 'app/**'
       - 'server/**'
@@ -141,6 +143,19 @@ jobs:
         working-directory: native/orbis-sandbox
         run: |
           node ../../server/tools/check-launcher-version.mjs target/release/orbis-sandbox.exe
+      # The Windows desktop helper (native/orbis-desktop-win) is Rust too.
+      # Missing/broken only costs speed (it falls back to PowerShell), but a
+      # crate that stops compiling would only surface on a release machine.
+      - name: Desktop helper tests
+        working-directory: native/orbis-desktop-win
+        run: cargo test --release
+      - name: Build desktop helper
+        working-directory: native/orbis-desktop-win
+        run: cargo build --release
+      - name: Desktop helper version matches the Node side
+        working-directory: native/orbis-desktop-win
+        run: |
+          node ../../server/tools/check-desktop-helper-version.mjs target/release/orbis-desktop-win.exe
 
   app:
     name: app analyze + test (${{ matrix.os }})

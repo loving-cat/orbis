@@ -148,6 +148,53 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/confirmation
 
 ---
 
+## 4b. 后台进程清理（P0-1 · 真机 · 约 3 分钟）
+
+自动化部分已经在 `server/tests/shells.mjs` 里（每条用例起「命令 + 孙进程」，
+`kill` / `killRoom` / `killByTask` / `stopAll` 之后 5 s 内扫进程表断言零存活）。
+真机这一条验的是**端口与进程表**，因为用户报的是"进程结束了但风扇还在转 / 端口还占着"。
+
+1. 让 bot 起一个开发服务器（`run_background` 里跑 `npm run dev` 或
+   `python -m http.server 8931`），确认端口在听：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8931/`。
+2. 用 `kill_shell` 结束它，**3 秒内**再打一次同一个地址 —— 期望连接被拒（不是超时）。
+3. 同时看进程表：Windows `Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*8931*' }`
+   应该为空；macOS / Linux `ps -A -o pid=,command= | grep 8931` 应该只剩 grep 自己。
+4. 再验一次服务端收工：Ctrl+C 停服务端，重复第 3 步的进程表检查（`shutdown` 现在会等
+   `shells.stopAll()` 最多 3 s）。
+
+**失败时看什么**：端口还在听 = 进程树没杀干净（回到 `shells.js` 的
+`#terminateEntry`：Windows 是否等到了 `taskkill /T` 退出，POSIX 是否用了进程组信号）。
+
+---
+
+## 4c. Windows 原生桌面助手 · 阶段 A（P1-2 · 真机 · 约 10 分钟）
+
+自动部分：`server/tests/desktop-helper-win.mjs`（契约 + 回退）、
+`node server/tests/perf-stall.mjs`（两种实现的耗时与卡顿对比）、
+`node server/tools/desktop-parity.mjs`（口径对拍）。下面是**只能真机做**的那几项。
+
+1. **口径对拍**：`cd server && node tools/desktop-parity.mjs`
+   期望最后一行是 `结论：口径一致 ✅`，且窗口矩形误差 `0px`。
+   不一致时看谁多/谁少：多了 WorkerW 之类 → 少了 `WS_EX_TOOLWINDOW` 过滤或退回了 `GetWindowRect`。
+2. **DPI 100% / 150%**：改缩放后重启 App（DPI 感知是进程启动时声明的），
+   各跑一次 `desktop-parity.mjs`；两次的 `虚拟屏` 都应是物理像素
+   （2560x1440 那台：100% 与 125% 都报 2560x1440，**不是** 2048x1152）。
+3. **多显示器 / 混合缩放**：把光标移到第二块屏上，跑
+   `node -e "…cursorPosition()"`（或工具层 `desktop_observe`），坐标应落在
+   虚拟屏矩形内（虚拟屏的原点可能是负数）。
+4. **锁屏**：Win+L 之后 `probeEnvironment()` 的 `session` 必须是 `false`；
+   此时任何输入都应被拒绝（`no_session`），不允许"看起来点了"。
+5. **UAC 安全桌面**：弹一个 UAC 提权框，确认助手拿不到输入桌面
+   （`session:false`）—— 应当**停下来交还用户**，不是硬点。
+6. **装了远程控制软件时**：`sampleInputNoise()` 应报 `phantom: true`
+   （合成输入），验收这一项时换干净机器。
+
+**回退演练**：`set ORBIS_DESKTOP_WIN_IMPL=powershell` 重启服务端 → 桌面输入仍然可用
+（慢约 15 倍），`server.log` 只该出现一次"回退 PowerShell"的提示；再删掉
+`server/resources/orbis-desktop-win.exe` 重启 → 同样自动回退且只记一次。
+
+---
+
 ## 5. 回填对照表
 
 | # | 验收项 | `docs/acceptance-matrix.md` 的行 | 期望关键字 |

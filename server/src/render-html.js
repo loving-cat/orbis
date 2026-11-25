@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import XLSX from 'xlsx';
 import mammoth from 'mammoth';
+import { log } from './util.js';
+import { getExtractPool } from './extract-pool.js';
 
 /** 能渲染成 HTML 的扩展名 → 用哪种渲染器 */
 const RENDERERS = new Map([
@@ -332,7 +334,13 @@ export async function docxToHtml(buffer, { theme } = {}) {
  * @param {'dark'|'light'} [opts.theme] App 当前主题。页面据此决定深浅，
  *   不传就跟随系统 prefers-color-scheme（旧的 /html 链接仍然能正常看）。
  */
-export async function renderFileAsHtml(filePath, { displayName, theme } = {}) {
+/**
+ * 内联渲染（主线程 / worker 共用同一份实现）。
+ *
+ * worker 里跑的就是它 —— 两条路同一个实现，输出才能逐字节一致。
+ * 主线程**不该直接调它**：`renderFileAsHtml()` 才是对外入口。
+ */
+export async function renderFileAsHtmlInline(filePath, { displayName, theme } = {}) {
   const ext = path.extname(filePath).toLowerCase();
   const kind = htmlRenderKind(ext);
   const name = displayName || path.basename(filePath);
@@ -361,4 +369,33 @@ export async function renderFileAsHtml(filePath, { displayName, theme } = {}) {
   }
 
   throw new Error('未知的渲染类型');
+}
+
+
+/**
+ * 对外入口：把附件渲染成可在 webview 里看的 HTML。
+ *
+ * sheet / docx 的解析（`XLSX.readFile`、`mammoth.convertToHtml`）是主线程阻塞的大头，
+ * 交给线程池；csv/tsv 只是读文本 + 拼表格，留在主线程更快。
+ * 池不可用就退回内联，并记一次日志。
+ */
+export async function renderFileAsHtml(filePath, { displayName, theme } = {}) {
+  const ext = path.extname(filePath).toLowerCase();
+  const kind = htmlRenderKind(ext);
+  if (!kind) throw new Error(`${ext || '该格式'} 不支持转换成网页查看`);
+  // 小表格留在主线程：读文本 + 拼 HTML 是微秒级，worker 往返反而更慢
+  if (kind === 'sheet' && (ext === '.csv' || ext === '.tsv')) {
+    return renderFileAsHtmlInline(filePath, { displayName, theme });
+  }
+  const pool = getExtractPool();
+  const out = await pool.run({ op: 'html', filePath, options: { displayName, theme } });
+  if (out.ok) return out.value;
+  if (out.code === 'pool_unavailable' || out.code === 'pool_closed') {
+    if (!pool.fallbackLogged) {
+      pool.fallbackLogged = true;
+      log('ℹ️  附件预览线程池不可用，退回主线程渲染');
+    }
+    return renderFileAsHtmlInline(filePath, { displayName, theme });
+  }
+  throw new Error(out.error);
 }

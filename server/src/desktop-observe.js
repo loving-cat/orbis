@@ -40,6 +40,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { spawnSync } from 'node:child_process';
+import { callHelper, helperState } from './desktop-helper-win.js';
 
 /** 单次脚本超时。截屏不该超过几秒。 */
 const TIMEOUT_MS = 20_000;
@@ -305,6 +306,9 @@ end tell
  */
 export function listWindows({ limit = MAX_WINDOWS } = {}) {
   if (process.platform === 'win32') {
+    // 阶段 A：优先原生助手（§5.2 的 windows 命令，DWM 扩展边框 + 面积降序截断）
+    const native = listWindowsNative(limit);
+    if (native) return native;
     const res = run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_LIST_WINDOWS]);
     if (!res.ok) return { ok: false, error: res.error };
     let rows;
@@ -364,6 +368,41 @@ export function listWindows({ limit = MAX_WINDOWS } = {}) {
   }
 
   return { ok: false, error: `当前平台（${process.platform}）不支持桌面观察` };
+}
+
+/**
+ * 原生助手的窗口列表；不可用或出错时返回 null（调用方回退 PowerShell）。
+ *
+ * 返回形状与 PowerShell 分支**逐字段一致**（handle/title/app/class/pid/x/y/width/height/
+ * minimized + 过滤与排序），这样上层（工具层、截图、审计）完全感知不到换了实现。
+ */
+function listWindowsNative(limit) {
+  if (helperState().mode !== 'native') return null;
+  try {
+    const r = callHelper('windows', { limit });
+    if (!r.ok) return null;
+    const rows = Array.isArray(r.windows) ? r.windows : [];
+    const list = rows
+      .map((w) => ({
+        handle: Number(w.handle) || 0,
+        title: String(w.title ?? '').slice(0, 200),
+        app: String(w.app ?? ''),
+        class: String(w.class ?? ''),
+        pid: Number(w.pid) || 0,
+        x: Number(w.x) || 0,
+        y: Number(w.y) || 0,
+        width: Number(w.width) || 0,
+        height: Number(w.height) || 0,
+        minimized: w.minimized === true,
+      }))
+      .filter((w) => w.width > 0 && w.height > 0 && !w.minimized)
+      .filter((w) => w.title || w.app)
+      .sort((a, b) => b.width * b.height - a.width * a.height)
+      .slice(0, Math.max(1, Math.min(limit, MAX_WINDOWS)));
+    return { ok: true, windows: list, platform: 'win32' };
+  } catch {
+    return null;
+  }
 }
 
 /** 屏幕尺寸（截全屏时用）。 */
