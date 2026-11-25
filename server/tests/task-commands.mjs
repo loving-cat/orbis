@@ -125,6 +125,13 @@ function makeHarness({ state = 'running', revision = 1, sequence = 0 } = {}) {
       });
       return { ok: true, applied: true };
     },
+    async onSetAutonomy({ taskRunId, autonomous }) {
+      effects.push(`autonomy:${autonomous ? 'on' : 'off'}`);
+      await taskRuns.mutate(taskRunId, {
+        mutate: (c) => ({ ...c, sequence: (c.sequence ?? 0) + 1, flags: { ...(c.flags ?? {}), autonomous } }),
+      });
+      return { ok: true, applied: true, autonomous };
+    },
   };
   const commandDir = freshDir();
   const commands = createTaskCommands({
@@ -376,6 +383,27 @@ await test('输入命令：ref 必须匹配当前门槛（否则不给副作用�
   const ok = await h.call({ commandId: 'cmd_input_002', type: 'input', ref: 'q1', text: '答案' });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.deepEqual(h.effects, ['input:q1']);
+});
+
+await test('★ 自主推进开关：关掉生效并落应用事实；重发回放不再执行', async () => {
+  const h = makeHarness();
+  const first = await h.call({ commandId: 'cmd_auto_off_01', type: 'autonomy', decision: 'off' });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(h.runs.get('tr_cmd_test').flags.autonomous, false);
+  const again = await h.call({ commandId: 'cmd_auto_off_01', type: 'autonomy', decision: 'off' });
+  assert.equal(again.body.replayed, true);
+  assert.deepEqual(h.effects, ['autonomy:off'], '同一次切换只能执行一次');
+  const on = await h.call({ commandId: 'cmd_auto_on_002', type: 'autonomy', decision: 'on' });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(h.runs.get('tr_cmd_test').flags.autonomous, true);
+});
+
+await test('自主推进开关：决定不明确 → 400，且不产生任何副作用', async () => {
+  const h = makeHarness();
+  const res = await h.call({ commandId: 'cmd_auto_bad_01', type: 'autonomy', decision: 'maybe' });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.code, 'BAD_DECISION');
+  assert.deepEqual(h.effects, []);
 });
 
 const failed = results.filter((r) => !r.ok);

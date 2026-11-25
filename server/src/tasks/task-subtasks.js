@@ -100,6 +100,10 @@ export async function createChildTask({
     goal,
     budget: parentTaskRun.budget ?? null,
     at: clock(),
+    // 成员的活跟着整件事走：整件事是自主推进，成员失败也自己补做，不停下来等人
+    // （推进器判定时以根任务为准，这里只是让子任务自己的记录也说得清）
+    autonomous: parentTaskRun.flags?.autonomous === true,
+    autonomyReason: parentTaskRun.flags?.autonomyReason ?? '',
   });
   if (!built.ok) return { ok: false, code: 'bad_child', text: built.text };
 

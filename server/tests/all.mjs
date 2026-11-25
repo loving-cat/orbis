@@ -193,6 +193,18 @@ const TESTS = [
   'task-verification',
   'task-run-store',
   'task-intake-e2e',
+  // 长任务：分段续跑、续跑守卫、两档停滞、默认自主
+  'turn-continuation',
+  'long-task-turn',
+  'long-task-supervisor',
+  // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
+  'task-intake-assumptions',
+  'ask-user-default',
+  'group-continuation',
+  // 上游故障不丢活：分钟级退避续派 / 可恢复阻塞 / 重启审计续跑
+  'group-retry',
+  'long-task-upstream',
+  'long-task-restart',
 ];
 
 let failed = 0;

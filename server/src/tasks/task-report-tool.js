@@ -47,7 +47,11 @@ export function buildReportTool({ collect }) {
       '在等批准/等输入/等别的任务（need_approval / need_input / waiting_dependency）、' +
       '或者被挡住了（blocked）。' +
       'done 写你自认为做完的事，evidence 写你认为可作证的文件引用，' +
-      'unmet 写你认为还缺什么。这些都会被记成**你的声明**，不会被当成已验证事实。',
+      'unmet 写你认为还缺什么。这些都会被记成**你的声明**，不会被当成已验证事实。' +
+      '\n\n★ need_input 会让整件事停下来等用户 —— 只用于缺**只有用户才能给**的东西' +
+      '（账号密码、授权、原始数据、只有他知道的事实）。' +
+      '格式、口径、方案取舍这类能合理假设的，按最合理的做法推进，把假设写进 note，用户可以随时插话纠正。' +
+      '\n长任务一段做不完很正常：报 progress，unmet 写清还剩什么，系统会接着排下一段。',
     parameters: Type.Object({
       phase: Type.Union(
         [

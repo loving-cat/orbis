@@ -320,6 +320,42 @@ await test('11. handleIntake：未受管拒绝、讨论模式跳过、direct 返
   }
 });
 
+// ---------------------------------------------------------------------------
+// 长任务：根预算默认不限额（部门预算默认值不能悄悄变成任务上限）
+// ---------------------------------------------------------------------------
+
+await test('LT1. ★ 默认部门预算不收紧任务根预算；整表保存但没改值也不算；真改了才收紧', async () => {
+  const { store, taskRuns, receipts } = makeEnv();
+  try {
+    const dm = store.ensureDm(store.mainBot().id);
+    const admit = async (requestId) => {
+      const scope = createRequestScope({ requesterId: 'u1', requestId, roomId: dm.id, text: '把这个大任务一直做完', at: 1000 });
+      const out = await admitFirstTask({
+        store, taskRuns, receipts, scope, clock: () => 2000,
+        proposal: { kind: 'accept_task', goal: sampleGoal('artifact'), routing: { type: 'direct' } },
+      });
+      assert.equal(out.ok, true, out.text);
+      return taskRuns.read(out.taskRunId).taskRun.budget.maxRuns;
+    };
+
+    // ① 新装：groupLimits() 里 maxRuns 有默认值，但它不是用户设置的
+    assert.ok(Number.isInteger(store.groupLimits().maxRuns), '前提：群聊轮次预算本身仍有默认值');
+    assert.equal(await admit('req_lt1_a'), null, '默认不限额');
+
+    // ② App 面板整表提交、maxRuns 原样带回 → 不算显式设置
+    store.updateGroupLimits({ ...store.groupLimits(), turnMaxMs: 900_000 });
+    assert.deepEqual(store.explicitGroupLimits(), { turnMaxMs: 900_000 });
+    assert.equal(await admit('req_lt1_b'), null, '只改了别的字段，任务仍不限额');
+
+    // ③ 用户真的改了 maxRuns → 按协议收紧任务根预算
+    store.updateGroupLimits({ ...store.groupLimits(), maxRuns: 7 });
+    assert.equal(store.explicitGroupLimits().maxRuns, 7);
+    assert.equal(await admit('req_lt1_c'), 7, '显式设置后收紧');
+  } finally {
+    clearTimeout(store.saveTimer);
+  }
+});
+
 const failed = results.filter((r) => !r.ok);
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);

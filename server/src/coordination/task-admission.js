@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { readBrandEnv } from '../brand.js';
-import { detectAutonomy } from '../tasks/task-autonomy.js';
+import { resolveAutonomy } from '../tasks/task-autonomy.js';
 import { newId } from '../util.js';
 import { createTaskRun, parseIntake } from '../tasks/task-run-factory.js';
 import { planIntakeRoute, ROUTE } from './department-policy.js';
@@ -326,13 +326,16 @@ export async function admitFirstTask({
 
   const at = clock();
   const id = newId('tr_');
-  // 用户说「一直干到有结果 / 不用问我」→ 这个任务自己推进，不因等确认停下。
-  const autonomy = detectAutonomy(scope.text ?? '');
+  // 默认自主推进（做完为止，不因「要不要继续」停下）；
+  // 用户原话明确要求「先问我 / 每步确认」才改成逐步确认。
+  const autonomy = resolveAutonomy(scope.text ?? '');
   const built = createTaskRun({
     id, requestId: scope.requestId, requesterId: scope.requesterId,
     goal: intake.goal ?? {},
     origin: { roomId: scope.roomId, messageId: scope.messageId, requesterId: scope.requesterId },
-    budget: admissionBudget(process.env, store.groupLimits?.() ?? null), at,
+    // ★ 只认用户显式改过的部门上限：groupLimits() 会用默认值补齐，
+    //   传它就等于默认给每个任务加了上限（见 store.explicitGroupLimits）。
+    budget: admissionBudget(process.env, store.explicitGroupLimits?.() ?? null), at,
     autonomous: autonomy.autonomous,
     autonomyReason: autonomy.reason,
   });

@@ -335,6 +335,16 @@ class Msg {
   /// 要不要同时给一个"我自己说"的输入框
   bool get askAllowCustom => meta?['allowCustom'] != false;
 
+  /// 卡片默认不阻塞：bot 已经先按这个选项接着做了（用户点别的会改过来）。
+  /// 只有 blocking 的卡片才是真的停下来等。
+  String? get askDefault {
+    final v = meta?['defaultOption'];
+    return v is String && v.trim().isNotEmpty ? v : null;
+  }
+
+  /// 这张卡片是「停下来等你点」的（选错了没法回头的那种）
+  bool get askBlocking => meta?['blocking'] == true;
+
   /// 用户已经回答过这张卡片（点了选项或自己写了一句）
   String? get askAnswer => meta?['answer'] as String?;
 

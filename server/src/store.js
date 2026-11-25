@@ -1209,15 +1209,48 @@ export class Store {
 
   /** 改轮次预算。只认已知的键，值必须是正数，否则保持原样。 */
   updateGroupLimits(patch = {}) {
-    const next = this.groupLimits();
+    const prev = this.groupLimits();
+    const next = { ...prev };
+    const explicit = { ...(this.state.groupLimitsExplicit ?? {}) };
     for (const k of Object.keys(GROUP_LIMITS_DEFAULT)) {
       if (patch[k] === undefined) continue;
       next[k] = positiveIntOrDefault(patch[k], next[k]);
+      // ★ 只有「真的改了值」才算用户显式设置。
+      //
+      //   App 的「部门预算」面板保存时会把五个数**整表**提交，
+      //   用户只改了单轮分钟数，maxRuns 也会原样跟着发过来。
+      //   如果「出现在 patch 里」就算显式，那等于每个保存过面板的人
+      //   都显式设置了 maxRuns —— 这正是要避免的默认值悄悄生效。
+      if (next[k] !== prev[k]) explicit[k] = true;
     }
     this.state.groupLimits = next;
+    this.state.groupLimitsExplicit = explicit;
     this.scheduleSave();
     this.bus.emit('event', { t: 'groupLimits.updated', limits: next });
     return next;
+  }
+
+  /**
+   * 用户**显式改过**的轮次预算（只含改过的键）。
+   *
+   * ## 为什么要和 `groupLimits()` 分开
+   *
+   * `groupLimits()` 永远用默认值补齐缺项 —— 给群聊轮次用没问题，
+   * 但任务根预算（`admissionBudget`）的约定是「默认不限额，用户显式配置才收紧」。
+   * 以前两处直接传 `groupLimits()`，于是默认的 `maxRuns`（新装 20）
+   * 悄悄变成了每个任务的硬上限：长任务跑到第 20 次就被「预算暂停」，
+   * 而用户从没设置过这个数。
+   *
+   * @returns {{maxRuns?:number}}
+   */
+  explicitGroupLimits() {
+    const marks = this.state.groupLimitsExplicit ?? {};
+    const limits = this.groupLimits();
+    const out = {};
+    for (const k of Object.keys(GROUP_LIMITS_DEFAULT)) {
+      if (marks[k] === true) out[k] = limits[k];
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- 外部系统（站点）

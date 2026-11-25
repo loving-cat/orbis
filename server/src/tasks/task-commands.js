@@ -14,7 +14,8 @@ import { config } from '../config.js';
 import { writeJsonAtomic } from '../util.js';
 
 export const COMMAND_ID = /^[A-Za-z0-9_-]{6,128}$/;
-export const CONTROL_TYPES = new Set(['pause', 'resume', 'cancel', 'input', 'approval', 'revision', 'unblock', 'extend']);
+// autonomy：任务卡上的「自主推进」开关，decision = 'on' | 'off'
+export const CONTROL_TYPES = new Set(['pause', 'resume', 'cancel', 'input', 'approval', 'revision', 'unblock', 'extend', 'autonomy']);
 
 function createCommandStore(dir) {
   const fileOf = (key) => path.join(dir, key + '.json');
@@ -158,6 +159,10 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
         const matched = (run.openGates ?? []).find((g) => g.kind === gate.kind && g.ref === gate.ref);
         if (!matched) return fail(409, type === 'input' ? 'INPUT_SCOPE_MISMATCH' : 'APPROVAL_SCOPE_MISMATCH', '任务/版本/ref 与当前门槛不匹配');
       }
+      // 推进方式开关：决定必须明确（on/off），不猜
+      if (type === 'autonomy' && !['on', 'off'].includes(String(body?.decision ?? ''))) {
+        return fail(400, 'BAD_DECISION', '自主推进开关的决定必须是 on 或 off');
+      }
       if (type === 'approval') {
         const approval = store.getApproval?.(String(body.ref));
         if (!approval || approval.status !== 'pending'
@@ -219,9 +224,15 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
           result = await runtime.onUnblock({ taskRunId, reason: body?.reason ?? '手动解除阻塞' });
         } else if (type === 'extend') {
           result = await runtime.onExtendBudget({ taskRunId, extraRuns: Number(body?.extraRuns ?? 0) });
+        } else if (type === 'autonomy') {
+          result = typeof runtime.onSetAutonomy === 'function'
+            ? await runtime.onSetAutonomy({ taskRunId, autonomous: body?.decision === 'on' })
+            : { ok: false, code: 'unknown_control_type', text: '这个服务端不支持切换推进方式' };
         }
         const after = runNow();
-        const effectApplied = type === 'pause'
+        const effectApplied = type === 'autonomy'
+          ? (result?.ok === true && (after?.flags?.autonomous === true) === (body?.decision === 'on'))
+          : type === 'pause'
           ? after?.state === 'paused_user'
           : type === 'resume'
             ? (after?.state !== 'paused_user' && after?.state !== 'paused_budget')

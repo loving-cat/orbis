@@ -180,6 +180,21 @@ class _AskCardState extends State<AskCard> with SingleTickerProviderStateMixin {
                     height: 1.5,
                   ),
                 ),
+              // 不阻塞的卡片：它没停下来等，已经先按默认选项接着做了。
+              // 写清楚，免得用户以为「我不点它就一直卡着」。
+              if (!msg.askBlocking && msg.askDefault != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  L10n.s(context).tf('ask.proceedingWithDefault', {
+                    'option': msg.askDefault!,
+                  }),
+                  style: TextStyle(
+                    fontSize: PB.fsXxs,
+                    color: PB.textTertiary,
+                    height: 1.4,
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
               // 选项：一行一个，点一下就发回去。逐条出现 —— 像"给你摆出来"
               for (final o in options)

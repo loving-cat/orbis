@@ -36,13 +36,15 @@ export const NEXT = Object.freeze({
  * @param {object} [ctx]
  * @param {number} [ctx.now]
  * @param {number} [ctx.remainingRuns]
- * @param {number} [ctx.maxStallRounds]
+ * @param {number} [ctx.maxStallRounds] 连续几轮既没推进、也没干活就阻塞
+ * @param {number} [ctx.maxMilestoneRounds] 连续几轮干了活但目标没推进就阻塞（不传 = 不设这一档）
  * @returns {{kind:string, why:string, gate?:object, attemptId?:string, retry?:boolean}}
  */
 export function planNextAction(taskRun, {
   now = Date.now(),
   remainingRuns = Number.POSITIVE_INFINITY,
   maxStallRounds = 2,
+  maxMilestoneRounds = Number.POSITIVE_INFINITY,
   /** 可选：判断这个任务的 registered 尝试是否真的还在本进程里跑。 */
   isInflight = null,
 } = {}) {
@@ -114,11 +116,17 @@ export function planNextAction(taskRun, {
     return { kind: NEXT.blocked, why: taskRun.flags?.blockedReason || '上一次执行失败' };
   }
 
-  // 10) 有限停滞
+  // 10) 有限停滞（两档：真卡住 / 干了活但目标一直没推进）
   const sig = progressSignature(taskRun);
   const stall = taskRun.stall ?? { rounds: 0, lastSignature: null };
   if (stall.lastSignature === sig && (stall.rounds ?? 0) >= maxStallRounds) {
     return { kind: NEXT.blocked, why: '连续 ' + stall.rounds + ' 轮没有新进展，有限重规划已用尽' };
+  }
+  if (stall.lastSignature === sig && (stall.milestoneRounds ?? 0) >= maxMilestoneRounds) {
+    return {
+      kind: NEXT.blocked,
+      why: '已经连续 ' + stall.milestoneRounds + ' 段在干活，但目标一直没推进，可能在原地打转',
+    };
   }
 
   // 11) 继续推进

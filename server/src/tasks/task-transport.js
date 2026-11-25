@@ -137,6 +137,10 @@ export function projectTaskRun(taskRun, { root = null, children = null, nameOf =
     // 受阻原因要给人看：用户得知道为什么停了、能不能解除。
     blockedReason: taskRun.state === 'blocked' ? String(taskRun.flags?.blockedReason ?? '') : '',
     waiting: gate ? { kind: gate.kind, ref: gate.ref, describe: gate.describe ?? '' } : null,
+    // 自主推进（做完为止、不停下来问）：以根任务为准，任务卡上的开关读它
+    autonomous: ((root ?? (taskRun.rootTaskId && taskRun.rootTaskId !== taskRun.id ? null : taskRun)) ?? taskRun)
+      ?.flags?.autonomous === true,
+    autonomyReason: String(((root ?? taskRun)?.flags?.autonomyReason) ?? '').slice(0, 120),
     budget: {
       maxRuns: budgetRoot?.budget?.maxRuns ?? null,
       usedRuns: budgetRoot?.budget?.usedRuns ?? null,

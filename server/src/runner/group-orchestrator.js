@@ -15,6 +15,14 @@ import { isMainChatBusy } from './chief-summary-runner.js';
 import { shouldMirrorProgress, mirrorProgress, MIRROR_SKIPPED_NO_DM } from '../dm.js';
 import { settleRetryMessage } from '../retry-messages.js';
 import { decideRetry, failureNote, retryHint, transientBackoffMs } from '../retry-policy.js';
+import { continuationPrompt } from '../turn-continuation.js';
+import {
+  isUpstreamTransient,
+  retrySchedulerFor,
+  cancelGroupRetries,
+  resetGroupRetryBackoff,
+  describeWait,
+} from './group-retry.js';
 import {
   canRequest as breakerAllows,
   breakerNote,
@@ -37,6 +45,9 @@ import {
 } from '../group-prompt.js';
 import { RETRY_DELAY_MS, sessionKey } from './runner-utils.js';
 
+// 供外观层（`pi-runner.js` 的 abort / disposeAll）直接取消挂起的续派，不必再造入口
+export { cancelGroupRetries, cancelAllGroupRetries } from './group-retry.js';
+
 export function roundEpoch(runner, roomId) {
   return runner.roundEpochs.get(roomId) ?? 0;
 }
@@ -44,6 +55,8 @@ export function roundEpoch(runner, roomId) {
 /** 用户在群里插话：代数 +1，打断本轮在跑会话，当场把正在写消息标成 aborted。 */
 export function interruptRoundForUser(runner, roomId) {
   runner.roundEpochs.set(roomId, roundEpoch(runner, roomId) + 1);
+  // 用户插话 = 旧要求作废：挂着的上游续派必须跟着取消，否则会发「幽灵续派」
+  cancelGroupRetries(runner, roomId, '用户插话');
 
   let n = 0;
   const botIds = [];
@@ -89,8 +102,18 @@ export function interruptRoundForUser(runner, roomId) {
   if (n) log(`已打断 ${n} 个正在跑的会话（用户插话，旧轮作废）`);
 }
 
-export async function dispatchGroupRound(runner, roomId, text, files) {
+export async function dispatchGroupRound(
+  runner,
+  roomId,
+  text,
+  files,
+  { fromUpstreamRetry = false } = {},
+) {
   const roomName = runner.store.getRoom(roomId)?.name ?? roomId;
+  // 来了新消息（或本函数自己就是续派）：先把旧的挂起续派撤掉，一轮只留一个。
+  // ★ 续派自己进来时**不能清退避累计** —— 清了就等于每轮都从第一档重来，
+  //   持续限流时永远走不到上限，也没有真正的退避。
+  cancelGroupRetries(runner, roomId, '本轮重新开始', { resetBackoff: !fromUpstreamRetry });
   // ★ 只有「已经有 drainGroupRounds 在跑」才允许入队。
   //
   //   以前条件是 `roundLocks.has || isRoomBusy`，而 `isRoomBusy` 可能是真的忙、
@@ -194,7 +217,8 @@ async function awaitPending(pending, stale, { graceMs = 5000, pollMs = 100 } = {
 
 function shouldBotReplySync(runner, { room, roomId, item, bot, isOpening = false }) {
   if (runner.aborting.has(roomId)) return false;
-  if (Boolean(item?.fromId) || isOpening) return true;
+  // 续段：它上一段自己说了还没做完，不需要再判「该不该发言」
+  if (Boolean(item?.fromId) || isOpening || Number(item?.continuation) > 0) return true;
 
   const settings = (() => {
     try { return runner.store.decisionRoute(); } catch { return {}; }
@@ -580,6 +604,8 @@ export async function executeGroupRound(
       userAddressed: !item.fromId,
     });
     if (attachmentContext) prompt = `${attachmentContext}\n\n${prompt}`;
+    // 续段：告诉它从断点接着做，不要把整件事从头再来
+    if (Number(item.continuation) > 0) prompt = `${continuationPrompt({ n: item.continuation })}\n\n${prompt}`;
 
     pending.push(
       (async () => {
@@ -773,6 +799,67 @@ export async function executeGroupRound(
             log(
               `【${room.name}】${bot.name} 最终没跑成（试了 ${attempt} 次）：${lastError}`,
             );
+            // ★ 上游瞬时故障（429 / 5xx / 网络瞬断 / 熔断打开）**不丢活**。
+            //   以前这里直接落「[这单断了] …请重新发送任务」：把「系统暂时不健康」
+            //   变成「用户的活没了」。改成分钟级阶梯退避后自动续派一行，
+            //   全程不持锁（详见 runner/group-retry.js 的三条约束）。
+            if (
+              !itemManaged &&
+              !stale() &&
+              isUpstreamTransient({ kind: lastKind, status: lastStatus, error: lastError })
+            ) {
+              const plan = retrySchedulerFor(runner).schedule({
+                runner,
+                roomId,
+                roomName: room.name,
+                botId: bot.id,
+                botName: bot.name,
+                epoch,
+                onFire: ({ attempt: nth }) => {
+                  // ★ 只催**这一个**失败的成员。
+                  //   原来把 item.fromText 整条重发 —— 那句话里可能 @ 了好几个人，
+                  //   于是同一波里已经成功的同事会被再跑一遍：白烧额度、群里还多两条
+                  //   内容重复的回复。
+                  const again = `@${bot.name} 上游已恢复，请继续完成上一轮交办的工作`;
+                  runner.store.appendMessage({
+                    roomId,
+                    authorType: 'system',
+                    authorId: bot.id,
+                    authorName: '续派提示',
+                    text: `上游恢复了，接着做（第 ${nth} 次重派）。`,
+                    status: 'done',
+                    meta: { via: 'upstream_retry_fire', botId: bot.id, attempt: nth },
+                  });
+                  return dispatchGroupRound(runner, roomId, again, [], { fromUpstreamRetry: true });
+                },
+              });
+              if (plan.scheduled) {
+                const wait = describeWait(plan.delay);
+                log(
+                  `【${room.name}】${bot.name} 上游限流/波动 → ${wait} 后自动续派（第 ${plan.attempt + 1} 次）`,
+                );
+                runner.store.appendMessage({
+                  roomId,
+                  authorType: 'system',
+                  authorId: bot.id,
+                  authorName: '排期提示',
+                  text:
+                    `上游限流/波动（${String(lastError || lastKind || '暂时不可用').slice(0, 80)}），` +
+                    `${wait}后自动接着做，不用重新发送任务。`,
+                  status: 'done',
+                  meta: {
+                    via: 'upstream_retry_scheduled',
+                    botId: bot.id,
+                    delayMs: plan.delay,
+                    attempt: plan.attempt + 1,
+                  },
+                });
+                return;
+              }
+              log(
+                `【${room.name}】${bot.name} 上游退避已累计 ${describeWait(plan.waitedMs)}，到上限 → 如实失败`,
+              );
+            }
             runner.store.appendMessage({
               roomId,
               authorType: 'system',
@@ -802,6 +889,9 @@ export async function executeGroupRound(
             }
             return;
           }
+          // 这一段真的跑通了 → 这个房间的上游退避累计清零（下次抽风从第一档排起）
+          resetGroupRetryBackoff(runner, roomId, '本轮跑通');
+
           const text = res.text.trim();
           if (isPass) {
             // ★ 用户直接点名它、它却回了 [PASS]：**不能静默删掉气泡**。
@@ -855,6 +945,26 @@ export async function executeGroupRound(
             queued.add(id);
             called.add(id);
           }
+          // ★ 这一段到点让出、还没做完：把它自己重新排进本轮队列，接着做下一段。
+          //
+          //   以前一到上限就是「已收住；要它继续做完就在私聊里派活」——
+          //   活停在半路，等用户自己去私聊里再派一遍。
+          //   续段占它自己的发言预算（leadTurns / memberTurns）和本轮总次数（maxRuns），
+          //   所以有界；派活人沿用原来那条（权限与「用户点名」语义不变）。
+          if (res.continuation && !stale() && !runner.aborting.has(roomId)
+              && !queue.some((q) => q.botId === bot.id)) {
+            const segment = Number(item.continuation ?? 0) + 1;
+            queue.push({
+              botId: bot.id,
+              reason: '接着做上一段没做完的',
+              fromId: item.fromId ?? null,
+              fromName: item.fromName,
+              fromText: item.fromText,
+              sourceMessageId: item.sourceMessageId ?? null,
+              continuation: segment,
+            });
+            log(`【${room.name}】${bot.name} 这一段到点了、还没做完 → 排下一段（续段 ${segment}）`);
+          }
         } finally {
           runner.dispatching.delete(dispatchKey);
         }
@@ -897,7 +1007,8 @@ export async function executeGroupRound(
           leadId,
           closing: true,
         });
-        const res = await runner.run(roomId, lead.id, prompt, { groupTurn: true });
+        // 收尾轮本来就是「最后一条消息」：不催继续、不自动续段
+        const res = await runner.run(roomId, lead.id, prompt, { groupTurn: true, noContinueGuard: true });
         closingResult = res;
         if (res.ok && res.text.trim()) {
           log(`【${room.name}】✅ 收尾完成（${res.text.trim().length} 字）`);

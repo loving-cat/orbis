@@ -194,11 +194,13 @@ await test('3. ★ accept_task 准入落盘后由 taskHost 派发并执行受管
             });
             listener({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '收到，已登记任务并开始执行。' }] } });
           } else {
-            // 第二轮受管执行：产出报告并收尾
+            // 第二轮受管执行：产出报告并收尾。
+            // ★ 用真实的阶段名申请完成（apply_completion）。原来写的 'completed' 不是合法阶段，
+            //   报告会被静默丢弃 —— 等于这一轮「没申请完成就收手」，续跑守卫会合理地催它一次。
             await runner.collectReport?.(dm.id, chief.id, {
-              phase: 'completed',
-              summary: '报告已生成',
-              artifacts: [outArtifact],
+              phase: 'apply_completion',
+              done: ['报告已生成'],
+              evidence: [{ ref: outArtifact, note: '结构化测试报告' }],
             });
             listener({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '报告已生成。' }] } });
             managedDone.resolve();
@@ -221,7 +223,18 @@ await test('3. ★ accept_task 准入落盘后由 taskHost 派发并执行受管
     const runs = store.taskRuns.listAll().taskRuns;
     assert.equal(runs.length, 1);
     assert.ok(runs[0].attempts.length >= 1, 'taskHost 必须真正派发过一次受管执行');
-    assert.equal(prompts.length, 2);
+    // 第一次是用户原话（理解轮），之后**每一次**都必须是受管执行的任务提示 ——
+    // 不能冒出第二次理解轮（那是「二次追问」）。
+    //
+    // ★ 次数不再钉死为 2：任务默认自主推进，验收没过会自己补做再交。
+    //   这里的假报告引用的是文件路径而不是已登记的附件，机械验收过不了，
+    //   所以会有有界的返工（停滞判定兜底），这正是长任务改造要的行为。
+    assert.equal(prompts[0], '帮我生成一份测试报告');
+    assert.ok(prompts.length >= 2, '至少要有一次受管执行');
+    for (const p of prompts.slice(1)) {
+      assert.match(String(p), /^任务目标：生成结构化测试报告/, '理解轮之后只能是受管执行');
+    }
+    assert.ok(runs[0].attempts.length <= 3, `验收不过的返工必须有界，实际 ${runs[0].attempts.length} 次`);
   } finally {
     taskHost.dispose();
     runner.disposeAll();

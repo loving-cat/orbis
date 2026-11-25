@@ -108,7 +108,10 @@ appliedCommands 与命令回执同键：requesterId + commandId + fingerprint �
 
 ## 用户群预算与任务根预算（07）
 
-- 旧 `groupLimits.maxRuns` 是“一条用户消息最多触发几次 bot 运行”的用户上限。新受管链保留每次 groupTurn 的单段限制（turnMaxMs/maxSteps），但根预算取 `min(任务链默认值, 用户 groupLimits.maxRuns)`：只收紧、不放大；用户调低上限会真实限制自然接单后的根/父子累计执行，重启不重置。
+- 旧 `groupLimits.maxRuns` 是“一条用户消息最多触发几次 bot 运行”的用户上限。新受管链保留每次 groupTurn 的单段限制（turnMaxMs/maxSteps）。
+- **根预算默认不限额**：只有用户**显式改过**部门预算的 `maxRuns`（`state.groupLimitsExplicit.maxRuns`，只在值真的变了时才记）才收紧任务根预算，取 `min(任务链默认值, 用户 maxRuns)`：只收紧、不放大。
+  - 为什么不能用“patch 里出现过”判显式：面板保存时会把整份 limits 一起发过来，`maxRuns` 总是出现在 patch 里 —— 那样等于每个保存过面板的人都“显式设置”了根预算，默认值会悄悄变成天花板。
+  - 用户调低上限会真实限制自然接单后的根/父子累计执行，重启不重置；恢复成默认值后重新回到不限额。
 - `maxSteps/turnMaxMs` 仍是单段执行限制，不是 Goal 总步数；模型字段不能当作用户追加预算。共享子任务的预算展示读取根事实。
 
 ## 改版命令的不变信封（07）
@@ -146,6 +149,60 @@ appliedCommands 与命令回执同键：requesterId + commandId + fingerprint �
 - **完成申请的选择集合**：正式 task_report 的完成选择在 attempt 结算时归一化为 AttemptResult 结果字段（completionSelection）并随账本持久；验收只读该持久事实，从可信候选池中选择本次核验集合，claim 本身不是证明。旧账本无该字段时按默认规则兼容；新的空选择不继承更早选择。选择未知/坏 ref 直接拒绝并失败，不加入 allowedRefs、不交给 stat/read、不静默换成旁边好文件；没有明确 claimedEvidence 选择时才用默认“最近登记交付 + 数量不足按同版本→子交付→最近历史补足”的保守规则。候选收集、选择、验证是三个职责，count/format 使用同一选定集合。显式 attempt 的总入口统一校验存在/归属/版本/结算状态，expert 判断也只消费该 attempt 范围；默认任务级合法汇总保持不变。
 - **专业验收**：审查历史 append；同一受管 attempt 重复调用是操作重放（同载荷复用、不同载荷拒绝），新的合法 attempt 可更新当前结论，消费者取最后一条有效判断。验收能力与派工能力分开：真实部门负责人（含单成员部门）可验收；DM direct 的 expert 条件在接单阶段明确拒绝 expert_route_unsupported，不空转烧预算。
 
+## 长任务：默认自主、时间片与续段（2.0）
+
+### 自主推进（`autonomy` 控制命令）
+
+| 项 | 规则 |
+|---|---|
+| 默认 | 新任务默认**自主**（做完为止，不停下来问「要不要继续」）。用户原话命中「先问我 / 每步确认 / 确认后再动手」才逐步确认；`ORBIS_TASK_AUTONOMY=0` 退回旧行为 |
+| 命令 | `{type:'autonomy', decision:'on'|'off', commandId, expectedRevision}`；`decision` 只认 `on`/`off`，其他值 400 `BAD_DECISION` |
+| 生效范围 | 写**根任务**并同步全部子孙（`flags.autonomous`）；投影 `autonomous`/`autonomyReason` 以根为准，子任务不各自为政 |
+| 生效判定 | 与 pause 等一致：应用后回读根任务 `flags.autonomous` 是否真的等于请求值；任务已终态时返回 `terminal`（客户端置灰） |
+| 幂等 | 同 `commandId` 重发按回执回放，不二次升版 |
+
+### 单轮时间片（替代 10 分钟硬上限）
+
+- 到点先 steer 一条收尾通知（报进度、说还差什么）→ 宽限 `ORBIS_TURN_GRACE_MS`（默认 3 分钟）→ 宽限内工具还在出结果就再宽限一次 → 硬上限 `ORBIS_TURN_HARD_MAX_MS`（默认单段 ×3）。
+- 收住的记 `stop:'yielded'`（让出）**不记失败**：推进器按让出续跑，非受管群聊把同一个 bot 重新排进本轮队列（占它自己的发言预算）。
+- 续段提示词带 `【系统·续段】`，要求先核对现状再从断点继续，不许从头重来。
+
+### 停滞判定（两档）
+
+| 档 | 默认 | 含义 |
+|---|---|---|
+| `maxStallRounds` | 2 | 既没推进目标、也**没改动任何东西**的连续轮数 → 真卡住 |
+| `maxMilestoneRounds` | 12 | 一直在改文件/出产物，但目标迟迟没推进的轮数 → 磨洋工 |
+
+- 「改了文件 / 出了产物」算真实干活（`workDoneBy`），不按「有没有说话」判。
+- 让出（yielded）分支只计一次数：旧代码在第 2 段就判死，长任务必挂。
+
+### 子任务全部受阻
+
+- 非自主：如实阻塞（等用户），不假装推进。
+- 自主：把失败的分工**交回负责人**（`MAX_CHILD_HANDBACKS=2`，记 `childFailures`），由它重新安排；负责人提示词里会列出被收回的失败分工。
+- 旧代码这一段走不到，结果是根任务永远停在 `queued`。
+
+### 上游故障：不丢活（2.0 第二批）
+
+| 场景 | 规则 |
+|---|---|
+| 判定 | `retry-policy.js` 的 `isUpstreamTransient`：429 / 5xx / 熔断打开 / 网络瞬断算；401/403/402/额度/用户中止**不算**（等一下也不会好，早说清） |
+| 受管任务 | 快速重试（1.5–12s，最多 10 次）用尽 → `recoverableBlock: 'upstream'` + `retryAt`，阶梯 `1→2→5→10→15` 分钟、累计上限 2 小时；到期自动走 `unblocked` 清标记并续跑 |
+| 群聊 | 熔断/瞬试用尽 → 阶梯 `1→2→5→10` 分钟、累计上限 1 小时，**不持锁等待**（`roundLocks` 照常释放），到期复核 `aborting` / `roundEpoch` 后才续派 |
+| 作废 | 用户插话（`interruptRoundForUser`）、来新消息、`abort` 都会取消挂起的定时器；到期复核也自己挡一道 |
+| 到上限 | 摘掉可恢复标记，如实阻塞 + 说清累计等了多久，不再自动排 |
+| 恢复 | `recoverableBlock: 'upstream'` 且 `retryAt > now` → 只出 `deferUpstream`（挂定时器），**不许提前解阻** |
+
+### 重启后自动续跑（受管）
+
+一条尝试没留下结果记录（服务重启）时，按 `state.grantAudit` 判断那一段做过什么，**fail-closed**：
+
+1. 拿不到 `startedAt` → 保守阻塞；
+2. 那段期间、同 bot、同房间**放行过**不可逆动作（`capabilities.isIrreversible`）→ 保持「需人工确认」；
+   老审计记录没有 `roomId` 的按「可能命中」算；
+3. 证明没做过不可逆的事 → 结算成 `stop:'yielded'` +「服务重启，执行被中断」，推进器按让出续跑。
+
 ## 客户端协议
 
 | 项 | 规则 |
@@ -153,13 +210,13 @@ appliedCommands 与命令回执同键：requesterId + commandId + fingerprint �
 | 快照 | hello.taskRuns（权威）；GET /api/task-runs 列表；GET /api/task-runs/:id 带 authoritative/cursor/gap |
 | 增量 | WS taskRun.updated（服务端投影）；客户端按每任务 storeVersion 合并，旧值/同版本重复拒绝，跨度>1 触发补拉 |
 | 版本 | revision 目标版本、sequence 领域事件序号、storeVersion 持久变化版本；预算/nextAction 变化也走 storeVersion |
-| 控制 | POST /api/task-runs/:id/control：type, commandId, expectedRevision, ref?, text?, decision? |
+| 控制 | POST /api/task-runs/:id/control：type, commandId, expectedRevision, ref?, text?, decision?, reason?, extraRuns?；type 含 pause/resume/cancel/input/approval/revision/unblock/extend/**autonomy** |
 | 幂等 | 命令回执按认证身份+commandId 持久；重发返回 replayed；同 ID 不同内容 409；旧 revision 409 |
 | 身份 | 只来自现有鉴权；不按来源设备隔离可见性（同一用户已配对设备互控）；不新增云端/DB |
 | 结果 | result.prepared（服务端已验收）≠ delivered（设备已收到）；离线补送不重做任务 |
 | 旧语义 | 手工 TaskItem/500 条/勾完成保持；TaskRun 独立存储，通用勾选不能绕过验收 |
 
-入口：TaskRunStrip（输入框上方状态卡）→ showTaskRunSheet（详情/暂停/继续/取消/补输入/审批）。新增图标沿用 lucide_icons_flutter 既有字形。
+入口：TaskRunStrip（输入框上方状态卡）→ showTaskRunSheet（详情/暂停/继续/取消/补输入/审批/**自主推进开关**）。新增图标沿用 lucide_icons_flutter 既有字形。
 
 ## 文件占用（fileClaims）
 

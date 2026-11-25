@@ -20,6 +20,7 @@ export function startWatchdog(runner) {
     sessions: runner.sessions,
     heartbeatMs: runner.config.heartbeatMs,
     stallMs: runner.config.stallMs,
+    ...(runner.config.toolStallMs ? { toolStallMs: runner.config.toolStallMs } : {}),
     emit: (ev) => runner.bus.emit('event', ev),
     onStall: (info) => {
       const cleaned = stallCleanupEntry(runner, info);

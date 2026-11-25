@@ -15,14 +15,14 @@ import { verifyTaskRun } from './task-verification.js';
 import { remainingRuns } from './task-budget.js';
 import { TaskRunStore } from './task-run-store.js';
 import { runManagedAttempt } from './run-managed-attempt.js';
-import { decideRetry } from '../retry-policy.js';
+import { decideRetry, isUpstreamTransient } from '../retry-policy.js';
 import {
   CONTROL, applyControl, reconcileEarlyControls, descendants as descendantsOf,
 } from './task-controls.js';
 import { childrenOf } from './task-subtasks.js';
 import { fileClaimList, pickBlockingClaim } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
-import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary } from './task-prompts.js';
+import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary, continuationNote } from './task-prompts.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
 
 const PAUSED = new Set([STATE.paused_user, STATE.paused_budget]);
@@ -38,11 +38,33 @@ const DEFAULT_CONCURRENCY = 4;
 
 const AUTONOMY_RETRY_LIMIT = 3;
 
+/**
+ * 自主任务里「成员的分工全部受阻 → 交回负责人重新安排」最多几次。
+ *
+ * 交回一次，负责人能换人、拆小、或自己上手；反复交回仍不成，
+ * 就不是安排问题而是真卡住了（缺权限/缺外部条件），如实阻塞给用户看。
+ */
+const MAX_CHILD_HANDBACKS = 2;
+
 /** 步数用尽让出后，隔多久继续推进（避免原地空转，又不让任务停住）。 */
 const YIELD_RESUME_MS = 1_000;
 
 /** 自主重试之间的间隔：给执行器一点时间从上次失败里恢复。 */
 const AUTONOMY_RETRY_MS = 5_000;
+
+/**
+ * 上游瞬时故障（429 / 5xx / 熔断 / 网络瞬断）的**分钟级**阶梯退避。
+ *
+ * 快速重试（1.5–12 秒，最多 10 次）只够穿过一次抽风；上游限流是分钟级的事。
+ * 以前快速重试用尽就落「阻塞」等用户 —— 用户看到的是一次普通的限流把整件事判死。
+ */
+const UPSTREAM_LADDER_MS = Object.freeze([60_000, 120_000, 300_000, 600_000, 900_000]);
+
+/** 累计上游退避上限：超过这个时长就不该再「等一等」，如实阻塞给用户看。 */
+const MAX_UPSTREAM_WAIT_MS = 2 * 60 * 60 * 1000;
+
+/** 上游退避的累计状态挂在任务上（推进器重启也不丢）。 */
+const UPSTREAM_STATE_KEY = 'upstreamWait';
 
 /** 会话忙时的等待基数：执行器可能还在同房间跑上一波，等它空出来。 */
 const BUSY_RETRY_MS = 15_000;
@@ -95,7 +117,8 @@ function isBusyOutcome(raw) {
  * @param {Function} [p.abortInflight] 取消本任务在途执行（必须按任务/版本定位）
  * @param {()=>number} [p.clock]
  * @param {Function} [p.log]
- * @param {number} [p.maxStallRounds]
+ * @param {number} [p.maxStallRounds] 连续几轮**既没推进目标、也没干任何活**就阻塞（防空转）
+ * @param {number} [p.maxMilestoneRounds] 连续几轮**在干活但目标始终没推进**就阻塞（长任务兜底）
  * @param {number} [p.maxSteps] 单次排空的步数上限；用尽是让出，不是停住
  */
 export function createTaskSupervisor({
@@ -111,7 +134,23 @@ export function createTaskSupervisor({
   clock = () => Date.now(),
   log = () => {},
   maxStallRounds = 2,
+  /**
+   * ★ 长任务的兜底上限（两档停滞判定的第二档）。
+   *
+   * 第一档 `maxStallRounds` 只数「什么都没发生」的轮次 —— 真在改文件、
+   * 真在出产物的轮次不算停滞，否则一个要跑几十段的长任务第 2~3 段就被判死。
+   * 但「每轮都写点东西、目标却从不推进」也是一种空转，所以第二档数的是
+   * 「目标没推进」（缺项没减少、没有新交付、没有申请完成）的连续轮次，给得宽。
+   */
+  maxMilestoneRounds = 12,
   maxSteps = 32,
+  /**
+   * 上游退避的阶梯与上限（注入用；生产走默认值）。
+   *
+   * 单测里用毫秒级阶梯，不然「等 1 分钟」得真等 1 分钟。
+   */
+  upstreamLadder = UPSTREAM_LADDER_MS,
+  maxUpstreamWaitMs = MAX_UPSTREAM_WAIT_MS,
   /**
    * 同时最多推进几个任务。
    *
@@ -147,6 +186,51 @@ export function createTaskSupervisor({
     } catch {
       return '';
     }
+  }
+
+  /**
+   * 这件事是不是「自主推进」。
+   *
+   * ★ 以**根任务**为准：子任务是负责人拆出来的分工，跟着整件事走。
+   *   以前只看子任务自己的标记，而子任务建出来时从不带它 ——
+   *   于是成员一失败，自主重试逻辑对它完全不生效，任务直接卡在受阻。
+   *   用户在任务卡上切换「自主推进」时也只改根，同样要立刻作用到整棵树。
+   */
+  function autonomousOf(taskRun) {
+    if (!taskRun) return false;
+    const rootId = taskRun.rootTaskId ?? taskRun.id;
+    const root = rootId === taskRun.id ? taskRun : read(rootId);
+    return (root ?? taskRun)?.flags?.autonomous === true;
+  }
+
+  /**
+   * 两档停滞判定（只读，不累加）：该不该停下来让用户看一眼。
+   *
+   *   · 第一档 rounds：连续几轮既没推进目标、也没改动任何东西 → 真卡住了；
+   *   · 第二档 milestoneRounds：连续几段一直在干活、目标却没推进 → 可能在原地打转。
+   *
+   * @returns {{code:string, why:string}|null}
+   */
+  function stallVerdict(run) {
+    const stall = run?.stall ?? {};
+    const rounds = Number(stall.rounds ?? 0);
+    const milestoneRounds = Number(stall.milestoneRounds ?? 0);
+    const stallCap = Math.max(1, Number(maxStallRounds) || 2);
+    const milestoneCap = Math.max(stallCap, Number(maxMilestoneRounds) || 12);
+    if (rounds >= stallCap) {
+      return {
+        code: 'yield_stall',
+        why: '连续 ' + rounds + ' 轮既没推进目标、也没改动任何东西，像是卡住了，需要你看一下',
+      };
+    }
+    if (milestoneRounds >= milestoneCap) {
+      return {
+        code: 'milestone_stall',
+        why: '已经连续 ' + milestoneRounds + ' 段在干活，但目标一直没推进（缺项没减少、没有新交付、没有申请完成），'
+          + '可能在原地打转，需要你看一下',
+      };
+    }
+    return null;
   }
 
   const queue = new Set();
@@ -390,14 +474,86 @@ export function createTaskSupervisor({
   }
 
   /** 明确阻塞；可恢复原因单独记，便于恢复时解除。 */
-  async function block(taskRunId, why, recoverable = null) {
+  async function block(taskRunId, why, recoverable = null, retryAt = null) {
     const current = read(taskRunId);
     if (!current || [STATE.blocked, STATE.completed, STATE.cancelled].includes(current.state)) return;
     await settle(taskRunId, {
       type: EVENT.blocked, revision: current.revision, at: clock(),
       reason: String(why).slice(0, 300),
     });
-    await patch(taskRunId, { nextAction: null, retryAt: null, ...(recoverable ? { recoverableBlock: recoverable } : {}) });
+    // ★ 注意：这里把 `retryAt` 清成 null 了（阻塞 = 不再自动重排）。
+    //   上游可恢复阻塞需要保留到期时间，所以它显式传第三、四个参数，
+    //   而不是「先 block 再 patch」—— 那种写法一旦有人重排顺序就静默失效。
+    await patch(taskRunId, {
+      nextAction: null,
+      retryAt: Number.isFinite(retryAt) ? retryAt : null,
+      ...(recoverable ? { recoverableBlock: recoverable } : {}),
+    });
+  }
+
+  /**
+   * 上游瞬时故障的可恢复阻塞：快速重试用尽后不判死，改排**分钟级**退避。
+   *
+   * 三件事必须一起做，少一件就白做：
+   *   1. `recoverableBlock: 'upstream'` —— 恢复/唤醒逻辑靠它区分「等上游」与「真卡死」；
+   *   2. `retryAt` —— 到点才能真正醒（且 `block()` 会把它清空，所以必须显式传）；
+   *   3. 累计等待封顶 —— 等超过 2 小时就不是「上游抽风」了，如实阻塞给用户看。
+   *
+   * @returns {{status:'retry_scheduled'|'blocked', dueAt?:number, why:string, waitedMs:number}}
+   */
+  async function scheduleUpstreamRetry(taskRunId, { why = '', waitedMs = 0 } = {}) {
+    const current = read(taskRunId) ?? {};
+    const prev = current[UPSTREAM_STATE_KEY] ?? {};
+    const attempt = Number(prev.attempt ?? 0);
+    const waited = Number(prev.waitedMs ?? waitedMs ?? 0);
+    const nextDelay = upstreamLadder[Math.min(attempt, upstreamLadder.length - 1)];
+    if (!Number.isFinite(nextDelay) || waited + nextDelay > maxUpstreamWaitMs) {
+      // 到上限：清掉累计状态，如实阻塞（不再自动排）
+      const reason = `上游持续不可用（已累计等待 ${Math.round(waited / 60_000)} 分钟）：${String(why).slice(0, 120)}`;
+      await block(taskRunId, reason, null);
+      // block() 在「已经是 blocked」时会提前返回；而这里恰恰是常见情况
+      // （上一轮就是受阻等上游）。所以清可恢复标记与到期时间必须显式落盘，
+      // 否则任务会永远停在「等上游」——再也不会有人来排、也不会有人来解。
+      await patch(taskRunId, {
+        [UPSTREAM_STATE_KEY]: null,
+        recoverableBlock: null,
+        retryAt: null,
+        flags: { ...(read(taskRunId)?.flags ?? {}), blockedAt: clock(), blockedReason: reason },
+      });
+      // ★ 父任务这时才知道「等不到了，该你自己处理」。
+      //   不退避到上限的那条路上，子任务是靠「可恢复阻塞 → 恢复后自己醒」
+      //   推进的；一旦转成永久阻塞，没有任何定时器会再叫醒父任务，
+      //   它就会一直悬在 queued 等一个永远不来的交付。
+      notifyParent(read(taskRunId) ?? { id: taskRunId });
+      return { status: 'blocked', why: 'upstream_exhausted', waitedMs: waited };
+    }
+    const dueAt = clock() + nextDelay;
+    const waitText = nextDelay < 60_000
+      ? `${Math.round(nextDelay / 1000)} 秒`
+      : `${Math.round(nextDelay / 60_000)} 分钟`;
+    await patch(taskRunId, {
+      [UPSTREAM_STATE_KEY]: { attempt: attempt + 1, waitedMs: waited + nextDelay, at: clock() },
+      nextAction: null,
+      // ★ 快速重试的计数**不清**：清掉的话下一次失败又能白拿 10 次快速重试，
+      //   分钟级退避就永远轮不到（每轮都从「第 1 次」重新开始）。
+      //   这一段真的跑通时（ok 路径）才会把 retry 清空。
+    });
+    const reason = `上游限流/临时故障，${waitText}后自动继续：${String(why).slice(0, 120)}`;
+    const alreadyBlocked = current.state === STATE.blocked;
+    // block() 里会把 retryAt 清空 —— 上游可恢复阻塞显式把到期时间传进去
+    await block(taskRunId, reason, 'upstream', dueAt);
+    if (alreadyBlocked) {
+      // 已经 blocked 时 block() 会提前返回（不重复发 blocked 事件），
+      // 但到期时间与可恢复原因必须落盘，否则定时唤醒读不到。
+      await patch(taskRunId, {
+        recoverableBlock: 'upstream',
+        retryAt: dueAt,
+        flags: { ...(read(taskRunId)?.flags ?? {}), blockedAt: clock(), blockedReason: reason },
+      });
+    }
+    setTimer(dueAt, taskRunId);
+    log(`上游退避：${taskRunId} 第 ${attempt + 1} 档，${waitText}后再试（累计 ${Math.round((waited + nextDelay) / 1000)}s）`);
+    return { status: 'retry_scheduled', dueAt, why: 'upstream_backoff', waitedMs: waited + nextDelay };
   }
 
   function remainingOf(taskRun) {
@@ -549,9 +705,17 @@ export function createTaskSupervisor({
           } finally {
             if (kidBot) childBusyBots.delete(kidBot);
           }
-          if (out.status === 'blocked' || out.status === 'wait') {
+          if (out.status === 'wait') {
             return { status: 'wait', why: '子任务未完成', child: kid.id };
           }
+          // ★ 受阻的子任务**不在这里提前返回**。
+          //
+          //   原来受阻和等待一样直接 return wait —— 于是下面那段
+          //   「子任务全部受阻 → 说清谁卡住了」永远走不到：
+          //   父任务停在「排队中」，停滞计数不涨，也没有任何人会再唤醒它。
+          //   实机：调研任务的成员一次超时后受阻，根任务在「排队中」挂了 5 小时，
+          //   直到用户手动取消。先看完其它子任务，再统一判定是不是全卡住了。
+          if (out.status === 'blocked') continue;
           if (out.status === 'completed' || out.status === 'done' || out.status === 'cancelled') {
             progressed = true;
           }
@@ -564,13 +728,60 @@ export function createTaskSupervisor({
           //
           //   子任务自己受阻（blocked）不是父任务在"推进中"，
           //   而是整件事卡住了 —— 要说清是谁卡住、为什么。
-          const stuck = childrenOf(taskRuns, read(taskRunId) ?? taskRun)
+          const parentNow = read(taskRunId) ?? taskRun;
+          const stuck = childrenOf(taskRuns, parentNow)
             .filter((k) => !terminal(k));
-          if (stuck.length && stuck.every((k) => k.state === STATE.blocked)) {
+          // ★ 「可恢复阻塞」不算永久受阻。
+          //
+          //   上游退避（`recoverableBlock: 'upstream'`）中的子任务到点会自己醒，
+          //   把它当成「全部受阻」会让父任务：自主模式下把还在等的分工**取消掉**
+          //   交回负责人重排（等于把正在自愈的活掐死），非自主模式直接阻塞父任务。
+          //   所以只要还有一个子任务在可恢复阻塞里，就老实等着它恢复。
+          const resumable = stuck.find((k) => k.state === STATE.blocked && k.recoverableBlock);
+          if (resumable) {
+            return {
+              status: 'wait',
+              why: '子任务在等上游恢复（可恢复阻塞）',
+              child: resumable.id,
+            };
+          }
+          if (stuck.length && stuck.every((k) => k.state === STATE.blocked && !k.recoverableBlock)) {
+            // ★ 自主推进：交回负责人重新安排，而不是停下来等用户。
+            //
+            //   负责人提示词本来就写着「同事没交作业 → 再派 / 换人 / 自己上」，
+            //   但负责人只有在子任务都收口后才会被叫起来 —— 受阻的子任务
+            //   不是终态，于是负责人永远没机会处理。这里把受阻的分工如实
+            //   收口（取消并记下原因），让负责人带着失败原因重新安排。
+            //   有上限：反复交回仍不成，就是真卡住了，如实阻塞给用户看。
+            const handBacks = Number(parentNow.childHandBacks ?? 0);
+            if (autonomousOf(parentNow) && handBacks < MAX_CHILD_HANDBACKS) {
+              const failures = stuck.map((k) => ({
+                taskRunId: k.id,
+                botId: k.owner?.leadBotId ?? null,
+                name: nameOfBot(k.owner?.leadBotId) || '成员',
+                requirement: String(k.goal?.requirement ?? '').slice(0, 160),
+                reason: String(k.flags?.blockedReason ?? '未说明').slice(0, 160),
+                at: clock(),
+              }));
+              for (const kid of stuck) {
+                await settle(kid.id, {
+                  type: EVENT.cancelled, revision: kid.revision, at: clock(),
+                  reason: '成员受阻，交回负责人重新安排',
+                }).catch(() => null);
+              }
+              await patch(taskRunId, {
+                childHandBacks: handBacks + 1,
+                childFailures: [...(parentNow.childFailures ?? []), ...failures].slice(-6),
+                stall: null,
+              });
+              log('子任务全部受阻，交回负责人重新安排', taskRunId, failures.length);
+              continue;
+            }
             const first = stuck[0];
             const who = nameOfBot(first.owner?.leadBotId) || '成员';
             const why = '等在子任务上：' + who + '受阻（'
-              + String(first.flags?.blockedReason ?? '未说明').slice(0, 80) + '）';
+              + String(first.flags?.blockedReason ?? '未说明').slice(0, 80) + '）'
+              + (handBacks >= MAX_CHILD_HANDBACKS ? '；已交回负责人重新安排 ' + handBacks + ' 次仍未解决' : '');
             await block(taskRunId, why);
             return { status: 'blocked', why: 'children_blocked' };
           }
@@ -580,7 +791,7 @@ export function createTaskSupervisor({
       }
 
       const action = planNextAction(taskRun, {
-        now: clock(), remainingRuns: remainingOf(taskRun), maxStallRounds, restartUnknown: false,
+        now: clock(), remainingRuns: remainingOf(taskRun), maxStallRounds, maxMilestoneRounds, restartUnknown: false,
         // 本进程是否真在跑这条 registered 尝试；不在就是崩溃/重启残留。
         isInflight: (run) => inflight.has(run.id),
       });
@@ -634,6 +845,13 @@ export function createTaskSupervisor({
           type: EVENT.unblocked, revision: taskRun.revision, at: clock(), reason: '重试到期',
         });
         if (!unblocked.ok) return { status: 'blocked', why: 'unblock_failed' };
+        // ★ 可恢复阻塞的记账要在解除时一起清：
+        //   `recoverableBlock: 'upstream'` 留着会让启动恢复以为「还在等上游」，
+        //   `retryAt` 留着会让下一轮重复判「重试到期」。
+        const revived = read(taskRun.id);
+        if (revived?.recoverableBlock === 'upstream') {
+          await patch(taskRun.id, { recoverableBlock: null, retryAt: null });
+        }
         continue;
       }
 
@@ -641,6 +859,10 @@ export function createTaskSupervisor({
       const beforeProgress = progressSignature(beforeRun);
       const out = await doLeadStep(taskRun, action);
       if (out.status === 'retry_scheduled' || out.status === 'paused_budget') return out;
+      // 这一段真的跑通了 → 上游退避的累计清零（下次抽风重新从第一档排起）
+      if (out.status === 'ok' && read(taskRun.id)?.[UPSTREAM_STATE_KEY]) {
+        await patch(taskRun.id, { [UPSTREAM_STATE_KEY]: null });
+      }
       // ★ 执行让出（步数上限）不是失败，但也不能在这里直接 return ——
       //   直接 return 就绕过了下面「安排续行」的收尾，任务从此停在 running，
       //   界面显示「执行中」却再也不动。让它落到循环尾部统一处理。
@@ -670,23 +892,23 @@ export function createTaskSupervisor({
         // stop 存在结果里（result.stop），不直接在账本记录上
         const stopKind = attempt?.result?.stop ?? attempt?.stop ?? null;
         if (stopKind === 'yielded') {
-          // ★ 让出是有上限的。
+          // ★ 让出是有上限的，但上限看的是「有没有进展」，不是「让出了几次」。
           //
-          //   「让步继续」本身正确 —— 模型跑到单轮上限，下一轮接着做。
-          //   但如果每一轮都只是让出、目标始终不达成，那就是在空转：
-          //   必须停下来告诉用户卡在哪，而不是一直排下一轮。
+          //   「让步继续」本身正确 —— 模型跑到单段上限，下一段接着做；
+          //   一个长任务本来就要跑很多段。停滞计数已经在 doLeadStep 里
+          //   按两档累计（有没有干活 / 目标有没有推进），这里**只读不再累加**。
+          //
+          //   以前这里又按签名 +1 一次，和 doLeadStep 里的那次叠成双重计数：
+          //   第 2 次没有「里程碑」的让出就被判死 —— 长任务基本活不过第三段。
           const after = read(taskRunId) ?? afterRun;
-          const afterSig = progressSignature(after);
-          const prev = after.stall ?? { rounds: 0, lastSignature: null };
-          const rounds = prev.lastSignature === afterSig ? (prev.rounds ?? 0) + 1 : 1;
-          if (rounds > Math.max(1, Number(maxStallRounds) || 2)) {
-            const why = '连续 ' + rounds + ' 轮让出但没有新进展（目标始终未达成），需要你确认下一步';
-            await patch(taskRunId, { nextAction: null, retryAt: null, stall: { rounds, lastSignature: afterSig } });
-            await block(taskRunId, why);
-            return { status: 'blocked', why: 'yield_stall' };
+          const verdict = stallVerdict(after);
+          if (verdict) {
+            await patch(taskRunId, { nextAction: null, retryAt: null });
+            await block(taskRunId, verdict.why);
+            return { status: 'blocked', why: verdict.code };
           }
           const resumeAt = clock() + YIELD_RESUME_MS;
-          await patch(taskRunId, { nextAction: null, retryAt: resumeAt, stall: { rounds, lastSignature: afterSig } });
+          await patch(taskRunId, { nextAction: null, retryAt: resumeAt });
           setTimer(resumeAt, taskRunId);
           return { status: 'yielded', why: '执行段让出，已安排续行' };
         }
@@ -699,6 +921,23 @@ export function createTaskSupervisor({
         const hasKids = childrenOf(taskRuns, afterRun).some((k) => !terminal(k));
         // 有在途子任务：等它们交付，这不算停滞。
         if (hasKids) return { status: 'wait', why: '等待子任务交付' };
+        // ★ 这一段真的干了活（改了文件 / 出了产物），只是还没到「可验收」：
+        //   按长任务的续段处理 —— 接着推进，而不是判「没有产出」停下来问用户。
+        //
+        //   以前只认「新子任务 / 新交付 / 完成申请」三种进展：写代码这类活
+        //   （源码不算交付物扩展名）一段没写完，就被判「负责人这一轮没有产出」。
+        //   防空转交给两档停滞计数：真没干活照样会被拦住。
+        if (out.didWork) {
+          const verdict = stallVerdict(read(taskRunId) ?? afterRun);
+          if (verdict) {
+            await block(taskRunId, verdict.why);
+            return { status: 'blocked', why: verdict.code };
+          }
+          const resumeAt = clock() + YIELD_RESUME_MS;
+          await patch(taskRunId, { nextAction: null, retryAt: resumeAt });
+          setTimer(resumeAt, taskRunId);
+          return { status: 'ok', why: '这一段有实际改动，安排接着推进' };
+        }
         // ★ 否则**明确停下**，不能返回一个「等待」了事。
         //
         //   返回 wait 会把记录留在 queued + next=dispatch，界面上就是「准备中」，
@@ -842,7 +1081,11 @@ export function createTaskSupervisor({
     //   登记了再失败会消耗额度并落一条 failed 尝试，任务直接被判阻塞。
     if (executorBusy(botId, taskRun)) {
       const dueAt = clock() + BUSY_RETRY_MS;
-      await patch(taskRun.id, { nextAction: null, retryAt: dueAt, retry: { count: (read(taskRun.id)?.retry?.count ?? 0) + 1, at: clock() } });
+      // ★ 忙等待不算失败次数（与下面 failedStop 里的忙分支一致）。
+      //   累加的话，上游退避期间 retry.count 已经是 10，撞一次「执行者还在忙」
+      //   就变 11，而 `task-next-action` 看到 >10 直接判「重试次数已达上限」——
+      //   一次无关紧要的忙就直接把任务硬阻塞。
+      await patch(taskRun.id, { nextAction: null, retryAt: dueAt });
       setTimer(dueAt, taskRun.id);
       return { status: 'retry_scheduled', dueAt, why: '执行者还在忙，稍后重派' };
     }
@@ -874,9 +1117,12 @@ export function createTaskSupervisor({
       return { status: 'blocked', why: 'next_persist_failed' };
     }
 
-    const prompt = isChild
-      ? buildMemberPrompt({ childTaskRun: taskRun, parentTaskRun: parentTask })
-      : buildLeadPrompt({ phase: LEAD_PHASE.plan, taskRun });
+    // 续段：上一段让出/中断了，告诉它从断点接着做，而不是把整件事从头再来一遍
+    const resume = continuationNote(taskRun, { autonomous: autonomousOf(taskRun) });
+    const basePrompt = isChild
+      ? buildMemberPrompt({ childTaskRun: taskRun, parentTaskRun: parentTask, autonomous: autonomousOf(taskRun) })
+      : buildLeadPrompt({ phase: LEAD_PHASE.plan, taskRun: autonomousOf(taskRun) ? { ...taskRun, flags: { ...(taskRun.flags ?? {}), autonomous: true } } : taskRun });
+    const prompt = resume ? basePrompt + '\n\n' + resume : basePrompt;
 
     inflight.set(taskRun.id, { attemptId, revision: taskRun.revision });
     let out;
@@ -898,7 +1144,10 @@ export function createTaskSupervisor({
       inflight.delete(taskRun.id);
     }
 
-    if (!out.ok) return handleStepFailure(taskRun, out);
+    // ★ 把执行器的原始结果一起带下去：`runManagedAttempt` 的失败壳子只说明
+    //   「这一步没成」，真正的原因（429 / 5xx / 熔断）在 rawResult 里。
+    //   不带下去的话，上游限流也会被归成「执行失败」直接阻塞。
+    if (!out.ok) return handleStepFailure(taskRun, { ...out, raw: rawResult });
 
     // 执行失败但属于可恢复的暂时故障：按既有决策排有界重试，不写成永久阻塞
     const failedStop = rawResult?.stop === STOP.failed || rawResult?.ok === false;
@@ -943,6 +1192,18 @@ export function createTaskSupervisor({
       }
       // 不再重试：清掉到期标记，交给状态机判定为明确失败
       await patch(taskRun.id, { retryAt: null, nextAction: null });
+      // ★ 但如果是上游瞬时故障，这里不该走到「明确失败」：
+      //   快速重试（最多 10 次、总时长几十秒）穿不过一次分钟级的限流。
+      if (isUpstreamTransient({
+        error: String(rawResult?.error ?? rawResult?.text ?? ''),
+        status: rawResult?.status ?? null,
+      })) {
+        const scheduled = await scheduleUpstreamRetry(taskRun.id, {
+          why: String(rawResult?.error ?? rawResult?.text ?? '上游不可用'),
+        });
+        if (scheduled.status === 'retry_scheduled') return scheduled;
+        return { status: 'blocked', why: scheduled.why };
+      }
     }
 
     // ★ 自主模式：这一轮被判定失败时，自动把它再推起来，而不是等用户点「继续」。
@@ -951,7 +1212,7 @@ export function createTaskSupervisor({
     //   上限 AUTONOMY_RETRY_LIMIT：同一个错误反复重试只会烧时间。
     {
       const nowRun = read(taskRun.id);
-      if (nowRun?.flags?.autonomous === true
+      if (autonomousOf(nowRun)
         && nowRun.state === STATE.blocked
         && nowRun.recoverableBlock == null
         && !nowRun.flags?.blockedByUser) {
@@ -997,7 +1258,11 @@ export function createTaskSupervisor({
       return { status: 'cancelled', why: '执行期间被取消/暂停' };
     }
 
-    await patch(taskRun.id, { nextAction: null, retryAt: null, retry: null, stall: bumpStall(after ?? taskRun) });
+
+    // 这一段有没有真实干活：改了工作区文件，或者登记了产物。
+    // 停滞计数据此分两档（见 bumpStall / stallVerdict）：干了活就不算「卡住」。
+    const didWork = workDoneBy(rawResult);
+    await patch(taskRun.id, { nextAction: null, retryAt: null, retry: null, stall: bumpStall(after ?? taskRun, { didWork }) });
     await reconcileEarlyControls({ taskRuns, taskRunId: taskRun.id, settle, patch, notify, clock });
     await releaseDependencyFor(read(taskRun.id) ?? taskRun);
     // ★ 只唤醒子任务，**绝不 notify 自己**。
@@ -1012,7 +1277,7 @@ export function createTaskSupervisor({
     for (const kid of childrenOf(taskRuns, read(taskRun.id) ?? taskRun)) {
       if (!terminal(kid)) notify(kid.id);
     }
-    return { status: 'ok' };
+    return { status: 'ok', didWork };
   }
 
   /**
@@ -1086,7 +1351,9 @@ export function createTaskSupervisor({
       return { status: 'blocked', why: out.code };
     }
     // 有界重试：只有明确 transient 才排重试；结果未知不在此列
-    const decision = decideRetry({ error: String(out.text ?? out.code ?? ''), status: out.status ?? null, attempt: (read(id)?.retry?.count ?? 0) + 1 });
+    const cause = String(out.raw?.error ?? out.raw?.text ?? out.text ?? out.code ?? '');
+    const causeStatus = out.raw?.status ?? out.status ?? null;
+    const decision = decideRetry({ error: cause, status: causeStatus, attempt: (read(id)?.retry?.count ?? 0) + 1 });
     if (decision.retry && (taskRun.retry?.count ?? 0) < MAX_TRANSIENT_ATTEMPTS) {
       const dueAt = clock() + (decision.delayMs ?? 30_000);
       await patch(id, {
@@ -1097,8 +1364,15 @@ export function createTaskSupervisor({
       setTimer(dueAt, id);
       return { status: 'retry_scheduled', dueAt };
     }
+    // ★ 快速重试用尽：如果是上游瞬时故障，不判死，改排分钟级退避。
+    //   一次普通的限流不该把整个任务变成「需要人工确认」。
+    if (isUpstreamTransient({ error: cause, status: causeStatus })) {
+      // ★ 上游故障不计入模型停滞：这是「路不通」，不是「模型在原地打转」。
+      //   计进去的话，一次限流就可能把停滞计数推到上限，恢复后立刻被判死。
+      return scheduleUpstreamRetry(id, { why: cause || '上游不可用' });
+    }
     await patch(id, { nextAction: null, retryAt: null });
-    await block(id, out.text ?? out.code ?? '执行失败');
+    await block(id, out.text ?? out.code ?? cause ?? '执行失败');
     return { status: 'blocked', why: out.code };
   }
 
@@ -1412,7 +1686,7 @@ export function createTaskSupervisor({
    * 任何写入失败都累计恢复尝试并停止本轮，不反复 inspect/写盘。
    */
   async function recover() {
-    const report = { released: [], unknown: [], resumed: [], settleFilled: [], blocked: [] };
+    const report = { released: [], unknown: [], resumed: [], settleFilled: [], blocked: [], deferred: [] };
     const all = allRuns();
     const MAX_TRIES = 3;
 
@@ -1424,7 +1698,7 @@ export function createTaskSupervisor({
         if (!run || terminal(run)) break;
         const rootId = run.rootTaskId ?? run.id;
         const root = read(rootId) ?? run;
-        const { stages } = decideRecovery(run, { root, load: read });
+        const { stages } = decideRecovery(run, { root, load: read, clock });
         if (!stages.length) break;
         const st = stages[0];
 
@@ -1498,12 +1772,21 @@ export function createTaskSupervisor({
           continue;
         }
 
+        if (st.stage === RECOVERY_STAGE.deferUpstream) {
+          // 上游退避还没到期：只挂定时器，不解阻也不抢跑（到期由既有唤醒链路接手）
+          if (Number.isFinite(st.dueAt)) setTimer(st.dueAt, run.id);
+          report.deferred.push({ taskRunId: run.id, dueAt: st.dueAt });
+          break;
+        }
+
         if (st.stage === RECOVERY_STAGE.clearBlocked) {
           const unblocked = await settle(run.id, {
             type: EVENT.unblocked, revision: run.revision, at: clock(), reason: '恢复补齐后解除阻塞',
           });
           if (!unblocked.ok) { failed = unblocked.text ?? unblocked.code; break; }
-          await patch(run.id, { recoverableBlock: null, unknownBlock: null, recoveryTries: 0 });
+          // 与「重试到期解阻」那条路（runTask 里）对齐：可恢复标记、到期时间、恢复计数一起清。
+          // 留一个过期的 retryAt，下一轮会重复判「重试到期」，甚至拿旧时间点去排新的退避。
+          await patch(run.id, { recoverableBlock: null, unknownBlock: null, retryAt: null, recoveryTries: 0 });
           report.resumed.push(run.id);
           notify(run.id);
           continue;
@@ -1553,12 +1836,45 @@ export function createTaskSupervisor({
   };
 }
 
-/** 停滞计数：签名没变 +1，变了清零。 */
-function bumpStall(taskRun) {
+/**
+ * 停滞计数（两档）。
+ *
+ *   · `milestoneRounds`：目标签名没变 +1，变了清零 —— 「目标有没有推进」；
+ *   · `rounds`：签名没变**且这一段没干活**才 +1；干了活或签名变了都清零 ——
+ *     「是不是真卡住了」。
+ *
+ * 不传 didWork（验收、失败善后等非执行路径）时两档一起按签名累计，与旧行为一致。
+ *
+ * @param {object} taskRun
+ * @param {{didWork?:boolean}} [opts]
+ */
+export function bumpStall(taskRun, { didWork = false } = {}) {
   const sig = progressSignature(taskRun);
-  const prev = taskRun?.stall ?? { rounds: 0, lastSignature: null };
-  if (prev.lastSignature === sig) return { rounds: (prev.rounds ?? 0) + 1, lastSignature: sig };
-  return { rounds: 0, lastSignature: sig };
+  const prev = taskRun?.stall ?? { rounds: 0, lastSignature: null, milestoneRounds: 0 };
+  if (prev.lastSignature !== sig) return { rounds: 0, lastSignature: sig, milestoneRounds: 0 };
+  // 旧记录没有 milestoneRounds：按 rounds 起算，别让升级后的第一轮把计数清零
+  const milestoneRounds = Number(prev.milestoneRounds ?? prev.rounds ?? 0) + 1;
+  const rounds = didWork ? 0 : Number(prev.rounds ?? 0) + 1;
+  return { rounds, lastSignature: sig, milestoneRounds };
+}
+
+/**
+ * 这一段执行有没有真实干活。
+ *
+ * 只认运行层观察到的事实，不认模型自己说的：
+ *   · 工作区里有文件被新增/修改（执行器的 change-watch 结果 `work.files`）；
+ *   · 这一段登记了产物（附件 / 交付物）。
+ *
+ * @param {object|null} raw 执行器原始返回
+ * @returns {boolean}
+ */
+export function workDoneBy(raw) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (Number(raw.work?.files ?? 0) > 0) return true;
+  const listed = Array.isArray(raw.attemptEvent?.attempt?.artifacts)
+    ? raw.attemptEvent.attempt.artifacts
+    : (Array.isArray(raw.artifacts) ? raw.artifacts : []);
+  return listed.some((a) => (typeof a === 'string' ? a.trim() : a));
 }
 
 export { NEXT, LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary };
