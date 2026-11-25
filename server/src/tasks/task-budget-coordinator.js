@@ -45,7 +45,6 @@ import {
   planRefund,
   planSettle,
   classify,
-  runningCount,
   occupiesQuota,
   checkIdentity,
 } from './task-attempt-lifecycle.js';
@@ -130,9 +129,17 @@ export async function reserveRootBudget({
       }
 
       // ---- 额度与并发（按根统计，同身份去重）
+      //
+      // ★ 名额要按「**已占用的**预留」算，不能只算已经 started 的。
+      //
+      //   一次预留（`reserved`）就是一张「你可以开始跑」的授权，它此刻已经
+      //   占了根上的一个名额。原来只数 `started`，于是同一刻进来的一批兄弟
+      //   都看到「还没有人在跑」而全部放行 —— 并发上限形同虚设（实测一下子
+      //   进了 4 份，而根上写的是 2）。
+      const occupied = Object.values(slots).filter((s) => s && occupiesQuota(s.phase)).length;
       const gate = checkCanRun(current.budget, {
         at,
-        runningCount: runningCount(Object.values(slots)) + registeredCountOf(current, owner),
+        runningCount: occupied + registeredCountOf(current, owner),
       });
       if (!gate.ok) return { __reject: fail(gate.code, gate.text) };
 
