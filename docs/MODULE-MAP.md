@@ -61,6 +61,7 @@
 | `escalation.js` | 出事往上抬：抬给谁、回执写什么 |
 | `watchdog.js` | 心跳与卡死判定、收尾 |
 | `runner/model-idle.js` | 「等模型」的计时与计数（SPEC-PERF-V1 §4.2 b/c）：`createModelIdleGuard()` 按 `ORBIS_MODEL_IDLE_MS`（默认 180 s，锚点与 TTFT 一致：发请求 / 全部工具结束起算，工具期暂停，`message_update` 与 `auto_retry_start` 重置或顺延）判无进展并回调中止本次请求；`createSdkRetryWatch()` 把连续 2 次 SDK 级失败收敛成**一次**通路失败喂熔断；`announceSdkRetry()` 广播 `bot.retrying`（只带次数/延迟）。`wireModelWait()` 是给 `turn-executor.js` 的一行接线 |
+| `runner/model-fallback.js` | 单轮临时切健康模型（SPEC-PERF-V1 §4.2 d）：`shouldSwitchEarly()`（连续第 2 次临时故障 / 第 1 次 `model-idle` / 所属组熔断打开；用户锁定与单链已切过一律不切）、`pickAlternateModel()`（只从已启用组挑，跳过自己/已试/熔断打开，带图要求 vision，`contextWindow` 不够就跳过，优先健康默认模型）、`planFallbackForBot()` 给编排层的一步到位版本；`withFallbackModel()` 用 `${sessionKey}#fb` 的一次性内存会话跑本轮并在 `finally` 释放，**绝不写 `bot.model`**；`attributeModel()` 保证熔断与统计按实际执行的模型归属 |
 | `prompt-input.js` | 拼输入：附件正文、图片、自动附图 |
 | `system-prompt.js` | 系统提示词：身份、说话规矩、部门规矩 |
 | `reply-format.js` | 回复排版规则：解释与代写正文分开，引用保持原文身份，代码块只承载代码和命令 |

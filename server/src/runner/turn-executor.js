@@ -64,7 +64,7 @@ async function runWithLease(
   prompt,
   {
     timeoutMs = runner.config.runTimeoutMs,
-    modelIdleMs = undefined, // 只给测试/诊断用：覆盖「等模型」阈值（默认按 ORBIS_MODEL_IDLE_MS）
+    modelIdleMs = undefined, modelOverride = null, // 测试用阈值 / 单轮临时切模型（§4.2 d）
     meta = null,
     skipUserMessage = false,
     attachments = [],
@@ -234,7 +234,7 @@ async function runWithLease(
   let entry;
   let collectedArtifacts = [];
   try {
-    entry = await runner.ensureSession(roomId, botId);
+    entry = await runner.ensureSession(roomId, botId, modelOverride ? { modelOverride, persist: false } : {});
   } catch (err) {
     if (err?.code === 'SESSION_BUSY') {
       return withAttempt({
@@ -1166,8 +1166,8 @@ async function runWithLease(
     });
   } finally {
     // 定时器回调可能还挂着：标记结束，回调里一律不再动会话（不再 steer / abort）
-    runFinished = true;
-    idle.stop();
+    runFinished = true; idle.stop();
+    if (modelOverride) { try { runner.sessions.delete(sessionKey(roomId, botId) + '#fb'); } catch {} } // 一次性回退会话必须释放
     runner.releaseReportScope(scopeKey, reports);
     if (entry) entry.managedContext = null;
     if (timeoutHandle) clearTimeout(timeoutHandle);

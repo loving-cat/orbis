@@ -45,6 +45,9 @@ const {
   resolveIdleFailure, onSdkRetryStart,
 } = await import(src('runner/model-idle.js'));
 const { decideRetry, isUpstreamTransient, isRecoverableFailure } = await import(src('retry-policy.js'));
+const {
+  shouldSwitchEarly, pickAlternateModel, planFallbackForBot, meetsNeeds, FALLBACK_AFTER_FAILS,
+} = await import(src('runner/model-fallback.js'));
 const { ENDED_BY } = await import(src('run-stats.js'));
 
 const results = [];
@@ -192,6 +195,74 @@ await test('0d. SDK 重试收敛：连续 2 次算一次通路失败，成功清
   w.start({});
   w.end(true);
   assert.equal(w.streak, 0, 'SDK 自己成功就清零');
+});
+
+// ---------------------------------------------------------------------------
+// 0f. §4.2 d：早切换的门槛与选型（纯函数）
+// ---------------------------------------------------------------------------
+
+await test('0f. 门槛：连续 2 次临时故障才切；model-idle / 熔断打开更早；锁定与已切过不切', () => {
+  const base = { kind: 'transient', hasAlternate: true };
+  assert.equal(shouldSwitchEarly({ ...base, fails: 1 }), false, '一次抖动不值得换');
+  assert.equal(shouldSwitchEarly({ ...base, fails: FALLBACK_AFTER_FAILS }), true);
+  assert.equal(shouldSwitchEarly({ ...base, fails: 1, kind: 'model-idle' }), true, '一个字都不吐：第 1 次就切');
+  assert.equal(shouldSwitchEarly({ ...base, fails: 1, breakerOpen: true }), true, '组熔断已打开：别等端点轮转');
+  assert.equal(shouldSwitchEarly({ ...base, fails: 5, userLocked: true }), false, '用户锁了模型就不切');
+  assert.equal(shouldSwitchEarly({ ...base, fails: 5, alreadySwitched: true }), false, '单链最多切 1 次');
+  assert.equal(shouldSwitchEarly({ ...base, fails: 5, hasAlternate: false }), false, '没替代就维持现状');
+});
+
+await test('0g. 选型：跳过自己/已试/熔断打开/停用，优先健康默认模型，带图过滤无 vision', () => {
+  const candidates = [
+    { slug: 'a/one', label: '甲', groupId: 'a' },
+    { slug: 'b/two', label: '乙', groupId: 'b' },
+    { slug: 'c/three', label: '丙', groupId: 'c' },
+    { slug: 'd/off', label: '丁', groupId: 'd', enabled: false },
+  ];
+  const caps = {
+    'a/one': { contextWindow: 8000 },
+    'b/two': { contextWindow: 200000 },
+    'c/three': { contextWindow: 200000, vision: true },
+  };
+  const got = pickAlternateModel({ from: 'a/one', candidates, capabilitiesOf: (c) => caps[c.slug] ?? c });
+  assert.equal(got.slug, 'b/two', '跳过自己，按候选顺序取第一个健康的');
+
+  const viaDefault = pickAlternateModel({ from: 'a/one', candidates, defaultModel: 'c/three', capabilitiesOf: (c) => caps[c.slug] ?? c });
+  assert.equal(viaDefault.slug, 'c/three', '默认模型健康时优先回默认');
+
+  const withImage = pickAlternateModel({
+    from: 'a/one', candidates, needs: { images: true }, capabilitiesOf: (c) => caps[c.slug] ?? c,
+  });
+  assert.equal(withImage.slug, 'c/three', '带图：跳过没有 vision 的乙');
+
+  const noisy = pickAlternateModel({
+    from: 'a/one',
+    candidates,
+    tried: ['b/two', 'c/three'],
+    isBreakerOpen: (slug) => slug === 'd/off',
+    capabilitiesOf: (c) => caps[c.slug] ?? c,
+  });
+  assert.equal(noisy, null, '全被跳过就返回 null（不硬切）');
+
+  assert.equal(pickAlternateModel({ from: 'a/one', candidates: [], capabilitiesOf: (c) => c }), null);
+  assert.equal(meetsNeeds({ vision: false }, { images: true }), false);
+  assert.equal(meetsNeeds({ contextWindow: 1000 }, { contextWindow: 9000 }), false, '窗口明显不够就不选它');
+});
+
+await test('0h. planFallbackForBot：读 bot.model / 候选清单 / 熔断状态，只回答要不要切、切到谁', () => {
+  const fakeRunner = {
+    store: { getBot: () => ({ id: 'b1', model: 'a/one' }) },
+    modelLabel: () => 'c/three',
+    modelGroups: { menuEntries: () => ([{ slugs: ['a/one'], label: '甲', groupId: 'a' }, { slugs: ['c/three'], label: '丙', groupId: 'c' }]) },
+    breakerFor: (botId, slug) => ({ breaker: { state: String(slug ?? 'a/one').startsWith('a') ? 'open' : 'closed' } }),
+    resolveModel: (slug) => ({ provider: slug.split('/')[0], id: slug.split('/')[1], contextWindow: 200000, vision: true }),
+  };
+  const alt = planFallbackForBot({ runner: fakeRunner, botId: 'b1', fails: 1, kind: 'transient' });
+  assert.equal(alt.slug, 'c/three', '主组熔断打开 → 立刻切到健康的默认模型');
+  assert.equal(planFallbackForBot({ runner: fakeRunner, botId: 'b1', fails: 1, kind: 'transient', userLocked: true }), null);
+  assert.equal(planFallbackForBot({ runner: fakeRunner, botId: 'b1', fails: 1, kind: 'transient', alreadySwitched: true }), null);
+  const healthy = { ...fakeRunner, breakerFor: () => ({ breaker: { state: 'closed' } }) };
+  assert.equal(planFallbackForBot({ runner: healthy, botId: 'b1', fails: 1, kind: 'transient' }), null, '第 1 次临时故障不切');
 });
 
 // ---------------------------------------------------------------------------

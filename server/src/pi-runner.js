@@ -372,7 +372,7 @@ export class PiRunner {
 
   // ---------------------------------------------------------------- 会话池、并发槽位与熔断
 
-  async ensureSession(roomId, botId) {
+  async ensureSession(roomId, botId, opts = {}) {
     const key = sessionKey(roomId, botId);
     retireStaleSession(this.sessions, key);
     const existing = this.sessions.get(key);
@@ -392,7 +392,7 @@ export class PiRunner {
       bus: this.bus,
       ...(this.sessionApi ? { sessionApi: this.sessionApi } : {}),
     });
-    const promise = this.__buildSession(roomId, botId, { reportTool: true }).then((r) => ({
+    const promise = this.__buildSession(roomId, botId, { reportTool: true, ...opts }).then((r) => ({
       ...r,
       busy: false,
       unsubscribe: null,
@@ -468,9 +468,10 @@ export class PiRunner {
     });
   }
 
-  breakerFor(botId) {
+  breakerFor(botId, modelOverride = null) {
     const bot = this.store.getBot(botId);
-    const slug = String(bot?.model ?? '').trim();
+    // ★ 临时切到别的模型时，熔断要记在**真的在跑的**那个组上（§4.2 d）
+    const slug = String(modelOverride ?? bot?.model ?? '').trim();
     if (!slug.includes('/')) return null;
     const groupId = slug.slice(0, slug.indexOf('/'));
     if (!groupId) return null;
@@ -487,8 +488,8 @@ export class PiRunner {
     return { groupId, breaker: cb };
   }
 
-  markGroupHealthy(botId) {
-    const found = this.breakerFor(botId);
+  markGroupHealthy(botId, modelOverride = null) {
+    const found = this.breakerFor(botId, modelOverride);
     if (!found) return;
     if (found.breaker.state !== BREAKER_STATE.closed || (found.breaker.fails ?? 0) > 0) {
       this.breakers.set(found.groupId, breakerOk(found.breaker));
@@ -498,8 +499,8 @@ export class PiRunner {
     this.breakers.set(found.groupId, breakerOk(found.breaker));
   }
 
-  markGroupFailed(botId, { kind, status } = {}) {
-    const found = this.breakerFor(botId);
+  markGroupFailed(botId, { kind, status, model = null } = {}) {
+    const found = this.breakerFor(botId, model);
     if (!found) return null;
     if (!isCircuitFailure({ kind, status })) return found.breaker;
     const next = breakerFail(found.breaker, { kind, status, now: Date.now() });

@@ -15,6 +15,7 @@ import { isMainChatBusy } from './chief-summary-runner.js';
 import { shouldMirrorProgress, mirrorProgress, MIRROR_SKIPPED_NO_DM } from '../dm.js';
 import { settleRetryMessage } from '../retry-messages.js';
 import { decideRetry, failureNote, retryHint, transientBackoffMs } from '../retry-policy.js';
+import { planFallbackForBot } from './model-fallback.js';
 import { continuationPrompt } from '../turn-continuation.js';
 import {
   isUpstreamTransient,
@@ -690,6 +691,8 @@ export async function executeGroupRound(
           let lastError = res.ok ? '' : String(res.error ?? '未知原因');
           let lastStatus = res.ok ? null : (res.status ?? null);
           let lastKind = res.breakerSkipped ? 'breaker-open' : '';
+          // 这条重试链临时切到的模型（null = 还在用配置里的模型）；单链最多切一次
+          let overrideModel = null;
           const retries = [];
 
           while (!res.ok) {
@@ -731,23 +734,40 @@ export async function executeGroupRound(
               switchModel: decision.switchModel === true,
             });
             settleRetryMessage(runner.store, roomId, res, { willRetry: true });
+            // ★ 早切换（§4.2 d）：连续第 2 次临时故障 / 第 1 次 model-idle / 所属组熔断打开
+            //   → 这一轮换一个健康的已启用模型跑（一次性会话，不改 bot.model）
+            const alt = planFallbackForBot({
+              runner, botId: bot.id, fails: attempt - 1, kind: decision.kind,
+              hasImages: (attachments?.length ?? 0) > 0, alreadySwitched: overrideModel !== null,
+            });
+            if (alt) {
+              overrideModel = alt.slug;
+              runner.bus.emit('event', {
+                t: 'bot.retrying', roomId, botId: bot.id, attempt,
+                delayMs: waitMs, kind: decision.kind, switchedTo: alt.label,
+              });
+            }
             res = await runner.run(roomId, bot.id, hinted + prompt, {
               groupTurn: true,
               retryManaged: true,
               taskRunId, attemptIndex: attempt,
               attachments,
               managedContext: itemManaged,
+              ...(overrideModel ? { modelOverride: overrideModel } : {}),
             });
             if (!res.ok) {
               lastError = String(res.error ?? '未知原因');
               lastStatus = res.status ?? null;
             }
+            // ★ 熔断按**真的在跑的那个模型**归属：主组坏着、临时切到好组跑通时，
+            //   绝不能把坏着的组标成健康（照 `markGroupHealthy(bot.id)` 就会这么错）
             if (res.ok) {
-              runner.markGroupHealthy(bot.id);
+              runner.markGroupHealthy(bot.id, overrideModel);
             } else {
               runner.markGroupFailed(bot.id, {
                 kind: decision.kind,
                 status: res.status ?? null,
+                model: overrideModel,
               });
             }
           }
