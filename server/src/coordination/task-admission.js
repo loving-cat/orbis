@@ -49,13 +49,39 @@ export function createRequestScope({
  * 却不知道这是干什么的，也不知道该不该加。
  *
  * 所以默认 maxRuns=null（不限额）。仍然保留**两道真实的安全网**：
- *   · `concurrencyLimit`：同一个根同时只跑一个执行，防并发；
+ *   · `concurrencyLimit`：同一个根同时最多跑几个执行（默认 4，见下）；
  *   · 停滞与重复检测：连续多轮没有新进展会明确停下并说明原因。
  *
  * 需要硬上限时由用户显式配置：
  *   · `ORBIS_TASK_MAX_RUNS`（正整数）→ 所有新任务的根上限；
  *   · 部门预算里的 `maxRuns` → 该部门的根上限（只收紧不放大）。
+ *
+ * ## 并发默认 4：受管子任务本来就该能同时干
+ *
+ * 一个根下面派出去的分工，各自在不同成员的会话里跑，本来互不相干。
+ * 把根并发钉死成 1，等于「部门里 4 个人，一个一个上」—— 用户看到的是
+ * 4 份活排队，而不是 4 个人各干各的。所以默认与调度器的
+ * `DEFAULT_CONCURRENCY` 对齐取 4。
+ *
+ * **并发数是上限，不是「一定要开这么多」**：真正决定某一刻放几个的还有
+ * 同 Bot 互斥（一个成员只有一个会话）、同 tick 文件互斥（别两个活同时写一个文件）
+ * 与上游健康度（熔断时降回 1）。
+ *
+ * 收紧/放宽的入口（只收紧不放大）：
+ *   · `ORBIS_TASK_CONCURRENCY`（1..16）→ 所有新任务的根并发上限；
+ *   · 部门预算里的 `concurrencyLimit` → 该部门的根并发上限。
  */
+export const DEFAULT_TASK_CONCURRENCY = 4;
+/** 并发的合理上限：再多不是「更快」，只是把机器与额度一起打满。 */
+export const MAX_TASK_CONCURRENCY = 16;
+
+/** 只认落在 [min, max] 里的整数；其它（非数字 / 小数 / 越界）一律当作没配。 */
+function positiveIntIn(raw, min, max) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) return null;
+  return n;
+}
+
 export function admissionBudget(env = process.env, groupLimits = null) {
   const raw = Number(readBrandEnv(env, 'TASK_MAX_RUNS'));
   const envMax = Number.isInteger(raw) && raw > 0 ? raw : null;
@@ -66,7 +92,14 @@ export function admissionBudget(env = process.env, groupLimits = null) {
   if (envMax !== null && userCap !== null) maxRuns = Math.min(envMax, userCap);
   else if (envMax !== null) maxRuns = envMax;
   else if (userCap !== null) maxRuns = userCap;
-  return { maxRuns, concurrencyLimit: 1 };
+  // 并发：环境变量与部门上限都只收紧不放大；都没配就是默认 4。
+  const envConc = positiveIntIn(readBrandEnv(env, 'TASK_CONCURRENCY'), 1, MAX_TASK_CONCURRENCY);
+  const groupConc = positiveIntIn(groupLimits?.concurrencyLimit, 1, Number.MAX_SAFE_INTEGER);
+  let concurrencyLimit = DEFAULT_TASK_CONCURRENCY;
+  if (envConc !== null && groupConc !== null) concurrencyLimit = Math.min(envConc, groupConc);
+  else if (envConc !== null) concurrencyLimit = envConc;
+  else if (groupConc !== null) concurrencyLimit = groupConc;
+  return { maxRuns, concurrencyLimit };
 }
 
 export function admissionAuthorize({ taskRunId, revision, requesterId, requestId, fingerprint }) {

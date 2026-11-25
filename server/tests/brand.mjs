@@ -86,12 +86,19 @@ await test('3. 接单开关：默认开启，ORBIS_TASK_INTAKE 生效，旧前�
   assert.equal(intakeEnabled({ [legacyEnv('TASK_INTAKE')]: '0' }), true);
 });
 
-await test('4. 任务上限：ORBIS_TASK_MAX_RUNS 生效，旧前缀不生效', () => {
-  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 1 });
+await test('4. 任务上限：ORBIS_TASK_MAX_RUNS 生效，旧前缀不生效；并发默认 4', () => {
+  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 4 });
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_RUNS: '7' }, null).maxRuns, 7);
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_RUNS: '0' }, null).maxRuns, null, '0 = 不限额');
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_RUNS: 'abc' }, null).maxRuns, null, '非数字 = 不限额');
   assert.equal(admissionBudget({ [legacyEnv('TASK_MAX_RUNS')]: '9' }, null).maxRuns, null, '旧前缀已删');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '6' }, null).concurrencyLimit, 6, '环境变量可覆盖');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '16' }, null).concurrencyLimit, 16, '上限 16 合法');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '17' }, null).concurrencyLimit, 4, '超上限回落默认');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '0' }, null).concurrencyLimit, 4, '0 非法');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: 'abc' }, null).concurrencyLimit, 4, '非数字回落默认');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '2.5' }, null).concurrencyLimit, 4, '小数非法');
+  assert.equal(admissionBudget({ [legacyEnv('TASK_CONCURRENCY')]: '9' }, null).concurrencyLimit, 4, '旧前缀已删');
 });
 
 await test('5. 源码里不再有绕过品牌读取的直接 env.ORBIS_* 读法', () => {

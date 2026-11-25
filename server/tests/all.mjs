@@ -197,6 +197,7 @@ const TESTS = [
   'turn-continuation',
   'long-task-turn',
   'long-task-supervisor',
+  'long-task-parallel',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',

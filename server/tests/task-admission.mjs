@@ -96,9 +96,20 @@ await test('1. createRequestScope 与 admissionFingerprint 附件顺序无关', 
 });
 
 await test('2. admissionBudget 取全局环境变量与部门上限的更紧者，都不配时不限额', () => {
-  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 1 });
-  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '10' }, { maxRuns: 4 }), { maxRuns: 4, concurrencyLimit: 1 });
-  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '3' }, { maxRuns: 8 }), { maxRuns: 3, concurrencyLimit: 1 });
+  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 4 });
+  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '10' }, { maxRuns: 4 }), { maxRuns: 4, concurrencyLimit: 4 });
+  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '3' }, { maxRuns: 8 }), { maxRuns: 3, concurrencyLimit: 4 });
+});
+
+await test('2b. 并发上限：默认 4，环境变量与部门上限只收紧不放大，非法值回落默认', () => {
+  assert.equal(admissionBudget({}, null).concurrencyLimit, 4, '默认 4 份并行');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '2' }, null).concurrencyLimit, 2);
+  assert.equal(admissionBudget({}, { concurrencyLimit: 3 }).concurrencyLimit, 3, '部门上限生效');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '2' }, { concurrencyLimit: 8 }).concurrencyLimit, 2, '两者取更紧');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '9' }, { concurrencyLimit: 6 }).concurrencyLimit, 6, '部门更紧');
+  assert.equal(admissionBudget({}, { concurrencyLimit: 0 }).concurrencyLimit, 4, '部门非法值当作没配');
+  assert.equal(admissionBudget({}, { maxRuns: 5 }).concurrencyLimit, 4, '只配了 maxRuns 时并发仍默认');
+  assert.equal(admissionBudget({ ORBIS_TASK_CONCURRENCY: '' }, null).concurrencyLimit, 4, '空串当没配');
 });
 
 await test('3. admissionAuthorize 拦住错误任务、终态取消、篡改身份/指纹与旧版本', () => {

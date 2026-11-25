@@ -20,7 +20,7 @@ import {
   CONTROL, applyControl, reconcileEarlyControls, descendants as descendantsOf,
 } from './task-controls.js';
 import { childrenOf } from './task-subtasks.js';
-import { fileClaimList, pickBlockingClaim } from './task-file-claims.js';
+import { fileClaimList, pickBlockingClaim, claimsOverlap } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
 import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary, continuationNote } from './task-prompts.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
@@ -35,6 +35,13 @@ const MAX_TRANSIENT_ATTEMPTS = 10;
  */
 /** 没配置时的并发默认值：保守取 4，实际会按部门人数覆盖。 */
 const DEFAULT_CONCURRENCY = 4;
+/**
+ * 这些结果出现时，那次执行肯定已经结算 → 根上的名额真的空出来了。
+ *
+ * ★ 不能把 `retry_scheduled` 也算进来：名额满而让出的任务本来就是
+ *   `retry_scheduled`，算进来会让两个等待者互相唤醒到死循环。
+ */
+const SLOT_FREED = new Set(['completed', 'done', 'cancelled']);
 
 const AUTONOMY_RETRY_LIMIT = 3;
 
@@ -243,6 +250,13 @@ export function createTaskSupervisor({
   const advanceLocks = new Map();
   /** 内联推进子任务时，正在被用掉的 Bot（保证同一个 Bot 不并发）。 */
   const childBusyBots = new Set();
+  /**
+   * 因为「根并发名额已满」而让出、正在等名额的子任务。
+   *
+   * 名额一空（同根某个执行收口）就立刻把它们叫醒，不必傻等满 BUSY_RETRY_MS。
+   * 只放本进程的 ID：进程重启后靠 retryAt 定时器兜底，最多晚 BUSY_RETRY_MS。
+   */
+  const slotWaiters = new Set();
 
   function notify(taskRunId) {
     if (!taskRunId) return;
@@ -310,6 +324,128 @@ export function createTaskSupervisor({
     }
   }
 
+  /**
+   * 本轮父任务最多同时推进几个子任务。
+   *
+   * 取「调度预算」与「根任务预算里的并发上限」中**更紧**的那个：
+   *   · 根预算的 `concurrencyLimit` 是这一个根总共能同时跑几个执行，
+   *     子任务都在同一个根下面，所以不能超过它；
+   *   · `concurrencyBudget()` 里已经含了 `degradeFactor()` —— 上游熔断时
+   *     它降回 1，这里自然跟着缩回串行，不需要另写一套判断。
+   */
+  function childBatchCap(taskRun) {
+    const budget = concurrencyBudget();
+    const rootId = taskRun?.rootTaskId ?? taskRun?.id ?? null;
+    const rootRun = rootId ? read(rootId) : null;
+    const hard = Number(rootRun?.budget?.concurrencyLimit);
+    const rootCap = Number.isInteger(hard) && hard > 0 ? hard : null;
+    return Math.max(1, rootCap === null ? budget : Math.min(budget, rootCap));
+  }
+
+  /**
+   * 这一批还能不能再放进这个子任务。
+   *
+   * 两条硬不变量：
+   *   · **同 Bot 互斥**：一个成员只有一个会话，同时派两份会撞
+   *     「Agent is already processing」；
+   *   · **同 tick 文件互斥**：两个子任务在同一 tick 都还没进 `running` 时，
+   *     `fileClaimBlocker` 看不见对方（它只算「正在持有」的），于是两份活会同时
+   *     读写同一个文件 —— 这里在选批时就按声明路径错开，重登的留到下一波。
+   */
+  function canBatchKid(kid, busyBots, claimedFiles) {
+    const botId = kid.owner?.leadBotId ?? null;
+    if (botId && (busyBots.has(botId) || childBusyBots.has(botId))) return false;
+    const files = claimFilesOf(kid);
+    if (files.length && claimsOverlap(files, [...claimedFiles])) return false;
+    return true;
+  }
+
+  /**
+   * 这个子任务现在值不值得再推一次。
+   *
+   * 受阻的不算「可跑」：它的 `retryAt` 还没到就不该反复重派，
+   * 否则父任务会在这一轮里把同一个受阻子任务重试到步数上限。
+   * 到点（或可恢复阻塞到期）的才算 —— 那时 `runTaskInner` 会先解阻再跑。
+   */
+  function kidRunnableNow(kid) {
+    if (terminal(kid)) return false;
+    if (kid.state !== STATE.blocked) return true;
+    const due = Number(kid.retryAt);
+    return Number.isFinite(due) && due <= clock();
+  }
+
+  /**
+   * 按负责人安排的优先级挑出本批子任务（最多 `cap` 个）。
+   *
+   * 优先级数字小的先跑；没排过的按 0，保证「没指定顺序」不会比
+   * 「明确排第一」更优先。
+   */
+  function pickKidBatch(liveKids, cap) {
+    const limit = Math.max(0, Math.floor(Number(cap) || 0));
+    if (!limit) return [];
+    const busyBots = new Set();
+    const claimedFiles = new Set();
+    const batch = [];
+    const ordered = [...liveKids].sort((a, b) => priorityOf(a) - priorityOf(b));
+    for (const kid of ordered) {
+      if (batch.length >= limit) break;
+      if (!kidRunnableNow(kid)) continue;
+      if (!canBatchKid(kid, busyBots, claimedFiles)) continue;
+      batch.push(kid);
+      const botId = kid.owner?.leadBotId ?? null;
+      if (botId) busyBots.add(botId);
+      for (const file of claimFilesOf(kid)) claimedFiles.add(file);
+    }
+    return batch;
+  }
+
+  /**
+   * 内联推进一个子任务一次。
+   *
+   * 同 Bot 互斥的登记与释放都在这里（调度器的 `launch()` 里另有一份，两处必须
+   * 用同一个 `childBusyBots` —— 否则父任务内联推进绕过了调度器的那份）。
+   */
+  async function runKidOnce(kid) {
+    const kidBot = kid.owner?.leadBotId ?? null;
+    if (kidBot && childBusyBots.has(kidBot)) return { status: 'wait', why: '成员正在别的分工上干活' };
+    if (kidBot) childBusyBots.add(kidBot);
+    try {
+      return await runTask(kid.id);
+    } finally {
+      if (kidBot) childBusyBots.delete(kidBot);
+    }
+  }
+
+  /**
+   * 名额空出来了：把同根里等名额的子任务立刻叫醒。
+   *
+   * 只动「因为并发名额满而让出」的那些（`slotWaiters` 精确登记）；
+   * 上游退避、文件占用、执行者忙各有自己的节奏，一律不碰。
+   *
+   * `justFinished` 是刚结束的那个任务：它自己也在等名额时不能叫醒自己，
+   * 否则「撞门 → 让出 → 唤醒自己 → 又撞门」会变成死循环。
+   */
+  async function wakeSlotWaiters(taskRun, justFinished = null) {
+    if (!slotWaiters.size) return 0;
+    const rootId = taskRun?.rootTaskId ?? taskRun?.id ?? null;
+    if (!rootId) return 0;
+    let woken = 0;
+    for (const id of [...slotWaiters]) {
+      if (justFinished && id === justFinished) continue;
+      const run = read(id);
+      if (!run || terminal(run) || (run.rootTaskId ?? run.id) !== rootId) {
+        if (!run || terminal(run)) slotWaiters.delete(id);
+        continue;
+      }
+      slotWaiters.delete(id);
+      // 让出时排的是 BUSY_RETRY_MS，这里直接抹掉等它到点的那段：名额已经有了。
+      await patch(id, { retryAt: null });
+      notify(id);
+      woken += 1;
+    }
+    return woken;
+  }
+
   function schedule() {
     if (draining) return;
     draining = Promise.resolve()
@@ -336,6 +472,10 @@ export function createTaskSupervisor({
           if (active.length && inflight.has(id)) return false;
           const botId = taskRun?.owner?.leadBotId ?? null;
           if (botId && busyBots.has(botId)) return false;
+          // ★ 同一个 Bot 也不能跟「父任务内联推进」撞车：
+          //   内联那条路用的是 `childBusyBots`，调度器只看自己的 `busyBots` ——
+          //   两份各看各的，就会把同一份活派给同一个会话两次。
+          if (botId && childBusyBots.has(botId)) return false;
           return true;
         };
 
@@ -351,8 +491,9 @@ export function createTaskSupervisor({
           running.add(id);
           if (botId) busyBots.add(botId);
           const p = (async () => {
+            let outcome = null;
             try {
-              await runTask(id);
+              outcome = await runTask(id);
             } catch (err) {
               log('推进任务失败：', id, err?.message || err);
               // ★ 抛异常不能让任务静死。
@@ -371,6 +512,12 @@ export function createTaskSupervisor({
               running.delete(id);
               if (botId) busyBots.delete(botId);
               active.delete(id);
+              // ★ 只有「真的收口了」才算名额空出来。
+              //
+              //   不能无条件叫醒：一个因为名额满而让出的任务，它自己的 finally
+              //   就会把自己再叫醒一次 —— 名额没空，于是又撞门、又让出、又唤醒，
+              //   两个等待者能这样互相唤醒到进程堆爆（实测直接 OOM）。
+              if (SLOT_FREED.has(outcome?.status)) wakeSlotWaiters(taskRun, id).catch(() => {});
               // 有人空出来就继续排，不用等整批做完。
               setImmediate(() => schedule());
             }
@@ -640,6 +787,9 @@ export function createTaskSupervisor({
 
   async function runTaskInner(taskRunId) {
     let yielded = false;
+    // 本轮唤醒里已经推进过（或试过但没成）的子任务：同一轮不反复重派。
+    // 上游退避/名额满/文件占用都会把子任务排到未来，反复重派只会原地空转。
+    const triedKids = new Set();
     // ★ 连续无实质进展的唤醒次数上界。
     //
     //   maxSteps 只限制"一次唤醒里走多少步"，用尽后让出、下一个事件又唤醒它。
@@ -689,25 +839,30 @@ export function createTaskSupervisor({
       const liveKids = kids.filter((k) => !terminal(k));
       if (liveKids.length) {
         let progressed = false;
-        for (const kid of liveKids) {
-          // ★ 内联推进子任务时也要尊重「同一个 Bot 同时只跑一个」。
-          //
-          //   这条不变量原来只在调度器的 launch() 里生效；父任务内联
-          //   调用 runTask(kid) 完全绕过了它 —— 于是同一个 Bot 的两个执行
-          //   真的会并发跑（实测 load=2），撞同一个会话。
-          //   这里显式检查：孩子用的 Bot 正在忙，就等下一轮，不硬上。
-          const kidBot = kid.owner?.leadBotId ?? null;
-          if (kidBot && childBusyBots.has(kidBot)) continue;
-          if (kidBot) childBusyBots.add(kidBot);
-          let out;
-          try {
-            out = await runTask(kid.id);
-          } finally {
-            if (kidBot) childBusyBots.delete(kidBot);
+        // ★ 子任务按「受控并发」推进，不再一份一份串着来。
+        //
+        //   部门里 4 个人各领一份分工时，串行推进等于让他们排队上；而每个
+        //   成员的会话本来就互相独立。并发度由三样东西共同决定：
+        //     · `concurrencyBudget()`（部门人数；上游熔断时降回 1）；
+        //     · 根预算里的 `concurrencyLimit`（同一个根总共能同时跑几个）；
+        //     · 同 Bot 互斥与文件互斥（真正硬的那两条不变量）。
+        const cap = childBatchCap(taskRun);
+        // 本批之外已经试过的不再重复试；下一波（有进展）时才清空。
+        const batch = pickKidBatch(liveKids.filter((k) => !triedKids.has(k.id)), cap);
+        let batchResults = [];
+        if (batch.length) {
+          // ★ 逐个子任务独立收尾：一个抛异常不能带走同批里别人的进度。
+          batchResults = await Promise.allSettled(batch.map((kid) => runKidOnce(kid)));
+        }
+        for (let i = 0; i < batch.length; i += 1) {
+          const kid = batch[i];
+          triedKids.add(kid.id);
+          const settled = batchResults[i];
+          if (!settled || settled.status === 'rejected') {
+            log('推进子任务失败：', kid.id, settled?.reason?.message || settled?.reason);
+            continue;
           }
-          if (out.status === 'wait') {
-            return { status: 'wait', why: '子任务未完成', child: kid.id };
-          }
+          const out = settled.value ?? { status: 'wait' };
           // ★ 受阻的子任务**不在这里提前返回**。
           //
           //   原来受阻和等待一样直接 return wait —— 于是下面那段
@@ -715,12 +870,26 @@ export function createTaskSupervisor({
           //   父任务停在「排队中」，停滞计数不涨，也没有任何人会再唤醒它。
           //   实机：调研任务的成员一次超时后受阻，根任务在「排队中」挂了 5 小时，
           //   直到用户手动取消。先看完其它子任务，再统一判定是不是全卡住了。
-          if (out.status === 'blocked') continue;
+          //
+          //   并发推进之后「等待」也一并不能提前返回：同批里另一个子任务
+          //   可能正好收口，提前返回会把这一批的结果丢掉。
+          if (out.status === 'blocked' || out.status === 'wait') continue;
           if (out.status === 'completed' || out.status === 'done' || out.status === 'cancelled') {
             progressed = true;
           }
         }
+        // ★ 本批真的收口了 → 根名额已经空出，立刻叫醒等名额的兄弟。
+        //   必须写在设 `progressed` 的循环**之后**：写在前面时 progressed 恒为
+        //   false，这句永远不执行，等着名额的子任务只能傻等满 BUSY_RETRY_MS。
+        if (progressed) await wakeSlotWaiters(taskRun);
         if (!progressed) {
+          // ★ 本批之外还有「从没试过、现在就能跑」的子任务 → 接着下一波。
+          //
+          //   并发度可能小于待办数（根预算紧 / 上游降级 / 两个子任务抢同一个 Bot）。
+          //   这时干等着没有任何意义：能跑的先跑，跑不上的等事件。
+          const pending = childrenOf(taskRuns, read(taskRunId) ?? taskRun)
+            .filter((k) => !terminal(k) && !triedKids.has(k.id));
+          if (pickKidBatch(pending, cap).length) continue;
           // ★ 子任务全部停住时，父任务不能无限「等」。
           //
           //   原来直接 return wait：父任务永久停在 queued，停滞计数不增加，
@@ -787,6 +956,8 @@ export function createTaskSupervisor({
           }
           return { status: 'wait', why: '子任务推进中' };
         }
+        // 有子任务收口 → 下一波重新试（名额与文件占用可能刚松开）
+        triedKids.clear();
         continue;
       }
 
@@ -1343,6 +1514,22 @@ export function createTaskSupervisor({
       await patch(id, { nextAction: null });
       const paused = await settle(id, { type: EVENT.budget_exhausted, revision: taskRun.revision, at: clock() });
       if (paused.ok) return { status: 'paused_budget' };
+    }
+    // ★ 并发名额满了**不是失败**：等一个正在跑的执行收口，名额自然会空出来。
+    //
+    //   以前这里落到下面「预留/登记阶段的生命周期拒绝 → 立即 block」：
+    //   一次临时的名额占用会把子任务**永久打死成受阻** —— 用户看到
+    //   「成员受阻」，而实际上什么都没错，再等一会儿就能跑。
+    //   现在按「执行者还在忙」同一套处理：不 block、不累加 retry.count、
+    //   不累加 stall，只排一个很快到期的重派；名额一空会被
+    //   wakeSlotWaiters 立刻叫醒，不必傻等满 BUSY_RETRY_MS。
+    if (out.phase === 'reserved' && out.code === 'concurrency_limit') {
+      const dueAt = clock() + BUSY_RETRY_MS;
+      await patch(id, { nextAction: null, retryAt: dueAt });
+      slotWaiters.add(id);
+      setTimer(dueAt, id);
+      log('并发名额已满，排到下一轮：' + id);
+      return { status: 'retry_scheduled', dueAt, why: '并发名额已满，稍后重派' };
     }
     // 预留/登记阶段的生命周期拒绝（如 already_refunded）：立即明确失败，不安排重试
     if (['reserved', 'started', 'dispatched'].includes(out.phase)) {
