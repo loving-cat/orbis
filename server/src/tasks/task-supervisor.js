@@ -852,19 +852,6 @@ export function createTaskSupervisor({
       // 本人暂停：直接等待，不遍历/推进任何子任务
       if (PAUSED.has(taskRun.state)) return { status: 'wait', why: '任务暂停' };
 
-      // ★ Token 预算用尽：**派发前**就干净停下（不派子任务、不调模型），
-      //   而不是先跑一轮再被 reserveRootBudget 拒掉。子任务共享根预算，同样受这道闸门管。
-      if (remainingTokensOf(taskRun) <= 0) {
-        const rootId = taskRun.rootTaskId ?? taskRun.id;
-        const rootBudget = (rootId === taskRun.id ? taskRun : read(rootId))?.budget ?? {};
-        await settle(taskRun.id, {
-          type: EVENT.budget_exhausted, revision: taskRun.revision, at: clock(),
-          reason: `Token 预算已用尽（${rootBudget.usedTokens ?? 0}/${rootBudget.maxTokens}）`,
-        });
-        await patch(taskRun.id, { nextAction: null });
-        return { status: 'paused_budget', why: 'root_tokens_exhausted' };
-      }
-
       const ancestor = ancestorBlocked(taskRun);
       if (ancestor.blocked) {
         await patch(taskRunId, { nextAction: null });
@@ -963,6 +950,22 @@ export function createTaskSupervisor({
           //   把它当成「全部受阻」会让父任务：自主模式下把还在等的分工**取消掉**
           //   交回负责人重排（等于把正在自愈的活掐死），非自主模式直接阻塞父任务。
           //   所以只要还有一个子任务在可恢复阻塞里，就老实等着它恢复。
+          // ★ 子任务共享根预算：它因为 token 用尽进了 paused_budget 时，父任务也要跟着停，
+          //   否则父任务会停在「排队中」傻等一个再也不会自己动起来的分工。
+          //   （子任务自己先跑完 verify/deliver —— 零 token 的验收与交付照旧能做。）
+          if (stuck.length && stuck.every((k) => k.state === STATE.paused_budget)) {
+            const parentNow2 = read(taskRunId) ?? taskRun;
+            const rootId = parentNow2.rootTaskId ?? parentNow2.id;
+            const rootBudget = (rootId === parentNow2.id ? parentNow2 : read(rootId))?.budget ?? {};
+            const paused = await settle(taskRunId, {
+              type: EVENT.budget_exhausted, revision: parentNow2.revision, at: clock(),
+              reason: `Token 预算已用尽（${rootBudget.usedTokens ?? 0}/${rootBudget.maxTokens}）`,
+            });
+            if (paused.ok) {
+              await patch(taskRunId, { nextAction: null });
+              return { status: 'paused_budget', why: 'children_tokens_exhausted' };
+            }
+          }
           const resumable = stuck.find((k) => k.state === STATE.blocked && k.recoverableBlock);
           if (resumable) {
             return {

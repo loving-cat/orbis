@@ -996,28 +996,29 @@ function planResume(run, event) {
     //
     //   extraRuns 是累计追加次数，只看它 > 0 等于：追加过一次之后，
     //   此后任何一次预算用尽都能直接点「继续」绕过 —— 额度形同虚设。
-    //   这里改成看剩余：追加额度 + 基础额度 - 已用。
+    //
+    // ★ 两个维度**各自独立**核验，不能互锁：只扩了超额的那个维度，
+    //   没超额的维度本来就「不需要扩」，要求它也有 extra > 0 会让暂停永远解不开。
+    const shared = run.budget?.sharedWithRoot === true;
     const maxRuns = run.budget?.maxRuns ?? null;
-    const used = Number(run.budget?.usedRuns ?? 0);
-    const ownExtra = Number(run.budget?.extraRuns ?? 0);
-    const shared = run.budget?.sharedWithRoot === true
-      ? Number(run.budget?.sharedExtraRuns ?? 0) : 0;
-    const extra = ownExtra + shared;
-    const remaining = maxRuns === null ? Infinity
-      : (Number(maxRuns) + extra) - (Number.isInteger(used) ? used : 0);
-    const exhaustedByRuns = maxRuns !== null && (!(remaining > 0) || extra <= 0);
-    // ★ Token 维度同样逐条核验：只扩了次数不能把 token 用尽的任务放过去，
-    //   反之亦然 —— 否则「裸 resume」就成了绕过预算的后门。
+    const usedRuns = Number(run.budget?.usedRuns ?? 0);
+    const totalExtraRuns = Number(run.budget?.extraRuns ?? 0)
+      + (shared ? Number(run.budget?.sharedExtraRuns ?? 0) : 0);
     const maxTokens = run.budget?.maxTokens ?? null;
     const usedTokens = Number(run.budget?.usedTokens ?? 0);
-    const extraTokens = Number(run.budget?.extraTokens ?? 0);
-    const exhaustedByTokens = maxTokens !== null
-      && (extraTokens <= 0 || usedTokens >= Number(maxTokens));
-    if (exhaustedByRuns || exhaustedByTokens) {
+    // 子任务不持有自己的 token 上限（共享根），这里只认它记下的「根已扩额」事实
+    const totalExtraTokens = Number(run.budget?.extraTokens ?? 0)
+      + (shared ? Number(run.budget?.sharedExtraTokens ?? 0) : 0);
+
+    const runsOk = maxRuns === null
+      || (Number(maxRuns) + totalExtraRuns) - (Number.isInteger(usedRuns) ? usedRuns : 0) > 0;
+    const tokensOk = maxTokens === null || usedTokens < (Number(maxTokens) + totalExtraTokens);
+    const hasExtension = totalExtraRuns > 0 || totalExtraTokens > 0;
+    if (!runsOk || !tokensOk || !hasExtension) {
       return reject(
         REJECT.budgetNotExtended,
         'budget',
-        exhaustedByTokens && maxTokens !== null
+        maxTokens !== null && !tokensOk
           ? 'Token 预算没有可用的追加额度，不能继续（请先追加额度）'
           : '预算没有可用的追加额度，不能继续（请先追加额度）',
       );

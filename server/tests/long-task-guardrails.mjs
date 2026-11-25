@@ -415,6 +415,159 @@ await test('★ 4d. admissionBudget：ORBIS_TASK_MAX_TOKENS 与部门上限取�
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_TOKENS: '0' }, null).maxTokens, null);
 });
 
+
+// ---------------------------------------------------------------------------
+// 5. 预算恢复的边界（P1 回归）
+// ---------------------------------------------------------------------------
+
+/** 直接问归约器：这份预算下 EVENT.resumed 能不能通过。 */
+let rvSeq = 0;
+function resumeVerdict(budget) {
+  // 用真工厂造一条合法记录，再换成目标预算/状态 —— 自己拼字段会被结构校验拒掉
+  rvSeq += 1;
+  const built = createTaskRun({
+    id: 'tr_rv' + rvSeq, requestId: 'rq_rv' + rvSeq, requesterId: 'local', at: Date.now(),
+    origin: { roomId: room.id }, owner: { departmentId: room.id, leadBotId: chief.id },
+    budget: { maxRuns: null },
+    goal: { requirement: '恢复判定用例', verification: [{ id: 'v1', kind: 'expert', description: 'x' }] },
+  });
+  // 状态一致性校验会核对「预算暂停」这个事实：必须带上 budgetPausedAt
+  const base = {
+    ...built.taskRun, state: 'paused_budget', budget,
+    flags: { ...(built.taskRun.flags ?? {}), budgetPausedAt: Date.now() },
+  };
+  return reduceTaskRun(base, {
+    type: EVENT.resumed, revision: base.revision, at: Date.now(), sequence: (base.sequence ?? 0) + 1,
+  });
+}
+
+async function pauseForBudget(rootId) {
+  const sup = makeSupervisor({ execute: async () => assert.fail('预算用尽时不该调执行器') });
+  sup.notify(rootId);
+  const run = await waitUntil(sup, rootId, (r) => r.state === 'paused_budget');
+  sup.dispose();
+  assert.equal(run.state, 'paused_budget', '应停在预算暂停，实际 ' + run.state);
+  return run;
+}
+
+await test('★ 5a. 双维度不互锁：只扩超额的那个维度就能恢复', async () => {
+  // token 超额、次数富余 → 只扩 extraTokens 能过
+  const okTokens = resumeVerdict({
+    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: 1000, usedTokens: 1100, extraTokens: 1000,
+  });
+  assert.equal(okTokens.ok, true, '只扩 token 就该能恢复（旧实现会因 extraRuns 也必须是正数而互锁）');
+
+  // 反例：只扩次数（token 仍超额）→ 仍拒绝
+  const badTokens = resumeVerdict({
+    maxRuns: 10, usedRuns: 1, extraRuns: 5, maxTokens: 1000, usedTokens: 1100, extraTokens: 0,
+  });
+  assert.equal(badTokens.ok, false, 'token 还超额时只扩次数不能放行');
+  assert.equal(badTokens.code, 'budget_not_extended');
+
+  // 镜像：次数用尽、token 富余 → 只扩 extraRuns 能过
+  const okRuns = resumeVerdict({
+    maxRuns: 1, usedRuns: 1, extraRuns: 5, maxTokens: 1000, usedTokens: 100, extraTokens: 0,
+  });
+  assert.equal(okRuns.ok, true, '只扩次数就该能恢复');
+
+  // 裸 resume（两个维度都没扩）→ 拒绝
+  const bare = resumeVerdict({
+    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: 1000, usedTokens: 1100, extraTokens: 0,
+  });
+  assert.equal(bare.ok, false, '裸 resume 不能绕过');
+
+  // 只设了 maxRuns 的老预算：行为与以前完全一致
+  const legacyOk = resumeVerdict({ maxRuns: 10, usedRuns: 1, extraRuns: 3 });
+  assert.equal(legacyOk.ok, true);
+  const legacyBare = resumeVerdict({ maxRuns: 10, usedRuns: 1, extraRuns: 0 });
+  assert.equal(legacyBare.ok, false);
+
+  // 共享子任务：读 sharedExtraTokens（子任务自己不持有 maxTokens）
+  const shared = resumeVerdict({
+    maxRuns: 10, usedRuns: 1, extraRuns: 0, maxTokens: null, usedTokens: 0, extraTokens: 0,
+    sharedWithRoot: true, sharedExtraTokens: 1000,
+  });
+  assert.equal(shared.ok, true, '子任务要能看到根扩的 token 额度');
+});
+
+await test('★ 5b. 端到端：token 超额进 paused_budget → 只扩 extraTokens 就能继续跑', async () => {
+  const rootId = await makeRoot({ maxTokens: 1000 });
+  await taskRuns.mutate(rootId, {
+    mutate: (cur) => ({ ...cur, budget: { ...cur.budget, maxRuns: 10 } }),
+  });
+  await burnTokens(rootId, { attemptId: 'a_over_1', tokens: 1100 });
+  await pauseForBudget(rootId);
+
+  const extended = await extendRootBudget({
+    store: taskRuns, rootTaskId: rootId, extraTokens: 1000, at: Date.now(),
+  });
+  assert.equal(extended.ok, true, '只扩 token 应成功：' + (extended.text ?? extended.code ?? ''));
+  const verdict = resumeVerdict(taskRuns.read(rootId).taskRun.budget);
+  assert.equal(verdict.ok, true, '扩额后 resume 应通过归约器：' + (verdict.code ?? '') + ' ' + (verdict.text ?? ''));
+});
+
+await test('★ 5c. 子任务因根 token 用尽进 paused_budget → 根扩额后父子都干净恢复', async () => {
+  const rootId = await makeRoot({ maxTokens: 1000 });
+  const kidId = await addKid(rootId);
+  assert.equal(taskRuns.read(kidId).taskRun.budget.maxTokens, null, '子任务不持有自己的 maxTokens（共享根预算）');
+
+  // 子任务这一轮把根预算烧超（等价于「它刚跑完最后一次」）
+  await burnTokens(rootId, { taskRunId: kidId, attemptId: 'a_kid_over_1', tokens: 1100 });
+
+  const sup = makeSupervisor({ execute: async () => assert.fail('不该调执行器'), executeMember: async () => assert.fail('不该调成员') });
+  sup.notify(kidId);
+  const kidPaused = await waitUntil(sup, kidId, (r) => r.state === 'paused_budget');
+  assert.equal(kidPaused.state, 'paused_budget', '子任务应停在预算暂停，实际 ' + kidPaused.state);
+
+  const extended = await sup.onBudgetExtended(kidId, { extraTokens: 1000 });
+  assert.equal(extended.ok, true, '根扩额应成功：' + (extended.text ?? extended.code ?? ''));
+  const rootAfter = taskRuns.read(rootId).taskRun;
+  const kidAfter = taskRuns.read(kidId).taskRun;
+  sup.dispose();
+
+  assert.equal(rootAfter.budget.maxTokens, 2000);
+  assert.equal(rootAfter.budget.extraTokens, 1000);
+  assert.notEqual(kidAfter.state, 'paused_budget', '子任务要跟着恢复，实际 ' + kidAfter.state);
+  assert.equal(kidAfter.budget.maxTokens, null, '子任务恢复后仍不存自己的 maxTokens');
+  assert.equal(kidAfter.budget.sharedExtraTokens, 1000, '子任务要看到根扩的 token 额度');
+});
+
+await test('★ 5d. 最后一步跨过上限：0-token 的验收与交付照旧能做完', async () => {
+  const rootId = await makeRoot({ maxTokens: 100 });
+  const sup = makeSupervisor({
+    execute: async () => {
+      // 这一轮执行结算后把预算烧超（现场：最后一次执行刚好跨过上限）
+      await burnTokens(rootId, { attemptId: 'a_last_1', tokens: 200 });
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: ['out/report.md'] };
+    },
+    verify: async () => ({ passed: true, reason: '测试验收通过：产物已登记' }),
+  });
+  sup.notify(rootId);
+  const run = await waitUntil(sup, rootId, (r) => r.state === 'completed' || r.state === 'paused_budget');
+  sup.dispose();
+  assert.equal(run.state, 'completed', `跨额的最后一步仍要能验收+交付完成，实际 ${run.state}`);
+  assert.ok(run.delivery, '要真的交付了，而不是停在验收中');
+});
+
+await test('★ 5e. pause → resume 会清掉旧的 nonRetriableBlock', async () => {
+  const id = await makeRoot();
+  const sup = makeSupervisor({
+    execute: async () => ({ ok: false, stop: 'failed', error: '401 unauthorized：鉴权失败', status: 401 }),
+  });
+  sup.notify(id);
+  const blocked = await waitUntil(sup, id, (r) => r.state === 'blocked');
+  assert.equal(blocked.nonRetriableBlock?.kind, 'auth');
+
+  const paused = await sup.onControl(id, { type: 'pause', reason: '先停一下' });
+  assert.equal(paused.ok, true, '暂停应成功：' + (paused.text ?? paused.code ?? ''));
+  const resumed = await sup.onControl(id, { type: 'resume' });
+  assert.equal(resumed.ok, true, '继续应成功：' + (resumed.text ?? resumed.code ?? ''));
+  const after = taskRuns.read(id).taskRun;
+  sup.dispose();
+  assert.equal(after.nonRetriableBlock ?? null, null, '暂停→继续后不能残留不可恢复标记');
+  assert.ok(!['paused_user', 'blocked'].includes(after.state), '要真的回到可推进状态，实际 ' + after.state);
+});
+
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);
 }

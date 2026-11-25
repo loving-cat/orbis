@@ -176,6 +176,11 @@ export async function applyControl({
         type: EVENT.unblocked, revision: resumed.taskRun.revision, at: clock(),
         reason: '用户继续任务，同时解除原有阻塞',
       });
+      // ★ 与手动 unblock 对称：暂停→继续也是「我处理过了」，旧的不可恢复标记
+      //   必须一起清掉，否则恢复后仍会被判死、连普通失败都走不了自主重试。
+      await patch(taskRunId, {
+        recoverableBlock: null, retryAt: null, retry: null, stall: null, nonRetriableBlock: null,
+      });
     }
     notify(taskRunId);
     return { ok: true, applied: true, alsoUnblocked: stillBlocked };
