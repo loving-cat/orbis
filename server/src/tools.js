@@ -541,7 +541,7 @@ export function buildCommonTools({
         limit: Type.Optional(Type.Number({ description: '最多返回几个窗口，默认 20，最多 40' })),
       }),
       execute: async (_toolCallId, { limit }) => {
-        const r = listWindows({ limit: Math.min(Math.max(Number(limit) || 20, 1), 40) });
+        const r = await listWindows({ limit: Math.min(Math.max(Number(limit) || 20, 1), 40) });
         if (!r.ok) return fail(`看不了桌面窗口：${r.error}`);
         if (!r.windows.length) return ok('当前没有可见窗口。');
         const lines = r.windows.map((w, i) => describeWindow(w, i));
@@ -566,7 +566,7 @@ export function buildCommonTools({
         let target = null;
         let scopeLabel = '整屏';
         if (!fullScreen) {
-          const list = listWindows({ limit: 40 });
+          const list = await listWindows({ limit: 40 });
           if (!list.ok) return fail(`看不了桌面窗口：${list.error}`);
           if (!list.windows.length) return fail('当前没有可截的窗口。');
           if (Number(index) >= 1) {
@@ -588,7 +588,7 @@ export function buildCommonTools({
         //   workspace 里的新文件会被 changed_files 扫到、可能被自动附件发出去。
         const taskId = runner.currentTaskContext?.(roomId, botId)?.taskRunId ?? null;
         const spot = screenshotPath({ dataDir: config.dataDir, taskId, botId });
-        const shot = captureScreenshot({ outFile: spot.file, window: target, fullScreen: !!fullScreen });
+        const shot = await captureScreenshot({ outFile: spot.file, window: target, fullScreen: !!fullScreen });
         if (!shot.ok) return fail(`截图失败：${shot.error}`);
 
         // 把图交给模型看（type: 'image' 是 SDK 约定的图片内容块）
@@ -678,7 +678,7 @@ export function buildCommonTools({
             //   本机实测：装着远程控制工具时 GetLastInputInfo 永远报"刚刚有人动"，
             //   接管检测于是永远判"用户在动"，第一次输入永远发不出去，而文案说的是
             //   "用户在动" —— 用户本人根本没动。这种时候得多说一句。
-            const noise = desktopInputPlatform().sampleNoise();
+            const noise = await desktopInputPlatform().sampleNoise();
             const extra = !noise.ok ? ''
               : noise.kind === 'phantom'
                 ? `
@@ -715,7 +715,7 @@ export function buildCommonTools({
             return ok(`租约已续到 ${new Date(r.expiresAt).toLocaleTimeString()}。`, { expiresAt: r.expiresAt });
           }
           const ttlMs = Number(ttlSeconds) > 0 ? Math.min(Number(ttlSeconds), 600) * 1000 : undefined;
-          const r = session.acquireLease({ taskId, botId, generation, ...(ttlMs ? { ttlMs } : {}) });
+          const r = await session.acquireLease({ taskId, botId, generation, ...(ttlMs ? { ttlMs } : {}) });
           if (!r.ok) {
             // 排队不是错误，所以不返回 isError：让模型知道"等一等"而不是"坏了"
             return ok(`${r.text}${r.queued ? `（你在第 ${r.position} 位）` : ''}`, {
@@ -786,7 +786,7 @@ export function buildCommonTools({
           const to = Number.isFinite(input.toX) && Number.isFinite(input.toY)
             ? { x: Number(input.toX), y: Number(input.toY) }
             : null;
-          const r = session.act({
+          const r = await session.act({
             identity: { taskId, botId, epoch: Number(input.epoch) },
             input: {
               action: input.action,

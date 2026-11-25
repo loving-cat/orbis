@@ -8,10 +8,11 @@
  * 为什么手动：这些数字受机器负载影响（远程控制软件、别的构建在跑），
  * 拿它当 CI 门槛会变成环境彩票。它是**立项/验收用的尺子**，不是回归测试。
  *
- * 量三件事（§5.6 阶段 A 的验收指标）：
- *   1. 单次只读探针 p50（`probeEnvironment`，目标 ≤ 40 ms）
- *   2. `listWindows()` p50（目标 ≤ 60 ms）
- *   3. 上述调用期间**事件循环最大卡顿**（目标 ≤ 50 ms）
+ * 量四件事（§5.6 阶段 A / 阶段 B 的验收指标）：
+ *   1. 单次只读探针 p50（`probeEnvironment`：阶段 A ≤ 40 ms、**阶段 B ≤ 2 ms**）
+ *   2. `listWindows()` p50（阶段 A ≤ 60 ms、**阶段 B ≤ 5 ms**）
+ *   3. 上述调用期间**事件循环最大卡顿**（阶段 A ≤ 50 ms、**阶段 B ≤ 5 ms**）
+ *   4. `captureScreenshot()` p50（阶段 B ≤ 150 ms，且不阻塞事件循环）
  *
  * 实现方式：父进程按 `--impl` 拉起自己，子进程里 `process.env.ORBIS_DESKTOP_WIN_IMPL`
  * 决定走哪条路（helperState 是进程内缓存，所以要分进程量）。
@@ -79,9 +80,16 @@ async function measure(impl) {
   // ★ 首调里含着模块初始化 / 助手版本+哈希校验 / DWM 首次枚举 —— 那些是**一次性**开销，
   //   算进"稳态卡顿"只会得到一条假红线。首调单独记下来（它决定第一次桌面动作要等多久）。
   const firstT0 = performance.now();
-  di.probeEnvironment();
+  await di.probeEnvironment();
   const firstCallMs = performance.now() - firstT0;
-  obs.listWindows({ limit: 5 });
+  await obs.listWindows({ limit: 5 });
+
+  // ★ 空转基线：Windows 的 setInterval(5ms) 实际会被系统计时器粒度
+  //   （~15.6 ms）合并，所以「最大间隔」有一个 15–16 ms 的地板。
+  //   不先量一条空转基线，就会把计时器粒度当成「事件循环被堵了」。
+  const baselineProbe = startStallProbe();
+  await new Promise((r) => setTimeout(r, 200));
+  const baseline = baselineProbe.stop();
 
   const stall = startStallProbe();
 
@@ -90,16 +98,37 @@ async function measure(impl) {
   const yieldTick = () => new Promise((r) => setTimeout(r, 0));
   for (let i = 0; i < 20; i += 1) {
     const t0 = performance.now();
-    di.probeEnvironment();
+    await di.probeEnvironment();
     probeTimes.push(performance.now() - t0);
     await yieldTick();
   }
   for (let i = 0; i < 10; i += 1) {
     const t0 = performance.now();
-    obs.listWindows({ limit: 10 });
+    await obs.listWindows({ limit: 10 });
     winTimes.push(performance.now() - t0);
     await yieldTick();
   }
+  // 截图（§5.6 阶段 B：≤ 150 ms 且不阻塞事件循环）
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const shotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-perf-shot-'));
+  const shotTimes = [];
+  const shotStall = startStallProbe();
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    try {
+      await obs.captureScreenshot({
+        outFile: path.join(shotDir, `shot-${i}.png`),
+        fullScreen: true,
+        maxEdge: 1600,
+      });
+    } catch { /* 无桌面时跳过：数字为空不代表失败 */ }
+    shotTimes.push(performance.now() - t0);
+    await yieldTick();
+  }
+  const shotGaps = shotStall.stop();
+  try { fs.rmSync(shotDir, { recursive: true, force: true }); } catch {}
   const gaps = stall.stop();
 
   const sortedProbe = probeTimes.slice().sort((a, b) => a - b);
@@ -114,6 +143,11 @@ async function measure(impl) {
     listWindowsP90Ms: Math.round(percentile(sortedWin, 0.9)),
     maxStallMs: Math.round(gaps.maxStallMs),
     p99GapMs: Math.round(gaps.p99GapMs ?? 0),
+    // 空转时同样口径的最大间隔 = 这台机器的计时器地板；真实的「我们造成的阻塞」
+    // 应该是 maxStallMs - baselineGapMs（负数按 0 算）。
+    baselineGapMs: Math.round(baseline.maxStallMs ?? 0),
+    captureP50Ms: Math.round(percentile(shotTimes.slice().sort((a, b) => a - b), 0.5) ?? 0),
+    captureMaxStallMs: Math.round(shotGaps.maxStallMs),
   };
 }
 

@@ -123,14 +123,14 @@ function onboardingProjects(cfg = defaultConfig) {
   ];
 }
 
-function desktopProbe() {
+async function desktopProbe() {
   const now = Date.now();
   if (desktopProbeCache.value && now - desktopProbeCache.at < DESKTOP_PROBE_TTL) {
     return desktopProbeCache.value;
   }
   let value;
   try {
-    value = desktopInputPlatform().probeEnvironment();
+    value = await desktopInputPlatform().probeEnvironment();
   } catch (err) {
     // 探针自己炸了也是“实际结果”的一部分：按失败报，不当成可用。
     value = { ok: false, code: 'call_failed', text: `探针抛异常：${err?.message ?? err}` };
@@ -795,7 +795,7 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
       if (pathname === '/api/desktop-settings' && req.method === 'GET') {
         let environment = null;
         try {
-          environment = desktopInputSession().inputEnvironment?.() ?? null;
+          environment = (await desktopInputSession().inputEnvironment?.()) ?? null;
         } catch { /* 探针没装配时就是 null，不影响读设置 */ }
         return send(res, 200, { settings: store.desktopSettings(), environment });
       }
@@ -813,7 +813,7 @@ export function createRequestHandler({ runner, pairing, sites = createSiteRuntim
             bots: store.listBots(),
             projects: onboardingProjects(config),
             grants: store.state.grants ?? [],
-            desktop: desktopStatusOf(desktopProbe()),
+            desktop: desktopStatusOf(await desktopProbe()),
             mcpServerCount: store.mcpLibrary().length,
             platform: process.platform,
           }),

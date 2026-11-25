@@ -85,14 +85,14 @@ function freshTools(isMain = true) {
   };
 }
 
-await test('★ 成员根本没有桌面工具（规格 §5.3：普通桌面只给主 Bot）', () => {
+await test('★ 成员根本没有桌面工具（规格 §5.3：普通桌面只给主 Bot）', async () => {
   const { names } = freshTools(false);
   assert.equal(names.includes('desktop_lease'), false);
   assert.equal(names.includes('desktop_input'), false);
   assert.equal(names.includes('desktop_observe'), false);
 });
 
-await test('主 Bot 拿得到两个桌面输入工具', () => {
+await test('主 Bot 拿得到两个桌面输入工具', async () => {
   const { names } = freshTools(true);
   assert.equal(names.includes('desktop_lease'), true);
   assert.equal(names.includes('desktop_input'), true);

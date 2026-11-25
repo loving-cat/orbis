@@ -39,8 +39,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { spawnSync } from 'node:child_process';
-import { callHelper, helperState } from './desktop-helper-win.js';
+import { execFile } from 'node:child_process';
+import { callHelperAsync, helperState } from './desktop-helper-win.js';
 
 /** 单次脚本超时。截屏不该超过几秒。 */
 const TIMEOUT_MS = 20_000;
@@ -51,18 +51,28 @@ const MAX_EDGE = 1600;
 /** 列窗口最多返回多少个（按面积降序，大的通常是主窗口）。 */
 const MAX_WINDOWS = 40;
 
+/**
+ * 跑一个外部命令（**异步**）。
+ *
+ * ★ 阶段 B 起不再用 spawnSync：截图/列窗口曾经把整个事件循环按住几百毫秒，
+ *   期间所有房间的流式输出、心跳、WS 收发全都停住。改成回调式之后等待不阻塞。
+ */
 function run(cmd, args, { timeout = TIMEOUT_MS } = {}) {
-  const res = spawnSync(cmd, args, {
-    encoding: 'utf8',
-    timeout,
-    windowsHide: true,
-    maxBuffer: 8 * 1024 * 1024,
+  return new Promise((resolve) => {
+    execFile(cmd, args, {
+      encoding: 'utf8',
+      timeout,
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const detail = String(stderr || '').trim() || String(err.message || err);
+        resolve({ ok: false, error: detail.slice(0, 500) });
+        return;
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
   });
-  if (res.error) return { ok: false, error: String(res.error.message || res.error) };
-  if (res.status !== 0) {
-    return { ok: false, error: (res.stderr || res.stdout || '').slice(0, 500) || `exit ${res.status}` };
-  }
-  return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,12 +314,12 @@ end tell
  * @param {number} [o.limit] 最多返回多少个
  * @returns {{ok:true, windows:Array, platform:string}|{ok:false, error:string}}
  */
-export function listWindows({ limit = MAX_WINDOWS } = {}) {
+export async function listWindows({ limit = MAX_WINDOWS } = {}) {
   if (process.platform === 'win32') {
     // 阶段 A：优先原生助手（§5.2 的 windows 命令，DWM 扩展边框 + 面积降序截断）
-    const native = listWindowsNative(limit);
+    const native = await listWindowsNative(limit);
     if (native) return native;
-    const res = run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_LIST_WINDOWS]);
+    const res = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_LIST_WINDOWS]);
     if (!res.ok) return { ok: false, error: res.error };
     let rows;
     try {
@@ -341,7 +351,7 @@ export function listWindows({ limit = MAX_WINDOWS } = {}) {
   }
 
   if (process.platform === 'darwin') {
-    const res = run('osascript', ['-e', OSA_LIST], { timeout: TIMEOUT_MS });
+    const res = await run('osascript', ['-e', OSA_LIST], { timeout: TIMEOUT_MS });
     if (!res.ok) {
       return {
         ok: false,
@@ -376,10 +386,10 @@ export function listWindows({ limit = MAX_WINDOWS } = {}) {
  * 返回形状与 PowerShell 分支**逐字段一致**（handle/title/app/class/pid/x/y/width/height/
  * minimized + 过滤与排序），这样上层（工具层、截图、审计）完全感知不到换了实现。
  */
-function listWindowsNative(limit) {
+async function listWindowsNative(limit) {
   if (helperState().mode !== 'native') return null;
   try {
-    const r = callHelper('windows', { limit });
+    const r = await callHelperAsync('windows', { limit });
     if (!r.ok) return null;
     const rows = Array.isArray(r.windows) ? r.windows : [];
     const list = rows
@@ -406,28 +416,132 @@ function listWindowsNative(limit) {
 }
 
 /** 屏幕尺寸（截全屏时用）。 */
-function screenSize() {
+async function screenSize() {
   if (process.platform === 'win32') {
-    const res = run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+    // ★ 原生助手可用时不要为了「屏幕多大」再去起一次 PowerShell（~350 ms）：
+    //   常驻进程的 `env` 就是现成的虚拟屏矩形，而且**每次现查**（不缓存，§5.4）。
+    if (helperState().mode === 'native') {
+      const r = await callHelperAsync('env').catch(() => null);
+      const w = Number(r?.screen?.width) || 0;
+      const h = Number(r?.screen?.height) || 0;
+      // ★ 一定要带 x/y：多显示器时左边/上面的副屏原点是**负数**
+      //   （比如主屏在右、副屏在左：虚拟屏 x = -1920）。只回 width/height
+      //   然后用 0,0 当起点，截出来的是「主屏那块 + 一块黑边」。
+      if (r?.ok === true && w > 0 && h > 0) {
+        return {
+          x: Number(r.screen?.x) || 0,
+          y: Number(r.screen?.y) || 0,
+          width: w,
+          height: h,
+        };
+      }
+    }
+    const res = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
       `${PS_DPI_AWARE}
 Add-Type -AssemblyName System.Windows.Forms
-$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "$($s.Width)x$($s.Height)"`]);
+$s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "$($s.X),$($s.Y),$($s.Width)x$($s.Height)"`]);
     if (res.ok) {
-      const m = /^(\d+)x(\d+)$/.exec((res.stdout || '').trim());
-      if (m) return { width: Number(m[1]), height: Number(m[2]) };
+      // ★ 带原点：副屏在主屏左侧时 X 是负数，用 0 当起点会截错区域
+      const m = /^(-?\d+),(-?\d+),(\d+)x(\d+)$/.exec((res.stdout || '').trim());
+      if (m) {
+        return {
+          x: Number(m[1]) || 0,
+          y: Number(m[2]) || 0,
+          width: Number(m[3]),
+          height: Number(m[4]),
+        };
+      }
     }
     return null;
   }
   if (process.platform === 'darwin') {
-    const res = run('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop']);
+    const res = await run('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop']);
     if (res.ok) {
       const nums = (res.stdout || '').match(/-?\d+/g);
       if (nums && nums.length >= 4) {
-        return { width: Number(nums[2]) - Number(nums[0]), height: Number(nums[3]) - Number(nums[1]) };
+        return {
+          x: Number(nums[0]) || 0,
+          y: Number(nums[1]) || 0,
+          width: Number(nums[2]) - Number(nums[0]),
+          height: Number(nums[3]) - Number(nums[1]),
+        };
       }
     }
   }
   return null;
+}
+
+/**
+ * 虚拟屏矩形 → 截全屏要用的 rect。
+ *
+ * 单独抽出来是为了能单测：**多显示器时原点可能是负数**
+ * （主屏在右、副屏在左 → 虚拟屏 `x = -1920`）。钉死 `{x:0,y:0}` 会截到
+ * 「主屏那块 + 一块黑边」，而截图本身不报错 —— 是最难发现的那类错。
+ */
+export function fullScreenRect(size) {
+  if (!size || !(Number(size.width) > 0) || !(Number(size.height) > 0)) return null;
+  return {
+    x: Number(size.x) || 0,
+    y: Number(size.y) || 0,
+    width: Number(size.width),
+    height: Number(size.height),
+  };
+}
+
+/**
+ * 原生助手截图（阶段 B）。
+ *
+ * 助手只回 `pngBase64` 与尺寸，**完全不碰文件系统** —— 落盘这一步在这里做，
+ * 路径就是我们自己选的（`outFile`）。这样即使助手被替换，也没有「任意路径写文件」的能力。
+ *
+ * 返回 `null` 表示「这条路这次不可用」，调用方会回退 PowerShell 两段式。
+ */
+async function captureNative({ target, fullScreen, rect, outFile, maxEdge }) {
+  if (helperState().mode !== 'native') return null;
+  const useWindow = !fullScreen && Number(target?.handle) > 0;
+  const payload = useWindow
+    ? {
+      window: {
+        handle: Number(target.handle),
+        x: Number(target.x) || 0,
+        y: Number(target.y) || 0,
+        width: Number(target.width) || 0,
+        height: Number(target.height) || 0,
+      },
+      maxEdge,
+    }
+    : { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, maxEdge };
+  let r;
+  try {
+    r = await callHelperAsync('capture', payload);
+  } catch {
+    return null;
+  }
+  if (!r?.ok || !r.pngBase64) return null;
+  let buf;
+  try {
+    buf = Buffer.from(String(r.pngBase64), 'base64');
+  } catch {
+    return null;
+  }
+  if (!buf.length) return null;
+  try {
+    await fs.promises.writeFile(outFile, buf, { mode: 0o600 });
+  } catch (err) {
+    return { ok: false, error: `截图落盘失败：${String(err?.message || err).slice(0, 200)}` };
+  }
+  return {
+    ok: true,
+    file: outFile,
+    bytes: buf.length,
+    scope: fullScreen ? 'screen' : 'window',
+    width: Number(r.width) || 0,
+    height: Number(r.height) || 0,
+    originalWidth: Number(r.originalWidth) || 0,
+    originalHeight: Number(r.originalHeight) || 0,
+    resized: r.resized === true,
+    method: String(r.method || 'native'),
+  };
 }
 
 /**
@@ -440,7 +554,7 @@ $s=[System.Windows.Forms.SystemInformation]::VirtualScreen; "$($s.Width)x$($s.He
  * @param {number} [p.maxEdge] 最长边上限（超过缩放）
  * @returns {{ok:true, file:string, width:number, height:number, scope:string}|{ok:false, error:string}}
  */
-export function captureScreenshot({ outFile, window: target = null, fullScreen = false, maxEdge = MAX_EDGE } = {}) {
+export async function captureScreenshot({ outFile, window: target = null, fullScreen = false, maxEdge = MAX_EDGE } = {}) {
   if (!outFile) return { ok: false, error: '缺少落盘路径' };
   try {
     fs.mkdirSync(path.dirname(outFile), { recursive: true, mode: 0o700 });
@@ -451,8 +565,9 @@ export function captureScreenshot({ outFile, window: target = null, fullScreen =
   let rect = null;
   let scope = 'window';
   if (fullScreen) {
-    const size = screenSize();
-    rect = size ? { x: 0, y: 0, width: size.width, height: size.height } : null;
+    const size = await screenSize();
+    // ★ 用虚拟屏真实原点：多显示器左侧/上方副屏是负坐标，钉死 0,0 会截到黑边
+    rect = fullScreenRect(size);
     scope = 'screen';
     if (!rect) return { ok: false, error: '取不到屏幕尺寸' };
   } else {
@@ -461,30 +576,37 @@ export function captureScreenshot({ outFile, window: target = null, fullScreen =
     if (!rect.width || !rect.height) return { ok: false, error: '窗口尺寸为 0（可能已最小化）' };
   }
 
+  // ★ 阶段 B：Windows 原生助手一次做完（抓图 + 空白回退 + 缩放 + PNG），
+  //   而且**不写盘** —— 它只回 base64，落盘路径由这里决定（受控的 outFile）。
+  if (process.platform === 'win32') {
+    const native = await captureNative({ target, fullScreen, rect, outFile, maxEdge });
+    if (native) return native;
+  }
+
   let res;
   if (process.platform === 'win32') {
-    // 先试"窗口自己画自己"（被遮蔽/最小化也能截）
+    // 回退路径（原生助手不可用）：还是原来的两段式 PowerShell
     if (!fullScreen && Number(target?.handle) > 0) {
-      const printed = psPrintWindow({ handle: target.handle, outFile });
+      const printed = await psPrintWindow({ handle: target.handle, outFile });
       if (printed.ok && fs.existsSync(outFile) && !isMostlyBlank(outFile)) {
         res = printed;
       } else {
         // 老程序不实现 WM_PRINTCLIENT，PrintWindow 会返回全黑 —— 退回屏幕矩形
-        res = psCaptureRect({ ...rect, outFile });
+        res = await psCaptureRect({ ...rect, outFile });
       }
     } else {
-      res = psCaptureRect({ ...rect, outFile });
+      res = await psCaptureRect({ ...rect, outFile });
     }
   } else if (process.platform === 'darwin') {
     // -x 关掉快门声；-R 按矩形截（见上面的注释：窗口 id 拿不到）
-    res = run('screencapture', ['-x', '-R', `${rect.x},${rect.y},${rect.width},${rect.height}`, outFile]);
+    res = await run('screencapture', ['-x', '-R', `${rect.x},${rect.y},${rect.width},${rect.height}`, outFile]);
   } else {
     return { ok: false, error: `当前平台（${process.platform}）不支持截图` };
   }
   if (!res.ok) return { ok: false, error: `截图失败：${res.error}` };
   if (!fs.existsSync(outFile)) return { ok: false, error: '截图没生成文件' };
 
-  const shrunk = shrinkIfNeeded(outFile, maxEdge);
+  const shrunk = await shrinkIfNeeded(outFile, maxEdge);
   const stat = fs.statSync(outFile);
   return {
     ok: true,
@@ -502,7 +624,7 @@ export function captureScreenshot({ outFile, window: target = null, fullScreen =
  * 原生模块；桌面观察是**可选能力**，不该为了它把原生依赖变成硬要求。
  * 这里用系统自带的办法（Windows 走 .NET，macOS 走 sips），失败就原样返回。
  */
-function shrinkIfNeeded(file, maxEdge) {
+async function shrinkIfNeeded(file, maxEdge) {
   const dim = probeSize(file);
   if (!dim) return null;
   const longest = Math.max(dim.width, dim.height);
@@ -537,10 +659,10 @@ try {
   } finally { $bmp.Dispose() }
 } finally { $src.Dispose(); $ms.Dispose() }
 `;
-    const r = run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+    const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script]);
     if (!r.ok) return { width: dim.width, height: dim.height, resized: false, shrinkError: r.error };
   } else if (process.platform === 'darwin') {
-    const r = run('sips', ['-Z', String(maxEdge), file, '--out', file]);
+    const r = await run('sips', ['-Z', String(maxEdge), file, '--out', file]);
     if (!r.ok) return { width: dim.width, height: dim.height, resized: false, shrinkError: r.error };
   } else {
     return { width: dim.width, height: dim.height, resized: false };

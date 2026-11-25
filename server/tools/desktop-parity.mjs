@@ -29,10 +29,11 @@ async function snapshot(impl) {
   const di = await import(src('desktop-input-win.js'));
   const obs = await import(src('desktop-observe.js'));
 
-  const env = di.probeEnvironment();
-  const cursor = di.cursorPosition();
-  const fg = di.foregroundTitle();
-  const windows = obs.listWindows({ limit: 10 });
+  // 阶段 B 起这些平台函数都是异步的（常驻管道 + 不再阻塞事件循环）
+  const env = await di.probeEnvironment();
+  const cursor = await di.cursorPosition();
+  const fg = await di.foregroundTitle();
+  const windows = await obs.listWindows({ limit: 10 });
   return {
     impl,
     mode: helper.helperState().mode,
@@ -48,7 +49,7 @@ async function snapshot(impl) {
   };
 }
 
-function runChild(impl) {
+async function runChild(impl) {
   const self = path.join(import.meta.dirname, 'desktop-parity.mjs');
   const out = execFileSync(process.execPath, [self, `--impl=${impl}`], {
     encoding: 'utf8',
@@ -67,8 +68,8 @@ if (implArg) {
     console.log('口径对拍只在 Windows 上有意义');
     process.exit(0);
   }
-  const ps = runChild('powershell');
-  const native = runChild('native');
+  const ps = await runChild('powershell');
+  const native = await runChild('native');
   const lines = [];
   const ok = (cond) => (cond ? '✅' : '❌');
 

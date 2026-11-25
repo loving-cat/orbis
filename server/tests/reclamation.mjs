@@ -87,7 +87,7 @@ await test('★★ 取消任务 → 租约被吊销（规格 §6.3）', async ()
   installFakePlatform();
   S.resetDesktopInputSession();
   const session = S.desktopInputSession();
-  const got = session.acquireLease({ taskId: 'tr_cancel_me', botId: 'b1', generation: 'g' });
+  const got = await session.acquireLease({ taskId: 'tr_cancel_me', botId: 'b1', generation: 'g' });
   assert.equal(got.ok, true);
   assert.equal(session.lease.status, LEASE.held);
 
@@ -104,7 +104,7 @@ await test('★★ 任务完成 → 租约被释放（不走 cancel 入口也要
   installFakePlatform();
   S.resetDesktopInputSession();
   const session = S.desktopInputSession();
-  session.acquireLease({ taskId: 'tr_done', botId: 'b1', generation: 'g' });
+  await session.acquireLease({ taskId: 'tr_done', botId: 'b1', generation: 'g' });
   // 模拟 reportTerminal 里的那一段（任务跑完时走这里，不经过 cancel）
   if (session.lease.taskId === 'tr_done') {
     session.releaseLease({ taskId: 'tr_done', reason: '任务到达终态：completed' });
@@ -117,7 +117,7 @@ await test('★ 只收自己的租约，不动别人的（不能顺手把别人�
   installFakePlatform();
   S.resetDesktopInputSession();
   const session = S.desktopInputSession();
-  session.acquireLease({ taskId: 'tr_holder', botId: 'b_other', generation: 'g' });
+  await session.acquireLease({ taskId: 'tr_holder', botId: 'b_other', generation: 'g' });
   // 另一个任务被取消 —— 它的 taskId 和当前持有者不一致，不该动
   if (session.lease.taskId === 'tr_other_task') {
     session.revokeLease({ reason: '任务已取消', by: 'task' });
@@ -126,7 +126,7 @@ await test('★ 只收自己的租约，不动别人的（不能顺手把别人�
   assert.equal(session.lease.taskId, 'tr_holder');
 });
 
-await test('没租约时收租约是安全的空操作（不抛）', () => {
+await test('没租约时收租约是安全的空操作（不抛）', async () => {
   installFakePlatform();
   S.resetDesktopInputSession();
   const session = S.desktopInputSession();
@@ -164,7 +164,7 @@ function grantFor(botId, { mode = MODE.project, actions = [ACTION.fileRead] } = 
   return g;
 }
 
-await test('★★ 删 bot → 它的授权全被撤销，revokedBy 是 user（自动补登记不会再发回来）', () => {
+await test('★★ 删 bot → 它的授权全被撤销，revokedBy 是 user（自动补登记不会再发回来）', async () => {
   const bot = store.createBot({ name: '要被删的' });
   const g1 = grantFor(bot.id, { actions: [ACTION.fileRead] });
   const g2 = grantFor(bot.id, { actions: [ACTION.fileWrite] });
@@ -185,7 +185,7 @@ await test('★★ 删 bot → 它的授权全被撤销，revokedBy 是 user（�
   assert.equal(kept.revokedAt, null, '★ 别人的授权不许被连坐');
 });
 
-await test('★ 子授权随父授权一起失效（父链语义）', () => {
+await test('★ 子授权随父授权一起失效（父链语义）', async () => {
   const bot = store.createBot({ name: '有子授权的' });
   const parent = grantFor(bot.id);
   // ★ 不能写成 `{...grantFor(...), parentId: parent.id}` —— grantFor 已经把
@@ -207,7 +207,7 @@ await test('★ 子授权随父授权一起失效（父链语义）', () => {
   assert.equal(c.revokedBy, 'parent', '子授权要标成"父链失效"而不是"主体删除"');
 });
 
-await test('★ 设备撤销不动授权（授权绑 bot 不绑设备）', () => {
+await test('★ 设备撤销不动授权（授权绑 bot 不绑设备）', async () => {
   const bot = store.createBot({ name: '有设备的' });
   const g = grantFor(bot.id);
   // ★ 以前这里传的是对象，`addDevice` 只认名字、返回 `{ token, device }`：
@@ -218,7 +218,7 @@ await test('★ 设备撤销不动授权（授权绑 bot 不绑设备）', () =>
   assert.equal(after.revokedAt, null, '★ 撤一台设备不该让 bot 失去权限 —— 那是"换手机要重新授权"');
 });
 
-await test('删一个不存在的 bot 是安全的（不抛）', () => {
+await test('删一个不存在的 bot 是安全的（不抛）', async () => {
   assert.doesNotThrow(() => store.deleteBot('b_does_not_exist'));
 });
 

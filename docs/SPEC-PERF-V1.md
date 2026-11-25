@@ -1,6 +1,6 @@
 # 规格：性能治理与平台层原生化（SPEC-PERF-V1）
 
-> **状态**：已拍板 · **M1 进行中**（§11 已定稿）
+> **状态**：已拍板 · **M1–M4 已实现**（M4 阶段 B 在 `feat/desktop-win-stage-b`；真机验收见 `docs/REAL-MACHINE-CHECKLIST.md` 4d）
 > **对应基线**：`feat/long-task-autonomy` @ `30c2126`（开发分支 `feat/perf-v1`）
 > **适用范围**：`server/src/` 后台进程管理、模型请求失败判定、附件解析、Windows 桌面输入/观察、落盘；`app/lib/` 流式渲染；`native/` 新增 Windows 桌面助手
 > **关联文档**：`docs/ARCHITECTURE.md`（§五 性能）、`docs/WINDOWS-SANDBOX.md`、`docs/MACOS-DESKTOP-INPUT.md`、`docs/STORAGE-RETENTION.md`、`docs/REAL-MACHINE-CHECKLIST.md`

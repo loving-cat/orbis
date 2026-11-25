@@ -125,6 +125,24 @@ export function createDesktopInputSession({
   const recent = [];
 
   /**
+   * 串行互斥队列（§5.4 硬要求）。
+   *
+   * 同一张桌面的 `acquireLease` / `act` 必须**严格按序**执行：
+   * 一次 act 内部是「探环境 → 判接管 → 重新校验目标 → 发送 → 复核」五步，
+   * 两次并发进来就会交错 —— A 探完环境、B 把窗口切走、A 还在按旧坐标点击。
+   * 这里用一条 promise 链把它们排队，前一条失败也继续（不能因为一次失败把队列卡死）。
+   */
+  /** 内体引用（对象建好之后再填）。 */
+  const inner = { act: null, acquireLease: null };
+  let actChain = Promise.resolve();
+  const serialize = (fn) => {
+    const next = actChain.then(fn, fn);
+    // 队列本身只关心"排完"，不关心结果；失败不污染后续
+    actChain = next.then(() => {}, () => {});
+    return next;
+  };
+
+  /**
    * 这张桌面上有没有"一直在合成输入"的东西（远程控制软件心跳之类）。
    *
    * 申请租约时采一次样就够：这个属性由那台软件决定，不会中途变。
@@ -140,7 +158,7 @@ export function createDesktopInputSession({
     if (recent.length > 50) recent.shift();
   };
 
-  return {
+  const api = {
     lease,
     watchState,
     /** 审计用：最近 50 次动作摘要（不含输入原文） */
@@ -152,20 +170,24 @@ export function createDesktopInputSession({
      * 返回 epoch —— 之后每次输入都要带上它。这不是形式主义：被抢占过的
      * 旧任务如果不知道自己已经被抢，下一次输入照样能发出去（串打）。
      */
-    acquireLease({ taskId, botId, generation = null, ttlMs } = {}) {
+    acquireLease(params = {}) {
+      return serialize(() => inner.acquireLease(params));
+    },
+
+    async acquireLeaseInner({ taskId, botId, generation = null, ttlMs } = {}) {
       const r = acquire(lease, { taskId, botId, generation, now: now(), ...(ttlMs ? { ttlMs } : {}) });
       if (r.ok) {
         // ★ 拿到租约时采一次样，判"这台桌面有没有合成输入源"。
         //   为什么在这里：这个属性由那台软件决定，租约期内不会变；
         //   而采样本身要采好几次（分得清心跳和真人），不能每次点击都采。
         try {
-          const noise = sampleNoise();
+          const noise = await sampleNoise();
           if (noise?.ok) {
             syntheticSource = noise.kind === 'phantom';
             noiseDetail = { kind: noise.kind, samples: noise.samples ?? null, cursorStill: noise.cursorStill === true };
           }
         } catch { /* 采样失败就当没有合成输入源：保守方向是让开，不是硬干 */ }
-        const cur = cursorPosition();
+        const cur = await cursorPosition();
         lastCursor = cur?.ok ? { x: Number(cur.x), y: Number(cur.y) } : null;
         pushAudit({
           kind: 'lease_acquire', taskId, botId, epoch: r.epoch, renewed: r.renewed === true,
@@ -176,7 +198,7 @@ export function createDesktopInputSession({
     },
 
     /** 诊断用：租约申请时那次采样的结论。 */
-    inputEnvironment() {
+    async inputEnvironment() {
       return { syntheticSource, noise: noiseDetail, trustPhantomInput: trustPhantomInput() === true };
     },
 
@@ -213,7 +235,11 @@ export function createDesktopInputSession({
      * @returns {{ok:true, at:object|null, plan:object, screen:object, foreground:string}
      *   | {ok:false, code:string, text:string}}
      */
-    act({ identity = {}, input = {} } = {}) {
+    act(params = {}) {
+      return serialize(() => inner.act(params));
+    },
+
+    async actInner({ identity = {}, input = {} } = {}) {
       const taskId = String(identity.taskId ?? '');
       const botId = String(identity.botId ?? '');
       const epoch = Number(identity.epoch);
@@ -236,7 +262,7 @@ export function createDesktopInputSession({
       }
 
       // ③ 探环境：DPI 感知 / 屏幕矩形 / 有没有可操作会话
-      const env = probeEnvironment();
+      const env = await probeEnvironment();
       if (!env.ok) {
         pushAudit({ kind: 'refuse', code: env.code, taskId, botId });
         return { ok: false, ...env };
@@ -257,9 +283,9 @@ export function createDesktopInputSession({
       // ★ 这里多一步"光标动过没有"：远程控制软件会不停刷新"最后输入时间"
       //   但从不移动光标。只看时间会把它的心跳当成"用户一直在动"，
       //   于是这个 bot 永远动不了鼠标（实测就在这台机器上）。
-      const probe = probeLastInput();
+      const probe = await probeLastInput();
       const lastInputAt = probe.ok ? Number(probe.lastInputAt) : null;
-      const cur = cursorPosition();
+      const cur = await cursorPosition();
       const cursorStill = (cur?.ok && lastCursor)
         ? (Number(cur.x) === lastCursor.x && Number(cur.y) === lastCursor.y)
         : null;
@@ -311,7 +337,7 @@ export function createDesktopInputSession({
       const expectWindow = String(input?.expectWindow ?? '').trim();
       let foregroundBefore = '';
       if (typeof foregroundTitle === 'function') {
-        const fg = foregroundTitle();
+        const fg = await foregroundTitle();
         foregroundBefore = fg?.ok ? String(fg.title ?? '') : '';
         if (expectWindow && !foregroundBefore.toLowerCase().includes(expectWindow.toLowerCase())) {
           pushAudit({ kind: 'refuse', code: REFUSE.targetChanged, taskId, botId, expectWindow, foregroundBefore });
@@ -347,7 +373,9 @@ export function createDesktopInputSession({
         return { code, text, released: true };
       };
       const shouldAbort = isDrag
-        ? ({ index, total } = {}) => {
+        // ★ 这里必须是 async：拖拽途中要重新探租约与环境（`probeEnvironment`
+        //   在阶段 B 是异步的）。平台层已经会 `await Promise.resolve(...)`。
+        ? async ({ index, total } = {}) => {
           // ① 租约还是我们的吗（被撤销 / 过期 / 换人）
           const h = assertHolder(lease, { taskId, botId, epoch, now: now() });
           if (!h.ok) {
@@ -356,7 +384,7 @@ export function createDesktopInputSession({
             });
           }
           // ② 会话还在吗（锁屏 / 断开 → 不能接着发输入）
-          const e = probeEnvironment();
+          const e = await probeEnvironment();
           if (e.ok && e.session === false) {
             return abortDrag(REFUSE.noSession, '拖到一半会话断了（锁屏/断开），已松开鼠标', {
               audit: { step: index, total, why: 'session' },
@@ -366,7 +394,7 @@ export function createDesktopInputSession({
           //   ★ 容差 2px 必须和平台层同口径：平台段后允许 ±2px（真实鼠标/取整会有
           //   1~2px 抖动），这里若用 0 容差，平台刚放行的位置会被立刻判成“用户接管”，
           //   拖拽必然被自己中止且租约被吊销。
-          const cur = cursorPosition();
+          const cur = await cursorPosition();
           if (cur?.ok && expectedCursor
             && (Math.abs(Number(cur.x) - expectedCursor.x) > 2
               || Math.abs(Number(cur.y) - expectedCursor.y) > 2)) {
@@ -388,7 +416,7 @@ export function createDesktopInputSession({
           noteInjection(watchState, { now: now() });
         }
         : undefined;
-      const sent = perform({ plan: planned.plan, shouldAbort, onStep });
+      const sent = await perform({ plan: planned.plan, shouldAbort, onStep });
       if (!sent.ok) {
         // 拖拽中断自己已经记过 abort 审计（带步数），不要重复记成 refuse
         const alreadyAborted = isDrag && sent.released === true && sent.code !== INPUT_FAIL.callFailed;
@@ -406,7 +434,7 @@ export function createDesktopInputSession({
       let foregroundAfter = sent.foreground ?? '';
       let targetKept = true;
       if (expectWindow && typeof foregroundTitle === 'function') {
-        const fg = foregroundTitle();
+        const fg = await foregroundTitle();
         foregroundAfter = fg?.ok ? String(fg.title ?? '') : foregroundAfter;
         targetKept = !foregroundAfter || foregroundAfter.toLowerCase().includes(expectWindow.toLowerCase());
       }
@@ -452,6 +480,11 @@ export function createDesktopInputSession({
       return r;
     },
   };
+  // ★ 串行队列要调「内体」，而内体是同一个对象上的方法（对象字面量里互相引用不到），
+  //   所以建好之后把它们的引用接出来。方法体内不用 `this`，取引用是安全的。
+  inner.act = api.actInner;
+  inner.acquireLease = api.acquireLeaseInner;
+  return api;
 }
 
 /**
