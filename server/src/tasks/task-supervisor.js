@@ -20,6 +20,7 @@ import {
   CONTROL, applyControl, reconcileEarlyControls, descendants as descendantsOf,
 } from './task-controls.js';
 import { childrenOf } from './task-subtasks.js';
+import { classifyNonRetriableFailure, nonRetriableOf, handBackBlockedBy } from './task-guardrails.js';
 import { fileClaimList, pickBlockingClaim, claimsOverlap } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
 import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary, continuationNote } from './task-prompts.js';
@@ -620,6 +621,35 @@ export function createTaskSupervisor({
     return out.ok ? { ok: true } : { ok: false, text: out.text ?? out.code };
   }
 
+  /**
+   * 不可恢复的失败：立即停下，不再走自主重试 / 交回空转。
+   *
+   * 记 `nonRetriableBlock`（供父任务与面板判定），清掉 `retryAt` /
+   * `recoverableBlock` / `nextAction`，并把原因写进 `blockedReason`：
+   * 用户要看得出「已经停止自动重试」，而不是以为系统还在努力。
+   */
+  async function stopForNonRetriable(taskRunId, fatal, detail = '') {
+    const at = clock();
+    await patch(taskRunId, {
+      nextAction: null, retryAt: null, recoverableBlock: null,
+      nonRetriableBlock: { kind: fatal.kind, why: fatal.why, at },
+    });
+    const why = '不可恢复的失败（' + fatal.kind + '）：' + fatal.why
+      + '。已立即停止自动重试，不会反复空转'
+      + (detail ? '；原始说明：' + String(detail).slice(0, 120) : '');
+    await block(taskRunId, why);
+    // ★ 归约后任务通常已经是 blocked，`block()` 见到 blocked 会提前返回 ——
+    //   这里直接把「为什么停」写进 flags，否则用户看到的还是上游那句原始报错。
+    const now = read(taskRunId);
+    if (now) {
+      await patch(taskRunId, {
+        flags: { ...(now.flags ?? {}), blockedAt: clock(), blockedReason: why },
+      });
+    }
+    log('不可恢复，立即停下：', taskRunId, fatal.kind);
+    return { status: 'blocked', why: 'non_retriable_' + fatal.kind, kind: fatal.kind };
+  }
+
   /** 明确阻塞；可恢复原因单独记，便于恢复时解除。 */
   async function block(taskRunId, why, recoverable = null, retryAt = null) {
     const current = read(taskRunId);
@@ -710,6 +740,20 @@ export function createTaskSupervisor({
     if (root.budget.maxRuns === null || root.budget.maxRuns === undefined) return Number.POSITIVE_INFINITY;
     // 以账本为权威：工厂已不再写 budget.usedRuns。
     return remainingRuns(root.budget, root.attempts?.length ?? 0);
+  }
+
+  /**
+   * 根上还剩多少 token 预算（不限额/没配 → Infinity）。
+   *
+   * 与 `remainingOf` 分开：次数以账本为权威，token 以**结算累计**
+   * （`budget.usedTokens`，由根事务幂等累加）为权威 —— 两者口径不同。
+   */
+  function remainingTokensOf(taskRun) {
+    const rootId = taskRun.rootTaskId ?? taskRun.id;
+    const root = rootId === taskRun.id ? taskRun : read(rootId);
+    const max = root?.budget?.maxTokens;
+    if (!Number.isInteger(max) || max <= 0) return Number.POSITIVE_INFINITY;
+    return Math.max(0, max - Number(root?.budget?.usedTokens ?? 0));
   }
 
   /**
@@ -807,6 +851,19 @@ export function createTaskSupervisor({
 
       // 本人暂停：直接等待，不遍历/推进任何子任务
       if (PAUSED.has(taskRun.state)) return { status: 'wait', why: '任务暂停' };
+
+      // ★ Token 预算用尽：**派发前**就干净停下（不派子任务、不调模型），
+      //   而不是先跑一轮再被 reserveRootBudget 拒掉。子任务共享根预算，同样受这道闸门管。
+      if (remainingTokensOf(taskRun) <= 0) {
+        const rootId = taskRun.rootTaskId ?? taskRun.id;
+        const rootBudget = (rootId === taskRun.id ? taskRun : read(rootId))?.budget ?? {};
+        await settle(taskRun.id, {
+          type: EVENT.budget_exhausted, revision: taskRun.revision, at: clock(),
+          reason: `Token 预算已用尽（${rootBudget.usedTokens ?? 0}/${rootBudget.maxTokens}）`,
+        });
+        await patch(taskRun.id, { nextAction: null });
+        return { status: 'paused_budget', why: 'root_tokens_exhausted' };
+      }
 
       const ancestor = ancestorBlocked(taskRun);
       if (ancestor.blocked) {
@@ -922,6 +979,15 @@ export function createTaskSupervisor({
             //   不是终态，于是负责人永远没机会处理。这里把受阻的分工如实
             //   收口（取消并记下原因），让负责人带着失败原因重新安排。
             //   有上限：反复交回仍不成，就是真卡住了，如实阻塞给用户看。
+            // ★ 交回负责人也没用的那些（鉴权/余额/中止/审批/显式 impossible）：
+            //   换人、拆小、重排都还是同一个死因，直接如实阻塞父任务，别空转 2 轮
+            const noHandBack = handBackBlockedBy(stuck);
+            if (noHandBack) {
+              await block(taskRunId, '分工卡在不可恢复的问题上（' + noHandBack.kind + '）：'
+                + String(noHandBack.why ?? '').slice(0, 120)
+                + '。已跳过错峰重排，需要你处理后才能继续');
+              return { status: 'blocked', why: 'children_non_retriable' };
+            }
             const handBacks = Number(parentNow.childHandBacks ?? 0);
             if (autonomousOf(parentNow) && handBacks < MAX_CHILD_HANDBACKS) {
               const failures = stuck.map((k) => ({
@@ -962,7 +1028,8 @@ export function createTaskSupervisor({
       }
 
       const action = planNextAction(taskRun, {
-        now: clock(), remainingRuns: remainingOf(taskRun), maxStallRounds, maxMilestoneRounds, restartUnknown: false,
+        now: clock(), remainingRuns: remainingOf(taskRun), remainingTokens: remainingTokensOf(taskRun),
+        maxStallRounds, maxMilestoneRounds, restartUnknown: false,
         // 本进程是否真在跑这条 registered 尝试；不在就是崩溃/重启残留。
         isInflight: (run) => inflight.has(run.id),
       });
@@ -983,7 +1050,15 @@ export function createTaskSupervisor({
         return { status: 'wait', gate: action.gate ?? null, why: action.why };
       }
       if (action.kind === NEXT.pausedBudget) {
-        const paused = await settle(taskRun.id, { type: EVENT.budget_exhausted, revision: taskRun.revision, at: clock() });
+        // 说清是哪个维度用尽：token 与次数是两条独立的闸门
+        const rootId = taskRun.rootTaskId ?? taskRun.id;
+        const rootBudget = (rootId === taskRun.id ? taskRun : read(rootId))?.budget ?? {};
+        const reason = remainingTokensOf(taskRun) <= 0 && Number.isInteger(rootBudget.maxTokens)
+          ? `Token 预算已用尽（${rootBudget.usedTokens ?? 0}/${rootBudget.maxTokens}）`
+          : '执行次数预算已用尽';
+        const paused = await settle(taskRun.id, {
+          type: EVENT.budget_exhausted, revision: taskRun.revision, at: clock(), reason,
+        });
         if (paused.ok) {
           await patch(taskRun.id, { nextAction: null });
           return { status: 'paused_budget' };
@@ -1351,6 +1426,18 @@ export function createTaskSupervisor({
         status: rawResult?.status ?? null,
         attempt: triedTimes,
       });
+      // ★ 不可恢复（鉴权/余额/配置/中止/显式 impossible）：一次都不再试
+      const fatal = classifyNonRetriableFailure({
+        error: String(rawResult?.error ?? rawResult?.text ?? ''),
+        status: rawResult?.status ?? null,
+        stop: rawResult?.stop ?? '',
+        impossible: rawResult?.impossible === true,
+        nonRetriable: rawResult?.nonRetriable === true,
+        approvalRejected: rawResult?.approvalRejected === true,
+      });
+      if (fatal) {
+        return stopForNonRetriable(taskRun.id, fatal, String(rawResult?.error ?? rawResult?.text ?? ''));
+      }
       if (decision.retry && (taskRun.retry?.count ?? 0) < MAX_TRANSIENT_ATTEMPTS) {
         const dueAt = clock() + (decision.delayMs ?? 30_000);
         await patch(taskRun.id, {
@@ -1386,7 +1473,9 @@ export function createTaskSupervisor({
       if (autonomousOf(nowRun)
         && nowRun.state === STATE.blocked
         && nowRun.recoverableBlock == null
-        && !nowRun.flags?.blockedByUser) {
+        && !nowRun.flags?.blockedByUser
+        // ★ 不可恢复的失败不参与自主重试：重试 3 轮也还是同一个 401
+        && nonRetriableOf(nowRun) == null) {
         const misses = (nowRun.autonomyMisses ?? 0) + 1;
         if (misses < AUTONOMY_RETRY_LIMIT) {
           await patch(taskRun.id, { autonomyMisses: misses });
@@ -1541,6 +1630,15 @@ export function createTaskSupervisor({
     const cause = String(out.raw?.error ?? out.raw?.text ?? out.text ?? out.code ?? '');
     const causeStatus = out.raw?.status ?? out.status ?? null;
     const decision = decideRetry({ error: cause, status: causeStatus, attempt: (read(id)?.retry?.count ?? 0) + 1 });
+    // ★ 不可恢复：不进有界重试、不进分钟级退避，直接如实停下
+    const fatal = classifyNonRetriableFailure({
+      error: cause,
+      status: causeStatus,
+      impossible: out.raw?.impossible === true || out.impossible === true,
+      nonRetriable: out.raw?.nonRetriable === true || out.nonRetriable === true,
+      approvalRejected: out.raw?.approvalRejected === true || out.approvalRejected === true,
+    });
+    if (fatal) return stopForNonRetriable(id, fatal, cause);
     if (decision.retry && (taskRun.retry?.count ?? 0) < MAX_TRANSIENT_ATTEMPTS) {
       const dueAt = clock() + (decision.delayMs ?? 30_000);
       await patch(id, {
@@ -1802,15 +1900,18 @@ export function createTaskSupervisor({
    *   3. 同步「根已追加」事实 → 各自走既有 resumed 协议解除预算暂停；
    *   4. 保留用户暂停与其他门槛；门槛之后解除时直接可用已加额度。
    */
-  async function onBudgetExtended(taskRunId, { extraRuns = 1 } = {}) {
+  async function onBudgetExtended(taskRunId, { extraRuns = null, extraTokens = null } = {}) {
     const run = read(taskRunId);
     if (!run) return { ok: false, code: 'not_found' };
     const rootId = run.rootTaskId ?? run.id;
 
-    const extended = await extendRootBudget({ store: taskRuns, rootTaskId: rootId, extraRuns, at: clock() });
+    const extended = await extendRootBudget({
+      store: taskRuns, rootTaskId: rootId, extraRuns, extraTokens, at: clock(),
+    });
     if (!extended.ok) return extended;
     const rootNow = read(rootId) ?? extended.taskRun;
-    const sharedExtra = Number(rootNow?.budget?.extraRuns ?? extraRuns);
+    const sharedExtra = Number(rootNow?.budget?.extraRuns ?? extraRuns ?? 0);
+    const sharedExtraTokens = Number(rootNow?.budget?.extraTokens ?? extraTokens ?? 0);
 
     const results = [];
     const resumeBudgetPaused = async (candidate) => {
@@ -1821,7 +1922,11 @@ export function createTaskSupervisor({
         const parent = current.parentTaskId ? read(current.parentTaskId) : null;
         if (!parent || current.parentRevision !== parent.revision) return null;
         await patch(current.id, {
-          budget: { ...(current.budget ?? {}), sharedExtraRuns: sharedExtra },
+          budget: {
+            ...(current.budget ?? {}),
+            sharedExtraRuns: sharedExtra,
+            sharedExtraTokens,
+          },
         });
       }
       const resumed = await settle(current.id, {

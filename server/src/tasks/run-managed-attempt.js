@@ -16,6 +16,9 @@
 import { EVENT } from './task-contract.js';
 import { adaptRunOutcome, planAttemptEvent } from './task-progress.js';
 import {
+  tokenCountOf,
+} from './task-budget.js';
+import {
   reserveRootBudget,
   startRootBudget,
   settleRootBudget,
@@ -101,7 +104,10 @@ export async function runManagedAttempt({
     return { ok: false, phase: 'executed', code: 'settle_rejected', text: finished.text ?? finished.code, started: true };
   }
 
-  const settled = await settleRootBudget(grant);
+  // ★ 子任务的 attempts 存在子任务文件里，不在 root.attempts —— 根预算算不到它。
+  //   所以每次结算都把「这次花了多少 token」递进去，由根事务幂等累加。
+  const spentTokens = tokenCountOf(event?.attempt?.usage ?? raw?.usage ?? raw?.attemptEvent?.attempt?.usage);
+  const settled = await settleRootBudget({ ...grant, tokens: spentTokens });
   if (!settled.ok) {
     // 结果已存、根结算未存：如实报告，交给恢复补齐（幂等）
     return {

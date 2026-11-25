@@ -57,12 +57,15 @@ function reject(code, field, text) {
  * 参数省略表示该维度不限制；「不限额」必须由 `null` 明确表达，
  * 不能由非法值兜底（批次 01 F04 的教训）。
  */
-export function createBudget({ maxRuns = null, concurrencyLimit = 1, deadlineAt = null } = {}) {
+export function createBudget({ maxRuns = null, concurrencyLimit = 1, deadlineAt = null, maxTokens = null } = {}) {
   if (maxRuns !== null && !isPositiveInt(maxRuns)) {
     return reject(BUDGET_REJECT.badBudget, 'budget.maxRuns', 'maxRuns 必须是正整数或 null（不限额）');
   }
   if (concurrencyLimit !== null && !isPositiveInt(concurrencyLimit)) {
     return reject(BUDGET_REJECT.badBudget, 'budget.concurrencyLimit', 'concurrencyLimit 必须是正整数或 null');
+  }
+  if (maxTokens !== null && !isPositiveInt(maxTokens)) {
+    return reject(BUDGET_REJECT.badBudget, 'budget.maxTokens', 'maxTokens 必须是正整数或 null（不限额）');
   }
   if (deadlineAt !== null && !isTime(deadlineAt)) {
     return reject(BUDGET_REJECT.badBudget, 'budget.deadlineAt', 'deadlineAt 必须是毫秒时间戳或 null');
@@ -73,6 +76,15 @@ export function createBudget({ maxRuns = null, concurrencyLimit = 1, deadlineAt 
       maxRuns,
       concurrencyLimit,
       deadlineAt,
+      /**
+       * Token 预算（可选）。计量口径：模型接口上报的 `attempt.usage`
+       * （`inputTokens + outputTokens`）累加到整棵任务树的根上。
+       * ★ 没上报就是 0（宁少算不多算）；`usedTokens` 允许**超过** `maxTokens` ——
+       *   一次执行的消耗只能结算后才知道，跨过去的那一次必然超额。
+       */
+      maxTokens,
+      usedTokens: 0,
+      extraTokens: 0,
       usedRuns: 0,
       extraRuns: 0,
     },
@@ -105,6 +117,18 @@ export function validateBudget(budget) {
   if (extraRuns !== undefined && !isNonNegInt(extraRuns)) {
     return reject(BUDGET_REJECT.badBudget, 'budget.extraRuns', 'extraRuns 必须是非负整数');
   }
+  const { maxTokens, usedTokens, extraTokens } = budget;
+  if (maxTokens !== null && maxTokens !== undefined && !isPositiveInt(maxTokens)) {
+    return reject(BUDGET_REJECT.badBudget, 'budget.maxTokens', 'maxTokens 必须是正整数或 null');
+  }
+  if (usedTokens !== undefined && !isNonNegInt(usedTokens)) {
+    return reject(BUDGET_REJECT.badBudget, 'budget.usedTokens', 'usedTokens 必须是非负整数');
+  }
+  if (extraTokens !== undefined && !isNonNegInt(extraTokens)) {
+    return reject(BUDGET_REJECT.badBudget, 'budget.extraTokens', 'extraTokens 必须是非负整数');
+  }
+  // ★ 坑位：`usedTokens > maxTokens` **不是**坏数据 —— 跨过上限的那次执行
+  //   只能在结算后才知道；把它判成 bad_budget 会让任务永远进不了 paused_budget。
   if (isPositiveInt(maxRuns) && isNonNegInt(usedRuns) && usedRuns > maxRuns) {
     return reject(
       BUDGET_REJECT.badBudget,
@@ -164,6 +188,14 @@ export function checkCanRun(budget, { at, runningCount = 0, usedFromLedger } = {
     );
   }
 
+  if (isPositiveInt(budget.maxTokens) && (budget.usedTokens ?? 0) >= budget.maxTokens) {
+    return reject(
+      BUDGET_REJECT.exhausted,
+      'budget.maxTokens',
+      `Token 预算已用尽（${budget.usedTokens ?? 0}/${budget.maxTokens}）`,
+    );
+  }
+
   const limit = budget.concurrencyLimit;
   if (isPositiveInt(limit) && runningCount >= limit) {
     return reject(
@@ -174,6 +206,18 @@ export function checkCanRun(budget, { at, runningCount = 0, usedFromLedger } = {
   }
 
   return { ok: true };
+}
+
+/**
+ * 一次执行的 token 消耗（`inputTokens + outputTokens`）。
+ *
+ * 口径：只信模型接口上报的 `attempt.usage`；没上报就是 0（宁少算不多算）。
+ * 非法值（负数/非数字/缺失）一律按 0 —— 预算不能因为一条脏数据爆炸。
+ */
+export function tokenCountOf(usage) {
+  if (!usage || typeof usage !== 'object') return 0;
+  const pick = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v)) : 0);
+  return pick(usage.inputTokens) + pick(usage.outputTokens);
 }
 
 /**
@@ -188,7 +232,7 @@ export function chargeRun(budget) {
     return reject(
       BUDGET_REJECT.exhausted,
       'budget.maxRuns',
-      `执行次数已用尽（${Number.isFinite(Number(usedFromLedger)) ? Number(usedFromLedger) : (budget.usedRuns ?? 0)}/${budget.maxRuns}）`,
+      `执行次数已用尽（${budget.usedRuns ?? 0}/${budget.maxRuns}）`,
     );
   }
   return { ok: true, budget: next };
@@ -212,14 +256,30 @@ export function refundRun(budget) {
  * ★ 同时写 `maxRuns` 与 `extraRuns`（批次 01 归约器的 `resumed` 读 `extraRuns`）。
  *   只改 `maxRuns` 会让「扩额成功但仍是 paused_budget」（审查 B05 实测）。
  */
-export function extendBudget(budget, extraRuns) {
+export function extendBudget(budget, extraRuns = null, extraTokens = null) {
   if (!budget) return reject(BUDGET_REJECT.badBudget, 'budget', '没有预算可以追加');
-  if (!isPositiveInt(extraRuns)) {
-    return reject(BUDGET_REJECT.badBudget, 'extraRuns', '追加额度必须是正整数');
+  const addRuns = extraRuns === null || extraRuns === undefined ? null : extraRuns;
+  const addTokens = extraTokens === null || extraTokens === undefined ? null : extraTokens;
+  if (addRuns !== null && !isPositiveInt(addRuns)) {
+    return reject(BUDGET_REJECT.badBudget, 'extraRuns', '追加次数必须是正整数');
+  }
+  if (addTokens !== null && !isPositiveInt(addTokens)) {
+    return reject(BUDGET_REJECT.badBudget, 'extraTokens', '追加 Token 必须是正整数');
+  }
+  // 两个维度至少给一个：空调用等于「扩了个寂寞」，如实拒绝而不是静默成功
+  if (addRuns === null && addTokens === null) {
+    return reject(BUDGET_REJECT.badBudget, 'extraRuns', '扩额至少要给 extraRuns 或 extraTokens');
   }
   const next = { ...budget };
-  if (isPositiveInt(next.maxRuns)) next.maxRuns += extraRuns;
-  next.extraRuns = (next.extraRuns ?? 0) + extraRuns;
+  if (addRuns !== null) {
+    if (isPositiveInt(next.maxRuns)) next.maxRuns += addRuns;
+    next.extraRuns = (next.extraRuns ?? 0) + addRuns;
+  }
+  if (addTokens !== null) {
+    // 只扩 token 时：原本不限额（null）就保持不限额，避免把「无上限」变成有上限
+    if (isPositiveInt(next.maxTokens)) next.maxTokens += addTokens;
+    next.extraTokens = (next.extraTokens ?? 0) + addTokens;
+  }
   return { ok: true, budget: next };
 }
 
@@ -250,6 +310,11 @@ export function describeBudget(budget, usedFromLedger) {
   }
   if (isPositiveInt(budget.concurrencyLimit)) {
     lines.push(`同时最多 ${budget.concurrencyLimit} 个执行`);
+  }
+  if (isPositiveInt(budget.maxTokens)) {
+    const usedTokens = Number.isFinite(Number(budget.usedTokens)) ? Number(budget.usedTokens) : 0;
+    lines.push(`Token 预算 ${usedTokens}/${budget.maxTokens}（按模型接口上报的 input+output 计；未上报记 0）`);
+    if (isPositiveInt(budget.extraTokens)) lines.push(`其中追加 ${budget.extraTokens} tokens`);
   }
   return {
     limited: true,

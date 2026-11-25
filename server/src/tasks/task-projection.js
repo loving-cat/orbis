@@ -112,6 +112,9 @@ export function projectForDiagnostics(run) {
       ? {
           maxRuns: run.budget.maxRuns ?? null,
           extraRuns: run.budget.extraRuns ?? 0,
+          maxTokens: run.budget.maxTokens ?? null,
+          usedTokens: run.budget.usedTokens ?? 0,
+          extraTokens: run.budget.extraTokens ?? 0,
           deadlineAt: run.budget.deadlineAt ?? null,
           // 权威：额度占用以持久扣额为准
           usedRuns: run.budget.usedRuns ?? 0,

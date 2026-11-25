@@ -43,6 +43,8 @@ export const NEXT = Object.freeze({
 export function planNextAction(taskRun, {
   now = Date.now(),
   remainingRuns = Number.POSITIVE_INFINITY,
+  /** 根上还剩多少 token 预算（Infinity = 不限额）；用尽即进预算暂停 */
+  remainingTokens = Number.POSITIVE_INFINITY,
   maxStallRounds = 2,
   maxMilestoneRounds = Number.POSITIVE_INFINITY,
   /** 可选：判断这个任务的 registered 尝试是否真的还在本进程里跑。 */
@@ -97,6 +99,7 @@ export function planNextAction(taskRun, {
 
   // 7) 根预算
   if (remainingRuns <= 0) return { kind: NEXT.pausedBudget, why: '根预算已用尽' };
+  if (Number(remainingTokens) <= 0) return { kind: NEXT.pausedBudget, why: '根 Token 预算已用尽' };
 
   // 8) 到期重试（前面已排除暂停/门槛/未知/在途/预算）
   if (Number.isFinite(taskRun.retryAt)) {

@@ -95,11 +95,18 @@ export function admissionBudget(env = process.env, groupLimits = null) {
   // 并发：环境变量与部门上限都只收紧不放大；都没配就是默认 4。
   const envConc = positiveIntIn(readBrandEnv(env, 'TASK_CONCURRENCY'), 1, MAX_TASK_CONCURRENCY);
   const groupConc = positiveIntIn(groupLimits?.concurrencyLimit, 1, Number.MAX_SAFE_INTEGER);
+  // Token 预算（可选）：不配就是不限额 —— 不影响任何既有任务
+  const envTokens = positiveIntIn(readBrandEnv(env, 'TASK_MAX_TOKENS'), 1, Number.MAX_SAFE_INTEGER);
+  const groupTokens = positiveIntIn(groupLimits?.maxTokens, 1, Number.MAX_SAFE_INTEGER);
+  let maxTokens = null;
+  if (envTokens !== null && groupTokens !== null) maxTokens = Math.min(envTokens, groupTokens);
+  else if (envTokens !== null) maxTokens = envTokens;
+  else if (groupTokens !== null) maxTokens = groupTokens;
   let concurrencyLimit = DEFAULT_TASK_CONCURRENCY;
   if (envConc !== null && groupConc !== null) concurrencyLimit = Math.min(envConc, groupConc);
   else if (envConc !== null) concurrencyLimit = envConc;
   else if (groupConc !== null) concurrencyLimit = groupConc;
-  return { maxRuns, concurrencyLimit };
+  return { maxRuns, concurrencyLimit, maxTokens };
 }
 
 export function admissionAuthorize({ taskRunId, revision, requesterId, requestId, fingerprint }) {

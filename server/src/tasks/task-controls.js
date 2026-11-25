@@ -193,7 +193,10 @@ export async function applyControl({
       type: EVENT.unblocked, revision: taskRun.revision, at: clock(), reason: control.reason ?? '手动解除阻塞',
     });
     if (!released.ok) return released;
-    await patch(taskRunId, { recoverableBlock: null, retryAt: null, retry: null, stall: null });
+    // ★ 手动恢复就等于「我处理过了」：连不可恢复标记一起清，否则永远被判死
+    await patch(taskRunId, {
+      recoverableBlock: null, retryAt: null, retry: null, stall: null, nonRetriableBlock: null,
+    });
     notify(taskRunId);
     return { ok: true, applied: true, released: true };
   }
@@ -246,7 +249,14 @@ export async function applyControl({
     await patch(taskRunId, {
       controlFacts: markConsumed(taskRuns.read(taskRunId).taskRun ?? taskRun, fact),
     });
-    await block(taskRunId, '审批被拒绝，不能换工具绕过');
+    await patch(taskRunId, {
+      nonRetriableBlock: {
+        kind: 'approval_rejected',
+        why: '审批被拒绝，不能换工具绕过；需要你改授权或改需求',
+        at: clock(),
+      },
+    });
+    await block(taskRunId, '审批被拒绝，不能换工具绕过（已停止自动重试，需你处理后恢复）');
     return { ok: true, applied: true, blocked: true };
   }
 

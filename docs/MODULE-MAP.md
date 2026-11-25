@@ -259,3 +259,4 @@
 | macOS 打包 | `./scripts/pack-macos.sh`（完整 Xcode 原生构建；`--no-build` 复用已有 Release App） |
 | Windows 打包 | `powershell -File scripts/pack-windows.ps1`（临时目录干净构建后回填 Release；扫描本机路径与 `.pdb`；`-NoBuild` 复用、`-WithNode` 带 node.exe、`-Zip` 出压缩包） |
 | 打包脚本单测 | `node scripts/tests/all.mjs`；macOS 分支 `bash scripts/tests/pack-macos-test.sh`；Windows 分支 `powershell -File scripts/tests/pack-windows-test.ps1` |
+| `tasks/task-guardrails.js` | 长任务护栏（T6）：`classifyNonRetriableFailure()` 判定「不必再试」的失败（`decideRetry` 的 auth/quota/aborted + 模型配置缺失 + 执行器显式 `impossible`/`nonRetriable` + 审批被拒），**明确放行** 429/5xx/model-idle/空回复/context_length/普通工具错；`handBackBlockedBy()` 判断父任务是否该跳过「取消并交回负责人重排」。纯函数，接线在 `task-supervisor.js`（`stopForNonRetriable`）与 `task-controls.js` |

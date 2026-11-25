@@ -87,7 +87,7 @@ await test('3. 接单开关：默认开启，ORBIS_TASK_INTAKE 生效，旧前�
 });
 
 await test('4. 任务上限：ORBIS_TASK_MAX_RUNS 生效，旧前缀不生效；并发默认 4', () => {
-  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 4 });
+  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 4, maxTokens: null });
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_RUNS: '7' }, null).maxRuns, 7);
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_RUNS: '0' }, null).maxRuns, null, '0 = 不限额');
   assert.equal(admissionBudget({ ORBIS_TASK_MAX_RUNS: 'abc' }, null).maxRuns, null, '非数字 = 不限额');

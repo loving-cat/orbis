@@ -257,6 +257,24 @@ export function validateBudget(budget) {
       return reject(REJECT.badField, 'budget.extraRuns', 'extraRuns 必须是非负整数');
     }
   }
+  const { maxTokens, usedTokens, extraTokens } = budget;
+  if (maxTokens !== undefined && maxTokens !== null) {
+    if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
+      return reject(REJECT.badField, 'budget.maxTokens', 'maxTokens 必须是正整数或 null');
+    }
+  }
+  if (usedTokens !== undefined && usedTokens !== null) {
+    if (!Number.isInteger(usedTokens) || usedTokens < 0) {
+      return reject(REJECT.badField, 'budget.usedTokens', 'usedTokens 必须是非负整数');
+    }
+  }
+  if (extraTokens !== undefined && extraTokens !== null) {
+    if (!Number.isInteger(extraTokens) || extraTokens < 0) {
+      return reject(REJECT.badField, 'budget.extraTokens', 'extraTokens 必须是非负整数');
+    }
+  }
+  // ★ 注意：**没有** usedTokens > maxTokens 的检查。token 消耗只能结算后知道，
+  //   跨过上限的那一次必然超额；判成坏数据会把任务锁死在校验里，进不了 paused_budget。
   if (deadlineAt !== undefined && deadlineAt !== null) {
     if (!isTime(deadlineAt)) {
       return reject(REJECT.badField, 'budget.deadlineAt', 'deadlineAt 必须是毫秒时间戳');
@@ -987,11 +1005,21 @@ function planResume(run, event) {
     const extra = ownExtra + shared;
     const remaining = maxRuns === null ? Infinity
       : (Number(maxRuns) + extra) - (Number.isInteger(used) ? used : 0);
-    if (!(remaining > 0) || (extra <= 0 && maxRuns !== null)) {
+    const exhaustedByRuns = maxRuns !== null && (!(remaining > 0) || extra <= 0);
+    // ★ Token 维度同样逐条核验：只扩了次数不能把 token 用尽的任务放过去，
+    //   反之亦然 —— 否则「裸 resume」就成了绕过预算的后门。
+    const maxTokens = run.budget?.maxTokens ?? null;
+    const usedTokens = Number(run.budget?.usedTokens ?? 0);
+    const extraTokens = Number(run.budget?.extraTokens ?? 0);
+    const exhaustedByTokens = maxTokens !== null
+      && (extraTokens <= 0 || usedTokens >= Number(maxTokens));
+    if (exhaustedByRuns || exhaustedByTokens) {
       return reject(
         REJECT.budgetNotExtended,
         'budget',
-        '预算没有可用的追加额度，不能继续（请先追加额度）',
+        exhaustedByTokens && maxTokens !== null
+          ? 'Token 预算没有可用的追加额度，不能继续（请先追加额度）'
+          : '预算没有可用的追加额度，不能继续（请先追加额度）',
       );
     }
   }
@@ -1023,20 +1051,40 @@ function planBudgetExhausted(run, event) {
 }
 
 function planBudgetExtended(run, event) {
-  const extra = event.extraRuns;
-  if (!Number.isInteger(extra) || extra <= 0) {
-    return reject(REJECT.badField, 'event.extraRuns', '追加额度必须是正整数');
+  const hasRuns = event.extraRuns !== undefined && event.extraRuns !== null;
+  const hasTokens = event.extraTokens !== undefined && event.extraTokens !== null;
+  if (!hasRuns && !hasTokens) {
+    return reject(REJECT.badField, 'event.extraRuns', '扩额至少要给 extraRuns 或 extraTokens');
+  }
+  const extra = hasRuns ? event.extraRuns : null;
+  const extraTokens = hasTokens ? event.extraTokens : null;
+  if (hasRuns && (!Number.isInteger(extra) || extra <= 0)) {
+    return reject(REJECT.badField, 'event.extraRuns', '追加次数必须是正整数');
+  }
+  if (hasTokens && (!Number.isInteger(extraTokens) || extraTokens <= 0)) {
+    return reject(REJECT.badField, 'event.extraTokens', '追加 Token 必须是正整数');
   }
   const budget = run.budget && typeof run.budget === 'object' ? { ...run.budget } : {};
-  if (budget.maxRuns !== null && budget.maxRuns !== undefined) {
-    budget.maxRuns = Number(budget.maxRuns) + extra;
+  const parts = [];
+  if (hasRuns) {
+    if (budget.maxRuns !== null && budget.maxRuns !== undefined) {
+      budget.maxRuns = Number(budget.maxRuns) + extra;
+    }
+    budget.extraRuns = Number(budget.extraRuns ?? 0) + extra;
+    parts.push(`${extra} 次`);
   }
-  budget.extraRuns = Number(budget.extraRuns ?? 0) + extra;
+  if (hasTokens) {
+    if (budget.maxTokens !== null && budget.maxTokens !== undefined) {
+      budget.maxTokens = Number(budget.maxTokens) + extraTokens;
+    }
+    budget.extraTokens = Number(budget.extraTokens ?? 0) + extraTokens;
+    parts.push(`${extraTokens} tokens`);
+  }
   return {
     ok: true,
     patch: {
       budget,
-      reason: `额度追加 ${extra}（累计追加 ${budget.extraRuns}），等待继续`,
+      reason: `额度追加 ${parts.join(' + ')}，等待继续`,
     },
     effective: true,
   };

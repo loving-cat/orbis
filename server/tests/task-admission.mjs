@@ -96,9 +96,9 @@ await test('1. createRequestScope 与 admissionFingerprint 附件顺序无关', 
 });
 
 await test('2. admissionBudget 取全局环境变量与部门上限的更紧者，都不配时不限额', () => {
-  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 4 });
-  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '10' }, { maxRuns: 4 }), { maxRuns: 4, concurrencyLimit: 4 });
-  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '3' }, { maxRuns: 8 }), { maxRuns: 3, concurrencyLimit: 4 });
+  assert.deepEqual(admissionBudget({}, null), { maxRuns: null, concurrencyLimit: 4, maxTokens: null });
+  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '10' }, { maxRuns: 4 }), { maxRuns: 4, concurrencyLimit: 4, maxTokens: null });
+  assert.deepEqual(admissionBudget({ ORBIS_TASK_MAX_RUNS: '3' }, { maxRuns: 8 }), { maxRuns: 3, concurrencyLimit: 4, maxTokens: null });
 });
 
 await test('2b. 并发上限：默认 4，环境变量与部门上限只收紧不放大，非法值回落默认', () => {
