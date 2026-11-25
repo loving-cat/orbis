@@ -205,6 +205,7 @@ const TESTS = [
   // 上游故障不丢活：分钟级退避续派 / 可恢复阻塞 / 重启审计续跑
   'group-retry',
   'long-task-upstream',
+  'long-task-failfast',
   'long-task-restart',
   // 运行统计埋点 + 只读性能报告（SPEC-PERF-V1 M1-b）
   'perf-report',
