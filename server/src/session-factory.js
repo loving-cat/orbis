@@ -161,11 +161,16 @@ export function createSessionBuilder({
     //   用来改 mcpServers / role 这类能扩权的字段。
     const bot = applyBotOverride(stored, store.botOverride(botId));
 
+    // ★ 一次性回退会话（SPEC-PERF-V1 §4.2 d）：指定别的模型、且**不落盘**。
+    //   跨 provider 绝不能复用原会话文件（等于把 A 家的 tool-call 历史喂给 B 家），
+    //   所以这里只能走内存会话；`bot.model` 一个字节都不改。
+    const modelOverride = opts.modelOverride ? resolveModel(opts.modelOverride) : null;
+    const persistSession = opts.persist !== false;
     const sessionDir = path.join(config.dataDir, 'sessions');
     // ★ 内存模式（T2.3）：store 说了不落盘，会话文件也不能偷偷开一个。
     //   否则“传内存 store 时零磁盘写入”只在 mock 的 SessionManager 下成立 ——
     //   真实运行时会先 create 出 `sessions/<room>-<bot>.json`，再写 transcript。
-    const inMemorySession = isTalkLane || store.memory === true;
+    const inMemorySession = isTalkLane || store.memory === true || !persistSession;
     const savedFile = inMemorySession ? null : store.sessionFileFor(roomId, botId);
     // 旁路 Talk / 内存模式会话强制纯内存隔离，绝不与后台 Work 并发读写同一磁盘会话文件
     const sessionManager = inMemorySession
@@ -361,7 +366,7 @@ export function createSessionBuilder({
       : new DefaultResourceLoader(loaderDefaults);
     await resourceLoader.reload();
 
-    const botModel = bot.model ? resolveModel(bot.model) : null;
+    const botModel = modelOverride ?? (bot.model ? resolveModel(bot.model) : null);
     const picked = pickModelAndThinking({
       bot,
       botModel,

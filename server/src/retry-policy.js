@@ -143,6 +143,29 @@ export function decideRetry({
     };
   }
 
+  // ★ 模型挂住（`model-idle`）：等多久它都不吐字，是**通路**的问题。
+  //
+  //   这类失败会连续出现（同一家的 key 挂了就是挂了），拿快速重试去撞它
+  //   只会把 10 次机会烧在几十秒里。所以直接走分钟级阶梯，并且从第 1 次
+  //   重试起就带 `switchModel` 提示 —— 这正是 §4.2 d 的早切换门槛。
+  if (/model-idle|没有进展|无进展/i.test(text)) {
+    if (attempt > MAX_RETRIES_TRANSIENT) {
+      return {
+        retry: false,
+        why: `模型连续 ${attempt} 次没有任何进展，先停下（通路可能整体不可用）`,
+        kind: 'transient-exhausted',
+        delayMs: 0,
+      };
+    }
+    return {
+      retry: true,
+      why: '模型一直没有进展，换一条通路/换个模型再试',
+      kind: 'model-idle',
+      switchModel: true,
+      delayMs: transientBackoffMs(attempt),
+    };
+  }
+
   if (attempt > maxRetries) {
     return { retry: false, why: `已经试了 ${attempt} 次`, kind: 'exhausted', delayMs: 0 };
   }
@@ -219,6 +242,9 @@ export function isRecoverableFailure({ error = '', status = null } = {}) {
   // 空回复：模型偶发不出内容，再试通常就好
   if (/没有给出内容|空回复|empty/i.test(text)) return true;
 
+  // 模型挂住（`modelIdleMs` 内一个字都没吐）：上游的问题，值得再来
+  if (/model-idle|没有进展|无进展/i.test(text)) return true;
+
   // 超时：再试一次有价值
   if (/超时|timeout|timed out/i.test(text)) return true;
 
@@ -245,6 +271,9 @@ export function isUpstreamTransient({ error = '', status = null, kind = '' } = {
   if (code === 401 || code === 403 || code === 402) return false;
   if (kind === 'auth' || kind === 'quota' || kind === 'aborted' || kind === 'budget') return false;
   if (kind === 'breaker-open') return true;
+  // 模型挂住同上：这是「路不通」，不是「活做不成」→ 走分钟级退避，别烧完快速重试
+  if (kind === 'model-idle') return true;
+  if (/model-idle|没有进展|无进展/i.test(text)) return true;
   if (/已.{0,2}(终止|中止)|aborted|cancelled|预算已用尽|budget_exhausted/i.test(text)) return false;
   if (code === 429) return true;
   if (Number.isFinite(code) && code >= 500 && code < 600) return true;

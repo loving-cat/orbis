@@ -110,6 +110,36 @@ String liveActivityOf(Iterable<Msg> messages) {
   return '正在思考';
 }
 
+/// 上游重试的胶囊文案。
+///
+/// 短是硬要求：胶囊有 200px 上限，写长了会把别的成员挤掉。
+String retryActivityVerb(Map<String, dynamic>? info) {
+  if (info == null || info.isEmpty) return '';
+  final switchedTo = (info['switchedTo'] as String?)?.trim() ?? '';
+  if (switchedTo.isNotEmpty) return '已切备用模型';
+  final raw = info['attempt'];
+  final attempt = raw is int && raw > 0 ? raw : 1;
+  return '上游不稳 · 第 $attempt 次重试';
+}
+
+/// 上游重试的 Tooltip：说清「换了谁 / 还要等多久」。
+///
+/// 只带模型组别名（服务端下发的 `switchedTo` 就是安全显示名），
+/// 不含 endpoint、密钥或供应商身份。
+String retryTooltip(Map<String, dynamic>? info) {
+  if (info == null || info.isEmpty) return '';
+  final switchedTo = (info['switchedTo'] as String?)?.trim() ?? '';
+  if (switchedTo.isNotEmpty) {
+    return '上游暂时不稳，本次重试已临时切到备用模型：$switchedTo'
+        '（只对这一次重试生效，不会改你的模型配置）';
+  }
+  final raw = info['attempt'];
+  final attempt = raw is int && raw > 0 ? raw : 1;
+  final ms = info['delayMs'];
+  final wait = ms is int && ms > 0 ? '，约 ${(ms / 1000).round()} 秒后重试' : '';
+  return '上游暂时不稳，正在第 $attempt 次重试$wait';
+}
+
 /// 有内容才包 Tooltip，没有就原样返回。
 ///
 /// 空 Tooltip 不只是没意义：它会占一块可命中的区域，
@@ -169,7 +199,17 @@ class _ActivityMonitorState extends State<ActivityMonitor> {
             (m.authorId ?? '').isNotEmpty)
           m.authorId!
     };
-    final ids = <String>{...state.typingBotIds(widget.roomId), ...liveAuthors}.toList();
+    // 正在重试的 bot 也算活着：否则重试期间胶囊会闪一下消失，用户以为它卡死了
+    final retryIds = <String>{
+      for (final key in state.retryingBots.keys)
+        if (key.startsWith('${widget.roomId}:'))
+          key.substring(widget.roomId.length + 1),
+    };
+    final ids = <String>{
+      ...state.typingBotIds(widget.roomId),
+      ...liveAuthors,
+      ...retryIds,
+    }.toList();
     final running = ids.isNotEmpty;
     // 定时器的创建/销毁放到 build 之后做：build 必须是纯函数。
     if (running != _timerRunning) {
@@ -188,18 +228,25 @@ class _ActivityMonitorState extends State<ActivityMonitor> {
       final b = state.botById(id);
       if (b == null) continue;
       final live = liveActivityOf(roomMsgs.where((m) => m.authorId == id));
+      // 重试态优先于「正在思考 / 正在回复」：此刻真正的阻塞点是上游
+      final retryVerb = retryActivityVerb(state.retryingOf(widget.roomId, id));
       entries.add((
         id: id,
         name: b.name,
-        verb: live.isNotEmpty
-            ? live
-            : activityVerb(needsUser: widget.needsUser, streaming: widget.streaming),
+        verb: retryVerb.isNotEmpty
+            ? retryVerb
+            : (live.isNotEmpty
+                ? live
+                : activityVerb(needsUser: widget.needsUser, streaming: widget.streaming)),
       ));
     }
     if (entries.isEmpty) return const SizedBox.shrink();
-    int rank(String verb) => verb == '正在回复'
-        ? 1
-        : (verb == '正在思考' ? 3 : (verb == '等你确认' ? 0 : 2));
+    // 重试 / 换模型排最前（0）：它才是用户此刻最该知道的状态
+    int rank(String verb) => verb.startsWith('上游不稳') || verb == '已切备用模型'
+        ? 0
+        : (verb == '正在回复'
+            ? 1
+            : (verb == '正在思考' ? 3 : (verb == '等你确认' ? 0 : 2)));
     entries.sort((a, b) => rank(a.verb) != rank(b.verb)
         ? rank(a.verb).compareTo(rank(b.verb))
         : a.name.compareTo(b.name));
@@ -207,8 +254,16 @@ class _ActivityMonitorState extends State<ActivityMonitor> {
     final hidden = entries.length - shown.length;
     final bot = state.botById(shown.first.id)!;
     final label = shown.map((e) => '${e.name} ${e.verb}').join('  ·  ');
-    final tooltip = shown.map((e) => '${e.name}　${e.verb}').join('\n') +
-        (hidden > 0 ? '\n另有 $hidden 个在跑' : '');
+    final retryLines = [
+      for (final e in shown)
+        if (state.retryingOf(widget.roomId, e.id) != null)
+          retryTooltip(state.retryingOf(widget.roomId, e.id)),
+    ].where((t) => t.isNotEmpty).toList();
+    final tooltip = [
+      shown.map((e) => '${e.name}　${e.verb}').join('\n'),
+      ...retryLines,
+      if (hidden > 0) '另有 $hidden 个在跑',
+    ].join('\n');
     // ★ 不再把 TaskRun 的 title 当「它在做什么」。
     //
     //   TaskRun 是「受管执行」的概念：它的 title 是派给这个 bot 的任务目标，

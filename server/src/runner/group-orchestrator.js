@@ -15,6 +15,7 @@ import { isMainChatBusy } from './chief-summary-runner.js';
 import { shouldMirrorProgress, mirrorProgress, MIRROR_SKIPPED_NO_DM } from '../dm.js';
 import { settleRetryMessage } from '../retry-messages.js';
 import { decideRetry, failureNote, retryHint, transientBackoffMs } from '../retry-policy.js';
+import { planFallbackForBot, hasImageAttachments } from './model-fallback.js';
 import { continuationPrompt } from '../turn-continuation.js';
 import {
   isUpstreamTransient,
@@ -648,10 +649,35 @@ export async function executeGroupRound(
           const taskRunId = newId('run_');
 
           const itemManaged = isManagedRound ? managedContext : null;
+          // ★ 只有图片附件才需要 vision：把 csv/md/pdf 也当成「要 vision」，
+          //   会让带任何附件的请求永远拒绝早切换。
+          const imageAttached = hasImageAttachments(attachments, (a) => (typeof a === 'string' ? { name: a } : a));
+          // 这条重试链临时切到的模型（null = 用配置里的模型）；单链最多切 1 次
+          let overrideModel = null;
+          // 单链最多切 1 次：备用也失败就回原模型按既有路径收敛，绝不连环乱跳
+          let switchedOnce = false;
+          const altFor = (kind, fails, extra = {}) => planFallbackForBot({
+            runner, botId: bot.id, fails, kind, hasImages: imageAttached,
+            alreadySwitched: switchedOnce, ...extra,
+          });
           let res;
           if (!gateCheck.allow) {
-            log(`【${room.name}】${bot.name} 跳过：${gateCheck.reason}`);
-            res = {
+            // ★ 单端点组熔断打开时，端点轮转没得选 —— 但有健康替代模型就该直接切过去，
+            //   而不是停下来等 group-retry 的分钟级续派（§4.2 d）。
+            const alt = altFor('breaker-open', 1, { breakerOpen: true });
+            if (alt) {
+              overrideModel = alt.slug;
+              switchedOnce = true;
+              runner.bus.emit('event', {
+                t: 'bot.retrying', roomId, botId: bot.id, attempt: 1, delayMs: 0,
+                kind: 'breaker-open', switchedTo: alt.label,
+              });
+            }
+            if (!overrideModel) log(`【${room.name}】${bot.name} 跳过：${gateCheck.reason}`);
+            res = overrideModel ? await runner.run(roomId, bot.id, prompt, {
+              groupTurn: true, retryManaged: true, taskRunId, attemptIndex: 1,
+              attachments, managedContext: itemManaged, modelOverride: overrideModel,
+            }) : {
               ok: false,
               text: '',
               ms: 0,
@@ -673,7 +699,8 @@ export async function executeGroupRound(
             });
           }
           if (res.ok) {
-            runner.markGroupHealthy(bot.id);
+            // ★ 首发就熔断直切时，跑通的是 overrideModel —— 不能把坏着的主组标成健康
+            runner.markGroupHealthy(bot.id, overrideModel);
           } else if (!res.breakerSkipped) {
             const firstDecision = decideRetry({
               error: String(res.error ?? ''),
@@ -684,7 +711,9 @@ export async function executeGroupRound(
             runner.markGroupFailed(bot.id, {
               kind: firstDecision.kind,
               status: res.status ?? null,
+              model: overrideModel,
             });
+            overrideModel = null;
           }
           let attempt = 1;
           let lastError = res.ok ? '' : String(res.error ?? '未知原因');
@@ -707,20 +736,34 @@ export async function executeGroupRound(
               break;
             }
             const afterFail = runner.breakerFor(bot.id);
+            let breakerSwitched = false;
             if (afterFail && afterFail.breaker.state === BREAKER_STATE.open) {
-              log(`【${room.name}】${bot.name} 熔断已打开，停止重试`);
-              lastKind = 'breaker-open';
-              break;
+              // 熔断打开时先试早切换（§4.2 d）：有健康替代就换一条路继续，
+              // 没有才走 breakerSkipped / group-retry 的分钟级续派。
+              const alt = altFor('breaker-open', attempt, { breakerOpen: true });
+              if (alt) {
+                overrideModel = alt.slug;
+                switchedOnce = true;
+                breakerSwitched = true;
+                runner.bus.emit('event', {
+                  t: 'bot.retrying', roomId, botId: bot.id, attempt: attempt + 1,
+                  delayMs: 0, kind: 'breaker-open', switchedTo: alt.label,
+                });
+              } else {
+                log(`【${room.name}】${bot.name} 熔断已打开，停止重试`);
+                lastKind = 'breaker-open';
+                break;
+              }
             }
             attempt++;
             retries.push(`${attempt}. ${decision.why}`);
             log(
               `【${room.name}】${bot.name} 第 ${attempt} 次尝试（${decision.kind}）：${lastError.slice(0, 80)}`,
             );
-            const waitMs =
-              decision.kind === 'transient'
-                ? transientBackoffMs(attempt - 1)
-                : RETRY_DELAY_MS;
+            // 刚因熔断换了新模型：等退避没有意义（那条通路还没被这条链用过）
+            const waitMs = breakerSwitched
+              ? 0
+              : (decision.kind === 'transient' ? transientBackoffMs(attempt - 1) : RETRY_DELAY_MS);
             await new Promise((r) => setTimeout(r, waitMs));
             if (runner.aborting.has(roomId)) break;
             if (stale()) break;
@@ -731,24 +774,43 @@ export async function executeGroupRound(
               switchModel: decision.switchModel === true,
             });
             settleRetryMessage(runner.store, roomId, res, { willRetry: true });
+            // ★ 早切换（§4.2 d）：连续第 2 次临时故障 / 第 1 次 model-idle / 所属组熔断打开
+            //   → 这一轮换一个健康的已启用模型跑（一次性会话，不改 bot.model）
+            // `attempt - 1` = 这条链已经失败了几次（attempt 在本轮已自增过）：
+            // transient 要连续 2 次才切，model-idle 第 1 次就切（门槛在 shouldSwitchEarly）
+            const alt = altFor(decision.kind, attempt - 1);
+            if (alt) {
+              overrideModel = alt.slug;
+              switchedOnce = true;
+              runner.bus.emit('event', {
+                t: 'bot.retrying', roomId, botId: bot.id, attempt,
+                delayMs: waitMs, kind: decision.kind, switchedTo: alt.label,
+              });
+            }
             res = await runner.run(roomId, bot.id, hinted + prompt, {
               groupTurn: true,
               retryManaged: true,
               taskRunId, attemptIndex: attempt,
               attachments,
               managedContext: itemManaged,
+              ...(overrideModel ? { modelOverride: overrideModel } : {}),
             });
             if (!res.ok) {
               lastError = String(res.error ?? '未知原因');
               lastStatus = res.status ?? null;
             }
+            // ★ 熔断按**真的在跑的那个模型**归属：主组坏着、临时切到好组跑通时，
+            //   绝不能把坏着的组标成健康（照 `markGroupHealthy(bot.id)` 就会这么错）
             if (res.ok) {
-              runner.markGroupHealthy(bot.id);
+              runner.markGroupHealthy(bot.id, overrideModel);
             } else {
               runner.markGroupFailed(bot.id, {
                 kind: decision.kind,
                 status: res.status ?? null,
+                model: overrideModel,
               });
+              // 备用也失败：回到原模型，别再拿一个同样坏的通路死循环
+              overrideModel = null;
             }
           }
 
