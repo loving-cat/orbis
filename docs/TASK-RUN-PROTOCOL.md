@@ -40,11 +40,14 @@
   - `all`：所有通过机械验收的任务都审；
   - `off`：完全关闭（也不注入执行器）。
 - **零浪费**：机械验收没过（`unmet` / `blocked` 非空）时**绝不调用**评审员，先让执行者修确定性错误。
-- 评审会话：全新 `SessionManager.inMemory`（不落盘、不复用执行者历史）+ 只读工具白名单 `read/ls/find/grep`（无写、无 shell、无 MCP、无宿主自定义工具）+ 策略层 `dangerous: 'deny'`；`finally` 里 `dispose()`。选模优先换一个健康且不同的模型（`ORBIS_CRITIC_MODEL` 可指定），**本地/内网执行者绝不被换到公有云**，没有替代时退回同款模型但仍是干净会话。
+- 评审会话：全新 `SessionManager.inMemory`（不落盘、不复用执行者历史）+ 只读工具白名单 `read/ls/find/grep`（无写、无 shell、无 MCP、无宿主自定义工具）+ 策略层 `dangerous: 'deny'`；`finally` 里 `dispose()`。选模优先换一个健康且不同的模型（`ORBIS_CRITIC_MODEL` 可指定），**本地/内网执行者绝不被换到公有云**（`ORBIS_CRITIC_MODEL` 指向云端也一样拒绝，不做“静默忽略”），没有替代时退回同款模型但仍是干净会话。
+- 读评审输出按真实 SDK 事件：`message_start`（assistant）清本轮缓冲、`text_delta` 只追加、`message_end`（assistant）单点计 `usage` 并先判 `assistantFailure`（429/auth/模型错走 `prompt_failed`，不落成 `no_output`）；结论取**最后一个带 `verdict` 的平衡 JSON**（模型在结论前提字段、或先调只读工具都不会把解析带偏）。
 - 结论 fail-closed：只接受 `{verdict, summary, defects}`；`passed` 必须带结论依据且 `defects` 为空；`failed` 必须至少 1 条可执行缺陷；解析不了 = `parse_error`，绝不自动放行。
 - 绑定与去重：每次评审绑定 `(revision, 最新已结算 attemptId, 产物指纹)`；同一产出不重复审；**上一轮的 `failed` 记录不会挡住返工后的新一轮评审**（`expertReviews` 里的 `critic_review` 按尝试过滤，负责人的人工判断仍对整个版本有效）。
 - 有界返工：`MAX_CRITIC_REWORKS = 2`；未达标就走标准 `verification_finished(passed: false, unmet: defects)` 自动返工，返工提示词带完整缺陷清单；连续 2 轮不过 → `block`，子任务走既有 `handBackBlockedChildren` 把真实缺陷交给负责人。
-- 评审员自身故障（超时 / 429 / 抛错 / 输出无法解析）**不算业务缺陷**：不扣返工额度、不伪造通过，30 秒后重试；连续 3 次跑不起来才阻塞等人工。
+- 评审员自身故障（超时 / 429 / 抛错 / 输出无法解析）**不算业务缺陷**：不扣返工额度、不伪造通过，30 秒后重试（`retryAt` 在 `verifying` 态也生效，到期前的任何 `notify` 不得穿透连撞）；连续 3 次跑不起来才阻塞等人工。
+- 人工介入后的重置：手动解除阻塞 / 暂停后继续 会把 `criticState` 的 `reworkCount` / `errorCount` 清零（保留 `lastPassedKey` 等历史）——否则按钮按下去立刻又到上限、又 block。达上限时**先把验收收口（清 `verifyingAt`）再 block**，解除后回到 `queued` 让执行者真的再干一轮，而不是拿旧产出秒阻。
+- 追加额度（`onBudgetExtended`）会把整棵树的预算暂停一起恢复，且**先恢复全部子任务再唤醒**（否则先醒来的根会看到还在暂停的子任务，把它自己又暂停回去）。
 - 预算与竞态：评审前查根 `remainingTokensOf`（用尽走 `paused_budget`，不偷跑）；返回的 `usage` 计入根 `budget.usedTokens`；`await` 回来后重读任务，取消/暂停/改版则丢弃结论（写事务里再核一次 revision）。
 
 

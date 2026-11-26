@@ -598,7 +598,7 @@ await test('13. ★ 取消竞态：评审返回时任务已取消 → 丢弃结�
   assert.notEqual(run.state, STATE.completed);
 });
 
-await test('14. ★ Token 预算用尽 → 不启动评审，走预算暂停', async () => {
+await test('14. ★ Token 预算用尽 → 不启动评审、严格停在 paused_budget；追加额度后自动恢复并完成', async () => {
   const goal = {
     requirement: '预算很紧的活',
     verification: [
@@ -607,12 +607,11 @@ await test('14. ★ Token 预算用尽 → 不启动评审，走预算暂停', a
     ],
   };
   const rootId = await makeRoot({ goal });
-  const requestId = 'rq-budget-' + rootId;
   await taskRuns.mutate(rootId, {
     mutate: (cur) => ({ ...cur, budget: { ...(cur.budget ?? {}), maxTokens: 100, usedTokens: 0 }, updatedAt: Date.now() }),
   });
   const kid = await addKid(rootId, { botId: memberA.id, goal });
-  const critic = makeCritic([{ ok: true, verdict: 'passed', summary: '不该被调用', defects: [] }]);
+  const critic = makeCritic([{ ok: true, verdict: 'passed', summary: '核对过', defects: [] }]);
   const rec = {
     members: [], leads: [],
     // 执行期间把根预算烧光（模拟这一轮真的花了 token）
@@ -624,13 +623,17 @@ await test('14. ★ Token 预算用尽 → 不启动评审，走预算暂停', a
   };
   const sup = makeSupervisor({ criticReview: critic.fn, rec });
   sup.notify(rootId);
-  await sleep(600);
-  await sup.idle();
-  const run = taskRuns.read(kid).taskRun;
-  sup.dispose();
+  const paused = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.paused_budget, { timeoutMs: 3000 });
+  assert.equal(paused[0].state, STATE.paused_budget, `预算用尽必须严格停在 paused_budget，实际 ${paused[0].state}`);
   assert.equal(critic.calls.length, 0, '预算用尽时一次评审都不该跑（不偷跑模型）');
-  assert.ok([STATE.paused_budget, STATE.verifying].includes(run.state), `应停在预算暂停，实际 ${run.state}`);
-  assert.equal(requestId.length > 0, true);
+
+  // ★ 追加额度后要能真的继续（否则扩额按钮就是假的），且这次评审真的跑了
+  const extended = await sup.onBudgetExtended(rootId, { extraTokens: 500 });
+  assert.equal(extended?.ok, true, '扩额应成功：' + (extended?.text ?? extended?.code ?? ''));
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 8000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `扩额后应自动恢复并完成，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  assert.ok(critic.calls.length >= 1, '扩额后评审应真的跑起来');
 });
 
 await test('15. ★ criticLane 会话隔离：纯内存 + 只读工具白名单（无写/shell/MCP）', async () => {
@@ -720,9 +723,11 @@ await test('17. task-critic-runner：真的用 criticLane 开会话、收文本�
         session: {
           subscribe(fn) { listener = fn; return () => { listener = null; }; },
           async prompt() {
+            listener?.({ type: 'message_start', message: { role: 'assistant' } });
             listener?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '{"verdict":"passed",' } });
             listener?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '"summary":"核对过产物","defects":[]}' } });
-            listener?.({ type: 'message_end', message: { usage: { inputTokens: 300, outputTokens: 50 } } });
+            // usage **只在** message_end（assistant）上报一次；update 里不报
+            listener?.({ type: 'message_end', message: { role: 'assistant', usage: { inputTokens: 300, outputTokens: 50 }, content: [{ type: 'text', text: '{"verdict":"passed","summary":"核对过产物","defects":[]}' }] } });
           },
           async dispose() { disposed += 1; },
         },
@@ -764,6 +769,258 @@ await test('17. task-critic-runner：真的用 criticLane 开会话、收文本�
   assert.equal(bad.status, 'error');
   assert.match(String(bad.why), /429/);
 });
+
+await test('18. ★ 本地执行者（含默认模型 + ollama/… 内置 slug）绝不被换到云端评审', async () => {
+  const { createCriticReviewer, criticCandidatesOf } = await import(src('tasks/task-critic-runner.js'));
+
+  // (a) 纯策略：`ollama/qwen3` 这种内置本地 slug（没有 provider 字段）也必须认出本地
+  const cloudCandidates = [
+    { slug: 'cloud/a', label: 'Cloud A', groupId: 'cloud', provider: 'openai', baseUrl: 'https://api.example.com' },
+    { slug: 'cloud/b', label: 'Cloud B', groupId: 'cloud2', provider: 'openai', baseUrl: 'https://api2.example.com' },
+  ];
+  const localPicked = C.selectCriticModel({
+    executorModel: { slug: 'ollama/qwen3' },
+    candidates: cloudCandidates,
+  });
+  assert.equal(localPicked.slug, null, '本地执行者不能选到云端候选');
+  assert.equal(localPicked.sameAsExecutor, true);
+
+  // (b) 显式指定云端也不许外泄（环境变量写错就是数据泄露）
+  const explicitCloud = C.selectCriticModel({
+    executorModel: { slug: 'ollama/qwen3' },
+    candidates: cloudCandidates,
+    explicitModel: 'cloud/b',
+    explicitResolvable: true,
+  });
+  assert.notEqual(explicitCloud.slug, 'cloud/b', 'ORBIS_CRITIC_MODEL 指向云端时，本地执行者必须拒绝');
+  assert.match(String(explicitCloud.rejected ?? explicitCloud.why), /拒绝外泄/);
+
+  // (c) 非本地执行者：显式模型可解析但不在候选里 → 不要静默丢弃
+  const explicitKnown = C.selectCriticModel({
+    executorModel: { slug: 'cloud/a', provider: 'openai', baseUrl: 'https://api.example.com' },
+    candidates: cloudCandidates,
+    explicitModel: 'cloud/self-hosted',
+    explicitResolvable: true,
+  });
+  assert.equal(explicitKnown.slug, 'cloud/self-hosted', '能解析的显式模型要用上，而不是默默忽略');
+
+  // (d) 真实装配：bot.model 为空 → 回落真跑模型标签
+  const localBot = store.createBot({ name: '本地评审执行者', role: 'main' });
+  const calls = [];
+  const fakeRunner = {
+    model: { provider: 'ollama', id: 'qwen3' },
+    modelLabel: () => 'ollama/qwen3',
+    resolveModel: (slug) => (String(slug).startsWith('ollama/')
+      ? { provider: 'ollama', id: 'qwen3', baseUrl: 'http://127.0.0.1:11434' }
+      : null),
+    modelGroups: {
+      list: () => [
+        {
+          id: 'cloud',
+          enabled: true,
+          baseUrl: 'https://api.example.com',
+          endpoints: [{ baseUrl: 'https://api.example.com' }],
+          menuEntries: () => [{ label: 'Cloud A', slugs: ['cloud/a'] }],
+        },
+        {
+          id: 'ollama',
+          enabled: true,
+          baseUrl: 'http://127.0.0.1:11434',
+          endpoints: [{ baseUrl: 'http://127.0.0.1:11434' }],
+          menuEntries: () => [{ label: '本地 Qwen', slugs: ['ollama/qwen3'] }],
+        },
+      ],
+      get: () => null,
+    },
+    breakerFor: () => null,
+    breakers: new Map(),
+    __buildSession: async (roomId, botId, opts) => {
+      calls.push(opts);
+      return {
+        session: {
+          subscribe: () => () => {},
+          async prompt() {},
+          async dispose() {},
+        },
+      };
+    },
+  };
+  const reviewer = createCriticReviewer({
+    runner: fakeRunner,
+    store,
+    routeOf: () => ({ roomId: room.id, botId: localBot.id }),
+    log: () => {},
+  });
+  await reviewer({ taskRun: { id: 'tr_local', revision: 1, goal: { requirement: 'x' } }, verification: {} });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].modelOverride, undefined, '本地执行者不得被换到 cloud/a 评审（真实装配也要守住）');
+  assert.equal(calls[0].criticLane, true);
+
+  // (e) 候选透传：真实 ModelGroup 没有 provider 字段，要从 slug 前缀补
+  const cands = criticCandidatesOf(fakeRunner.modelGroups, { resolveModel: fakeRunner.resolveModel });
+  const cloudCand = cands.find((c) => c.slug === 'cloud/a');
+  const ollamaCand = cands.find((c) => c.slug === 'ollama/qwen3');
+  // 真实 ModelGroup 没有 provider 字段 → 从 resolveModel 或 slug 前缀补
+  assert.equal(cloudCand.provider, 'cloud', 'provider 要能从 slug 前缀补全');
+  assert.equal(cloudCand.local, false);
+  assert.equal(ollamaCand.provider, 'ollama', 'resolveModel 给的 provider 优先');
+  assert.equal(ollamaCand.local, true, '端点/地址是 loopback 就要判成本地');
+});
+
+await test('19. ★ 多轮工具调用：只取最后一轮结论、usage 不双计；SDK 静默报错不被吞成 no_output', async () => {
+  const { createCriticReviewer } = await import(src('tasks/task-critic-runner.js'));
+  const bot = store.createBot({ name: '多轮评审执行者', role: 'main' });
+  const buildFake = (script) => ({
+    model: { provider: 'cloud', id: 'critic' },
+    modelLabel: () => 'cloud/critic',
+    resolveModel: () => null,
+    modelGroups: { list: () => [], get: () => null },
+    breakerFor: () => null,
+    breakers: new Map(),
+    __buildSession: async () => ({
+      session: {
+        subscribe: (fn) => { script(fn); return () => {}; },
+        async prompt() {},
+        async dispose() {},
+      },
+    }),
+  });
+
+  // 第 1 轮：思考文本里带一个 `{placeholder}` 并调工具；第 2 轮才是结论
+  const multiTurn = (fn) => {
+    fn({ type: 'message_start', message: { role: 'assistant' } });
+    fn({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '我先看 {"path":"out/a.md"} 这个文件' } });
+    fn({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: '我先看 {"path":"out/a.md"} 这个文件' }], usage: { inputTokens: 100, outputTokens: 10 } },
+    });
+    fn({ type: 'message_start', message: { role: 'assistant' } });
+    fn({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '结论：' } });
+    fn({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '{"verdict":"failed","summary":"数值不一致","defects":["out/a.md 第 3 行 100 应为 10"]}' } });
+    fn({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '结论：{"verdict":"failed","summary":"数值不一致","defects":["out/a.md 第 3 行 100 应为 10"]}' }],
+        usage: { inputTokens: 200, outputTokens: 20 },
+      },
+    });
+  };
+  const multi = createCriticReviewer({
+    runner: buildFake(multiTurn), store, routeOf: () => ({ roomId: room.id, botId: bot.id }), log: () => {},
+  });
+  const multiOut = await multi({ taskRun: { id: 'tr_multi', revision: 1, goal: { requirement: 'x' } }, verification: {} });
+  assert.equal(multiOut.status, 'reviewed', '多轮工具调用后仍要能解析出结论：' + JSON.stringify(multiOut));
+  assert.equal(multiOut.verdict, 'failed', '要取最后一轮的结论对象，不能被第一轮的 {placeholder} 带偏');
+  assert.deepEqual(multiOut.defects, ['out/a.md 第 3 行 100 应为 10']);
+  assert.equal(multiOut.usage.inputTokens, 300, 'usage 只按 message_end 累加一次（100 + 200）');
+  assert.equal(multiOut.usage.outputTokens, 30, 'output 同理（10 + 20），update 里不得再累一次');
+
+  // SDK 静默上报的错误（429）：必须当基础设施工伤，而不是「评审员没说话」
+  const sdkError = (fn) => {
+    fn({ type: 'message_start', message: { role: 'assistant' } });
+    fn({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: '429 rate limit exceeded', usage: { inputTokens: 5, outputTokens: 0 } },
+    });
+  };
+  const failing = createCriticReviewer({
+    runner: buildFake(sdkError), store, routeOf: () => ({ roomId: room.id, botId: bot.id }), log: () => {},
+  });
+  const sdkOut = await failing({ taskRun: { id: 'tr_sdk', revision: 1, goal: { requirement: 'x' } }, verification: {} });
+  assert.equal(sdkOut.status, 'error');
+  assert.equal(sdkOut.code, 'prompt_failed', 'SDK 报错要走 prompt_failed，不能落成 no_output');
+  assert.match(String(sdkOut.why), /429/);
+});
+
+await test('20. ★ 评审员故障退避：到期前重复 notify 不连撞；连续 3 次才停（off-by-one）', async () => {
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id });
+  const critic = makeCritic([{ status: 'error', code: 'timeout', why: '评审超时', ok: undefined, usage: null }]);
+  const sup = makeSupervisor({ criticReview: critic.fn });
+  sup.notify(rootId);
+  await sleep(300);
+  await sup.idle();
+  assert.equal(critic.calls.length, 1, '第一次评审应跑过');
+  const afterFirst = taskRuns.read(kid).taskRun;
+  assert.ok(Number.isFinite(afterFirst.retryAt), '故障后要排一个到期唤醒');
+  assert.ok(afterFirst.retryAt > Date.now(), '退避必须排到未来');
+
+  // 到期前反复 notify：不能穿透退避连撞评审
+  for (let i = 0; i < 5; i += 1) {
+    sup.notify(kid);
+    sup.notify(rootId);
+    await sleep(30);
+    await sup.idle();
+  }
+  assert.equal(critic.calls.length, 1, `退避期内不该重复评审，实测 ${critic.calls.length} 次`);
+
+  // 连续 3 次（常量语义）才停：手动清掉退避模拟到期
+  for (let round = 2; round <= 3; round += 1) {
+    await taskRuns.mutate(kid, { mutate: (cur) => ({ ...cur, retryAt: null, updatedAt: Date.now() }) });
+    sup.notify(kid);
+    await sleep(250);
+    await sup.idle();
+    const now = taskRuns.read(kid).taskRun;
+    assert.equal(Number(now.criticState?.errorCount ?? 0), round, `第 ${round} 次失败应记到 errorCount=${round}`);
+  }
+  const finalRun = taskRuns.read(kid).taskRun;
+  sup.dispose();
+  assert.equal(finalRun.state, STATE.blocked, '连续 3 次跑不起来就停下等人工，不是 4 次');
+  assert.match(String(finalRun.flags?.blockedReason ?? ''), /连续 3 次无法完成/);
+});
+
+await test('21. ★ criticRequired 达上限阻塞后，手动解除阻塞能回到返工（不原地秒阻）', async () => {
+  const rootId = await makeRoot({ autonomous: false });
+  // 没有 expert 条件，只靠 criticRequired 触发质检
+  const kid = await addKid(rootId, {
+    botId: memberA.id,
+    criticRequired: true,
+    goal: {
+      requirement: '写一份要被质检的报告',
+      verification: [{ id: 'm1', kind: 'artifact', description: '交了产物', spec: { count: 1 } }],
+    },
+  });
+  const critic = makeCritic([
+    { ok: true, verdict: 'failed', summary: '不行', defects: ['结论缺依据'] },
+    { ok: true, verdict: 'failed', summary: '还不行', defects: ['结论仍缺依据'] },
+    { ok: true, verdict: 'passed', summary: '这次可以了', defects: [] },
+  ]);
+  const rec = { members: [], leads: [] };
+  const sup = makeSupervisor({ criticReview: critic.fn, rec, maxCriticReworks: 2 });
+  sup.notify(rootId);
+  const blocked = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.blocked, { timeoutMs: 8000 });
+  assert.equal(blocked[0].state, STATE.blocked, '连续两轮不过应阻塞');
+  const memberRunsBefore = rec.members.filter((m) => m.taskRunId === kid).length;
+
+  // 手动解除阻塞：必须先回到 queued（让执行者真的再干一轮），而不是立刻拿旧产出重审
+  const unblocked = await sup.onControl(kid, { type: 'unblock', reason: '我改好了' });
+  assert.equal(unblocked?.ok, true, '解除阻塞应成功：' + (unblocked?.text ?? unblocked?.code ?? ''));
+  const afterUnblock = taskRuns.read(kid).taskRun;
+  assert.equal(afterUnblock.state, STATE.queued, `解除后应回到排队返工，实际 ${afterUnblock.state}`);
+  assert.equal(Number(afterUnblock.criticState?.reworkCount ?? 0), 0, '人工介入后返工轮次要清零（否则一动就到上限）');
+  assert.equal(Number(afterUnblock.criticState?.errorCount ?? 0), 0, '错误计数也要清零');
+
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 8000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `解除后应能返工并通过，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  const memberRunsAfter = rec.members.filter((m) => m.taskRunId === kid).length;
+  assert.ok(memberRunsAfter > memberRunsBefore, '解除阻塞后执行者必须真的再跑一轮（而不是直接拿旧产出重审）');
+  assert.equal(critic.calls.length, 3, '解除后应有一次新的评审');
+});
+
+await test('22. parseCriticVerdict：多个平衡 JSON 时取最后一个带 verdict 的（正文提字段不误伤）', () => {
+  const text = '先看 {"path":"out/a.md"}，字段是 {"verdict":"passed"} 这种形状。\n结论：{"verdict":"failed","summary":"数值不对","defects":["out/a.md 第 3 行 100 应为 10"]}';
+  const parsed = C.parseCriticVerdict(text);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.verdict, 'failed', '要取最后一个带 verdict 的结论对象');
+  assert.deepEqual(parsed.defects, ['out/a.md 第 3 行 100 应为 10']);
+  const fenced = C.parseCriticVerdict('草稿 {"verdict":"failed","summary":"草稿","defects":["a"]}\n```json\n{"verdict":"passed","summary":"最终核对过","defects":[]}\n```');
+  assert.equal(fenced.verdict, 'passed', '代码块内的结论优先');
+  assert.equal(C.parseCriticVerdict('{"path":"out/a.md"}').ok, false, '只有无关对象时 fail-closed');
+});
+
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 const passed = results.filter((r) => r.ok).length;

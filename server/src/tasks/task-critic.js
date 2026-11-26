@@ -25,7 +25,7 @@
  * 真正的评审执行在 `task-critic-runner.js`，接线在 `task-supervisor.js`。
  */
 import { readBrandEnv } from '../brand.js';
-import { isLocalEndpoint } from '../runner/model-fallback.js';
+import { isLocalEndpoint, providerOfSlug } from '../runner/model-fallback.js';
 import { artifactRefs } from './task-dag.js';
 
 /** 谁来决定跑不跑 Critic。 */
@@ -250,31 +250,54 @@ function renderBoardLines(blackboard) {
 }
 
 /** 从一段文本里抠出第一个完整 JSON 对象（容忍 markdown 代码块与前后废话）。 */
+/**
+ * 扫描所有**括号平衡**的 `{...}` 片段。
+ *
+ * 为什么不能只取第一个：评审员在给出结论前经常先提一句「字段是 {"verdict": ...}」
+ * 或把工具入参 `{"path": "out/a.md"}` 写进正文。只取第一个就会拿一个
+ * 与结论无关的对象去解析，结果是误判 / 误报 parse_error。
+ */
+function balancedObjects(text) {
+  const out = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf('{', cursor);
+    if (start < 0) break;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end < 0) { cursor = start + 1; continue; }
+    out.push(text.slice(start, end + 1));
+    cursor = end + 1;
+  }
+  return out;
+}
+
+/** 从一段文本里找出候选 JSON 对象（fenced 代码块内优先）。 */
 function extractJsonObject(text) {
   const raw = String(text ?? '');
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const body = fenced ? fenced[1] : raw;
-  const start = body.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < body.length; i += 1) {
-    const ch = body[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') { inString = true; continue; }
-    if (ch === '{') depth += 1;
-    else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) return body.slice(start, i + 1);
-    }
+  if (fenced) {
+    const inside = balancedObjects(fenced[1]);
+    if (inside.length) return inside;
   }
-  return null;
+  return balancedObjects(raw);
 }
 
 /** 缺陷归一化：去空白、去重、逐条截断、限量。 */
@@ -308,21 +331,27 @@ function normalizeDefects(list) {
 export function parseCriticVerdict(rawText) {
   const raw = String(rawText ?? '').trim();
   if (!raw) return { ok: false, verdict: 'parse_error', summary: '', defects: [], reason: '评审员没有输出任何内容' };
-  const json = extractJsonObject(raw);
-  if (!json) {
+  const candidates = extractJsonObject(raw);
+  if (!candidates.length) {
     return { ok: false, verdict: 'parse_error', summary: '', defects: [], reason: '输出里找不到 JSON 结论' };
   }
+  // ★ 优先取**最后一个带 `verdict` 键**的合法对象：结论总是在理由之后。
+  //   全部没 `verdict` 时退回最后一个能解析的对象（由后续校验判矛盾）。
   let parsed = null;
-  try {
-    parsed = JSON.parse(json);
-  } catch (err) {
-    return {
-      ok: false, verdict: 'parse_error', summary: '', defects: [],
-      reason: 'JSON 解析失败：' + String(err?.message ?? err).slice(0, 120),
-    };
+  let lastAny = null;
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(candidate);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      lastAny = value;
+      if ('verdict' in value) parsed = value;
+    } catch {
+      // 不是合法 JSON 的候选直接跳过（正文里常见的 `{字段}` 就是这种）
+    }
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { ok: false, verdict: 'parse_error', summary: '', defects: [], reason: '结论不是一个对象' };
+  if (!parsed) parsed = lastAny;
+  if (!parsed) {
+    return { ok: false, verdict: 'parse_error', summary: '', defects: [], reason: '输出里的 JSON 都解析不了' };
   }
   const verdict = String(parsed.verdict ?? '').trim().toLowerCase();
   const summary = clamp(String(parsed.summary ?? '').replace(/\s+/g, ' ').trim(), 400);
@@ -381,49 +410,94 @@ export function renderCriticFeedback(feedback, { maxChars = DEFAULT_FEEDBACK_CHA
 }
 
 /**
+ * 一个候选是不是本地 / 内网端点。
+ *
+ * 优先用调用方预先算好的 `local`：真实数据里一个模型组**可能有多个端点**，
+ * 而 `isLocalEndpoint` 只看单个 `baseUrl` —— 只看第一个会把
+ * 「主端点公有云、备用端点局域网」判错，那就成了数据外泄。
+ */
+function isLocalCandidate(candidate) {
+  if (typeof candidate?.local === 'boolean') return candidate.local;
+  return isLocalEndpoint(candidate ?? {});
+}
+
+/**
  * 选一个评审模型（纯策略）。
  *
  * 优先级：显式配置 → 与执行者**不同**的健康模型 → 同模型干净会话。
  * 三条边界不能破：
- *   1. 执行者用的是本地/内网模型时，**绝不**把内容发到公有云（`isLocalEndpoint`）；
+ *   1. 执行者用的是本地/内网模型时，**绝不**把内容发到公有云；显式指定的
+ *      `ORBIS_CRITIC_MODEL` 也不例外（环境变量写错就是数据外泄）；
  *   2. 熔断打开的候选不选（免得一上来就失败）；
  *   3. 没有别的可用模型时退回同模型 —— 但仍是**全新内存会话**，
- *      独立性靠"干净上下文 + 只读工具"保证，不靠模型不同。
+ *      独立性靠「干净上下文 + 只读工具」保证，不靠模型不同。
  *
  * @param {object} p
- * @param {object} [p.executorModel] `{ slug, provider, baseUrl }`
- * @param {Array<object>} [p.candidates] `[{ slug, label, groupId, provider, baseUrl, enabled }]`
+ * @param {object} [p.executorModel] `{ slug, provider, model, baseUrl, local, groupId }`
+ * @param {Array<object>} [p.candidates]
+ *   `[{ slug, label, groupId, provider, baseUrl, endpoints, local, enabled }]`
  * @param {string|null} [p.explicitModel]
+ * @param {boolean|null} [p.explicitLocal] 显式模型是否本地（调用方已解析过）
+ * @param {boolean} [p.explicitResolvable] 显式模型能被 `resolveModel` 解析（不在候选里也算数）
  * @param {Function} [p.isBreakerOpen]
- * @returns {{slug:string|null, label:string, why:string, sameAsExecutor:boolean, isolated:boolean}}
+ * @returns {{slug:string|null, label:string, why:string, sameAsExecutor:boolean, isolated:boolean, rejected?:string}}
  */
 export function selectCriticModel({
-  executorModel = null, candidates = [], explicitModel = null, isBreakerOpen = null,
+  executorModel = null,
+  candidates = [],
+  explicitModel = null,
+  explicitLocal = null,
+  explicitResolvable = false,
+  isBreakerOpen = null,
 } = {}) {
   const executorSlug = String(executorModel?.slug ?? '').trim();
-  const executorLocal = isLocalEndpoint(executorModel ?? {});
+  // ★ provider / model 必须一起喂给 `isLocalEndpoint`：`ollama/qwen3`、`lmstudio/...`
+  //   这类内置本地 slug 只有在带 provider 或 model 名时才认得出来，
+  //   否则会被当成公有云 —— 于是「本地执行者」可以被换到云端评审。
+  const executorProbe = {
+    ...(executorModel ?? {}),
+    provider: String(executorModel?.provider ?? '').trim() || providerOfSlug(executorSlug),
+    model: String(executorModel?.model ?? '').trim() || executorSlug,
+    id: String(executorModel?.id ?? '').trim() || executorSlug,
+  };
+  const executorLocal = typeof executorModel?.local === 'boolean'
+    ? executorModel.local
+    : isLocalEndpoint(executorProbe);
   const open = typeof isBreakerOpen === 'function' ? isBreakerOpen : () => false;
   const list = (Array.isArray(candidates) ? candidates : [])
     .filter((c) => c && c.slug && c.enabled !== false);
 
+  let rejected = '';
   if (explicitModel) {
     const hit = list.find((c) => c.slug === explicitModel)
-      ?? (executorSlug === explicitModel ? { slug: explicitModel, label: explicitModel } : null);
-    if (hit) {
+      ?? (executorSlug === explicitModel ? { ...executorProbe, label: explicitModel } : null);
+    const explicitIsLocal = typeof explicitLocal === 'boolean'
+      ? explicitLocal
+      : (hit ? isLocalCandidate(hit) : isLocalEndpoint({
+        model: explicitModel,
+        id: explicitModel,
+        provider: providerOfSlug(explicitModel),
+      }));
+    if (executorLocal && !explicitIsLocal) {
+      // ★ 不回退成「静默忽略环境变量」，要说清为什么不用它
+      rejected = '显式指定的评审模型在云端，而执行者是本地模型：拒绝外泄';
+    } else if (hit || explicitResolvable || executorSlug === explicitModel) {
       return {
-        slug: hit.slug,
-        label: String(hit.label ?? hit.slug),
+        slug: explicitModel,
+        label: String(hit?.label ?? explicitModel),
         why: '按 ORBIS_CRITIC_MODEL 指定',
-        sameAsExecutor: hit.slug === executorSlug,
-        isolated: false,
+        sameAsExecutor: explicitModel === executorSlug,
+        isolated: executorLocal,
       };
+    } else {
+      rejected = '显式指定的评审模型不在已启用的模型组里，且无法解析';
     }
   }
 
   const allowed = list.filter((c) => {
-    if (c.slug === executorSlug) return false;             // 先找不同模型
-    if (open(c.slug, c.groupId ?? '')) return false;        // 熔断打开不选
-    if (executorLocal && !isLocalEndpoint(c)) return false; // 本地模型绝不外泄到公有云
+    if (c.slug === executorSlug) return false;              // 先找不同模型
+    if (open(c.slug, c.groupId ?? '')) return false;         // 熔断打开不选
+    if (executorLocal && !isLocalCandidate(c)) return false; // 本地模型绝不外泄到公有云
     return true;
   });
   // 跨组优先：不同 groupId 能避开「同一家挂了全挂」
@@ -434,18 +508,21 @@ export function selectCriticModel({
     return {
       slug: pick.slug,
       label: String(pick.label ?? pick.slug),
-      why: crossGroup.length ? '换一家健康的已启用模型' : '换一个健康的已启用模型',
+      why: [rejected, crossGroup.length ? '换一家健康的已启用模型' : '换一个健康的已启用模型']
+        .filter(Boolean).join('；'),
       sameAsExecutor: false,
       isolated: executorLocal,
+      ...(rejected ? { rejected } : {}),
     };
   }
 
   return {
     slug: null,
     label: executorSlug || '(执行者同款)',
-    why: '没有其它可用模型，用执行者同款在干净会话里审',
+    why: [rejected, '没有其它可用模型，用执行者同款在干净会话里审'].filter(Boolean).join('；'),
     sameAsExecutor: true,
     isolated: executorLocal,
+    ...(rejected ? { rejected } : {}),
   };
 }
 

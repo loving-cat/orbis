@@ -19,6 +19,8 @@
  * （那会让执行者拿着"429 Too Many Requests"去改代码）。
  */
 import { RunUsage } from '../run-stats.js';
+import { assistantFailure, replyText } from '../model-reply.js';
+import { isLocalEndpoint, providerOfSlug } from '../runner/model-fallback.js';
 import { buildCriticPrompt, parseCriticVerdict, selectCriticModel, criticModelFromEnv } from './task-critic.js';
 
 /** 评审默认超时：比一次执行短得多（只读核对，不需要长时间改文件）。 */
@@ -47,35 +49,95 @@ export function criticUsageOf(snapshot) {
   return { ...src, inputTokens: input, outputTokens: output };
 }
 
-/** 从模型组里摊平出候选（slug/label/groupId/provider/baseUrl），供纯策略挑选。 */
-export function criticCandidatesOf(modelGroups) {
+/**
+ * 从模型组里摊平出候选。
+ *
+ * ★ 三个字段必须补全，否则「本地/公网」判定会与生产真实数据错位：
+ *   · 真实 `ModelGroup` **没有 `.provider` 字段**（只有 api / baseUrl / endpoints），
+ *     provider 只能从 `resolveModel(slug)` 或 slug 前缀取；
+ *   · 一个组可能有多个 `endpoints`，`isLocalEndpoint` 只看单个 baseUrl，
+ *     所以这里预先算好 `local`（任一端点/主地址是本地即算本地）；
+ *   · 顺带透传 `endpoints`，让调用方能复核。
+ */
+export function criticCandidatesOf(modelGroups, { resolveModel = null } = {}) {
   const groups = typeof modelGroups?.list === 'function' ? modelGroups.list() : [];
   const out = [];
   for (const group of groups ?? []) {
     if (!group || group.enabled === false) continue;
-    const provider = String(group.provider ?? '');
-    const baseUrl = String(group.baseUrl ?? '');
+    const endpoints = Array.isArray(group.endpoints) ? group.endpoints : [];
     for (const entry of group.menuEntries?.() ?? []) {
       for (const slug of entry.slugs ?? []) {
-        out.push({ slug, label: entry.label, groupId: group.id, provider, baseUrl, enabled: true });
+        const resolved = typeof resolveModel === 'function' ? (resolveModel(slug) ?? null) : null;
+        const provider = String(resolved?.provider ?? '').trim() || providerOfSlug(slug);
+        const baseUrl = String(resolved?.baseUrl ?? group.baseUrl ?? '').trim();
+        const local = [
+          { provider, model: slug, id: resolved?.id ?? '', baseUrl },
+          ...endpoints.map((ep) => ({ provider, model: slug, baseUrl: ep?.baseUrl })),
+        ].some((probe) => isLocalEndpoint(probe));
+        out.push({
+          slug,
+          label: entry.label,
+          groupId: group.id,
+          provider,
+          baseUrl,
+          endpoints: endpoints.map((ep) => ep?.baseUrl).filter(Boolean),
+          local,
+          enabled: true,
+        });
       }
     }
   }
   return out;
 }
 
-/** 执行者的模型描述（用于本地隔离与"换一个模型"判定）。 */
-function executorModelOf({ store, botId, modelGroups }) {
+/**
+ * 执行者的模型描述（用于本地隔离与「换一个模型」判定）。
+ *
+ * ★ 三条都要：
+ *   1. `bot.model` 为空时（用默认模型的常见情形）回落读 `runner.modelLabel()` /
+ *      `runner.model` —— 只看 `bot.model` 会把「默认模型是 ollama」看成「没有模型」，
+ *      于是本地执行者被允许换到云端评审；
+ *   2. provider 优先取 `resolveModel(slug)`，其次 slug 前缀（真实 ModelGroup 没有 provider 字段）；
+ *   3. 把所有 `endpoints[].baseUrl` 一起纳入本地判定（主地址公网 + 备用地址局域网也算本地）。
+ */
+function executorModelOf({ runner, store, botId }) {
   const bot = store?.getBot?.(botId) ?? null;
-  const slug = String(bot?.model ?? '').trim();
+  const resolveModel = typeof runner?.resolveModel === 'function' ? runner.resolveModel : null;
+  const labelOf = () => {
+    try {
+      return String(runner?.modelLabel?.() ?? '').trim();
+    } catch {
+      return '';
+    }
+  };
+  const runtimeModel = runner?.model ?? null;
+  const runtimeSlug = runtimeModel
+    ? String(runtimeModel.slug ?? `${runtimeModel.provider ?? ''}/${runtimeModel.id ?? ''}`).trim()
+    : '';
+  const slug = String(bot?.model ?? '').trim() || labelOf() || runtimeSlug;
+  const resolved = resolveModel ? (resolveModel(slug) ?? null) : null;
   const idx = slug.indexOf('/');
   const groupId = idx > 0 ? slug.slice(0, idx) : '';
-  const group = groupId ? modelGroups?.get?.(groupId) ?? null : null;
+  const group = groupId && typeof runner?.modelGroups?.get === 'function' ? (runner.modelGroups.get(groupId) ?? null) : null;
+  const endpoints = Array.isArray(group?.endpoints) ? group.endpoints : [];
+  const provider = String(resolved?.provider ?? '').trim()
+    || String(runtimeModel?.provider ?? '').trim()
+    || providerOfSlug(slug);
+  const baseUrl = String(resolved?.baseUrl ?? group?.baseUrl ?? '').trim();
+  const model = slug;
+  const local = [
+    { provider, model, id: resolved?.id ?? runtimeModel?.id ?? '', baseUrl },
+    ...endpoints.map((ep) => ({ provider, model, baseUrl: ep?.baseUrl })),
+  ].some((probe) => isLocalEndpoint(probe));
   return {
     slug,
+    label: labelOf() || slug,
     groupId,
-    provider: String(group?.provider ?? ''),
-    baseUrl: String(group?.baseUrl ?? ''),
+    provider,
+    baseUrl,
+    endpoints: endpoints.map((ep) => ep?.baseUrl).filter(Boolean),
+    model,
+    local,
   };
 }
 
@@ -108,11 +170,23 @@ export function createCriticReviewer({
       return { status: 'error', code: CRITIC_ERROR.noSession, why: '运行时没有会话工厂，无法开评审会话' };
     }
 
-    const executorModel = executorModelOf({ store, botId, modelGroups: runner.modelGroups });
+    const executorModel = executorModelOf({ runner, store, botId });
+    const resolveModel = typeof runner.resolveModel === 'function' ? runner.resolveModel : null;
+    const explicitModel = criticModelFromEnv();
+    // 显式模型的「是不是本地」必须用与候选同一套口径解析，否则就漏掉
+    // 「ORBIS_CRITIC_MODEL 指向云端，而执行者是 ollama」这种外泄路径。
+    const explicitResolved = explicitModel && resolveModel ? (resolveModel(explicitModel) ?? null) : null;
     const picked = selectCriticModel({
       executorModel,
-      candidates: criticCandidatesOf(runner.modelGroups),
-      explicitModel: criticModelFromEnv(),
+      candidates: criticCandidatesOf(runner.modelGroups, { resolveModel }),
+      explicitModel,
+      explicitLocal: explicitModel
+        ? [
+          { model: explicitModel, id: explicitResolved?.id ?? '', provider: String(explicitResolved?.provider ?? '').trim() || providerOfSlug(explicitModel), baseUrl: explicitResolved?.baseUrl ?? '' },
+          { model: explicitModel, baseUrl: runner.modelGroups?.get?.(providerOfSlug(explicitModel))?.baseUrl ?? '' },
+        ].some((probe) => isLocalEndpoint(probe))
+        : null,
+      explicitResolvable: Boolean(explicitResolved),
       isBreakerOpen: (slug, groupId) => {
         try {
           const found = runner.breakerFor?.(botId, slug) ?? null;
@@ -128,9 +202,11 @@ export function createCriticReviewer({
     const text = prompt ?? buildCriticPrompt({ taskRun, verification });
     const meter = new RunUsage();
     let entry = null;
-    let reply = '';
+    let turnBuf = '';
+    let lastAssistantText = '';
     let timedOut = false;
     let failure = null;
+    let sdkFailure = null;
     let timer = null;
     let unsubscribe = null;
     try {
@@ -144,23 +220,41 @@ export function createCriticReviewer({
       if (!session) {
         return { status: 'error', code: CRITIC_ERROR.noSession, why: '评审会话没建起来' };
       }
+      // ★ 与 `turn-executor.js` 同一套读法：评审也可能先调几个只读工具再下结论
+      //   （多轮 turn）。三个必须点：
+      //     · `message_start`（assistant）→ 清空本轮 buffer，别把上一轮的思考当结论；
+      //     · `message_update` 的 text_delta 只追加，不在这里计 usage；
+      //     · `message_end`（assistant）→ 先判 SDK 静默上报的错误（429/auth/模型错），
+      //       再记文本；usage **只在这里**加一次（否则 update+end 会双计）。
       unsubscribe = session.subscribe((ev) => {
         try {
-          if (ev?.type === 'message_end' && ev.message?.usage) meter.add(ev.message.usage);
+          if (ev?.type === 'message_start' && ev.message?.role === 'assistant') {
+            turnBuf = '';
+            return;
+          }
           if (ev?.type === 'message_update') {
             const inner = ev.assistantMessageEvent ?? null;
-            if (inner?.type === 'text_delta') reply += String(inner.delta ?? '');
-            if (inner?.type === 'message_end' && (ev.message?.usage ?? inner.usage)) {
-              meter.add(ev.message?.usage ?? inner.usage);
-            }
+            if (inner?.type === 'text_delta') turnBuf += String(inner.delta ?? '');
+            return;
           }
-          // 有些版本的 SDK 把整条 assistant 消息放在 message_update 里
-          if (ev?.type === 'message_end' && ev.message?.content) {
-            const joined = (Array.isArray(ev.message.content) ? ev.message.content : [])
-              .map((part) => (typeof part === 'string' ? part : String(part?.text ?? '')))
-              .join('');
-            if (!reply && joined) reply = joined;
+          if (ev?.type !== 'message_end') return;
+          if (ev.message?.role !== 'assistant') return;
+          meter.add(ev.message.usage);
+          const bad = assistantFailure(ev.message);
+          if (bad) {
+            // SDK 把 429/auth/模型错误放在 stopReason/errorMessage 里，不抛异常；
+            // 当成 no_output 会让人以为“评审员没说话”，实际是它根本跑不成。
+            sdkFailure = {
+              status: 'error',
+              code: CRITIC_ERROR.promptFailed,
+              why: '评审模型返回错误：' + String(bad.detail ?? bad.kind ?? bad.name ?? '未知错误').slice(0, 200),
+            };
+            turnBuf = '';
+            return;
           }
+          const finalText = replyText(ev.message) || turnBuf;
+          if (String(finalText).trim()) lastAssistantText = String(finalText).trim();
+          turnBuf = '';
         } catch {
           // 事件形态变了不能影响评审本身
         }
@@ -199,7 +293,9 @@ export function createCriticReviewer({
       };
     }
     if (failure) return { ...failure, usage, reviewerModel: picked.label };
-    if (!String(reply).trim()) {
+    if (sdkFailure) return { ...sdkFailure, usage, reviewerModel: picked.label };
+    const reply = String(lastAssistantText || turnBuf || '').trim();
+    if (!reply) {
       return {
         status: 'error',
         code: CRITIC_ERROR.noOutput,

@@ -156,7 +156,7 @@ export function createSessionBuilder({
      *   · 只给四个只读查阅工具（read/ls/find/grep）：没有写、没有 shell、没有 git 写、
      *     没有 MCP、没有宿主 customTools；
      *   · 策略层 `dangerous: 'deny'` 兜底（与 Talk 一样过 policy-hook）。
-     * 为什仇不能复用执行者的会话：只要历史里有它自己写的产物与自我解释，
+     * 为什么不能复用执行者的会话：只要历史里有它自己写的产物与自我解释，
      * “独立评审”就退化成“复述执行者的话”。
      */
     const isCriticLane = opts.criticLane === true;

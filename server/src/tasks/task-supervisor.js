@@ -1967,12 +1967,24 @@ export function createTaskSupervisor({
     if (!written) return { kind: 'stale', why: 'write_skipped' };
 
     // ★ 有界：到上限就停，不再自动返工（无限重做是最贵的失败模式）。
+    //
+    //   ★ 顺序不能反：必须**先**把这次验收收口（`verification_finished` 会清掉
+    //     `flags.verifyingAt`），**再** block。只 block 不清验证位的话，
+    //     任务记录仍停在「验收中」：用户手动解除阻塞后会立刻被当成
+    //     待验收任务重新 verify —— `criticRequired` 的任务拿旧产出秒回
+    //     同一个 blocked，等于解除阻塞这个动作根本不生效（死锁）。
     if (rounds >= criticReworkLimit) {
       const top = String(result.defects?.[0] ?? result.summary ?? '').slice(0, 160);
-      await block(
-        taskRun.id,
-        `独立复核连续 ${rounds} 轮未通过（上限 ${criticReworkLimit}）：${top}`,
-      );
+      const reason = `独立复核连续 ${rounds} 轮未通过（上限 ${criticReworkLimit}）：${top}`;
+      await settle(taskRun.id, {
+        type: EVENT.verification_finished,
+        revision,
+        at: clock(),
+        passed: false,
+        unmet: (result.defects ?? []).map((d) => '独立复核：' + d),
+        reason,
+      });
+      await block(taskRun.id, reason);
       return { kind: 'over_limit', rounds };
     }
     return {
@@ -2011,7 +2023,8 @@ export function createTaskSupervisor({
         lastErrorAt: clock(),
       },
     });
-    if (errors > MAX_CRITIC_ERRORS) {
+    // ★ `>=` 而不是 `>`：常量说的是「连续这么多次就停」，差一就是 4 次。
+    if (errors >= MAX_CRITIC_ERRORS) {
       await block(
         current.id,
         `独立复核连续 ${errors} 次无法完成（${String(result?.why ?? result?.reason ?? '未知原因').slice(0, 120)}），已停下等人工处理`,
@@ -2480,6 +2493,8 @@ export function createTaskSupervisor({
     const sharedExtraTokens = Number(rootNow?.budget?.extraTokens ?? extraTokens ?? 0);
 
     const results = [];
+    /** 恢复成功、待统一唤醒的任务（子任务在前，根在最后）。 */
+    const resumedIds = [];
     const resumeBudgetPaused = async (candidate) => {
       const current = read(candidate.id);
       if (!current || current.state !== STATE.paused_budget) return null;
@@ -2499,7 +2514,11 @@ export function createTaskSupervisor({
         type: EVENT.resumed, revision: current.revision, at: clock(),
       });
       results.push({ taskRunId: current.id, ok: resumed.ok, code: resumed.code ?? null });
-      if (resumed.ok) notify(current.id);
+      // ★ 这里**不能**立刻 notify：整棵树是逐个恢复的，先醒来的根会看到
+      //   还在 paused_budget 的子任务，于是「全部子任务都在预算暂停」那条
+      //   判定又把根暂停回去 —— 扩额按钮就变成了假的（子任务永远起不来）。
+      //   统一在循环结束后一次性唤醒（子任务在内、根在最后）。
+      if (resumed.ok) resumedIds.push(current.id);
       return resumed;
     };
 
@@ -2508,6 +2527,8 @@ export function createTaskSupervisor({
     for (const candidate of candidates) await resumeBudgetPaused(candidate);
     // 本次目标若不在候选里（例如自身就是 root 但尚未建立 rootTaskId），兜底一次
     if (!candidates.some((c) => c.id === taskRunId)) await resumeBudgetPaused(run);
+    // 全部恢复完再唤醒：子任务先醒，根最后（否则根会看见还没恢复的子任务又暂停自己）
+    for (const id of [...resumedIds].reverse()) notify(id);
 
     // ★ 追加额度只解决「钱」的问题，不替用户做「要不要继续」的决定。
     //
