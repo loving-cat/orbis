@@ -421,16 +421,29 @@ function isLocalCandidate(candidate) {
   return isLocalEndpoint(candidate ?? {});
 }
 
+/** 候选/执行者的服务商（小写；没有 provider 字段时取 slug 前缀）。 */
+function providerKeyOf(model) {
+  return (String(model?.provider ?? '').trim() || providerOfSlug(String(model?.slug ?? model?.model ?? '')))
+    .toLowerCase();
+}
+
 /**
  * 选一个评审模型（纯策略）。
  *
  * 优先级：显式配置 → 与执行者**不同**的健康模型 → 同模型干净会话。
- * 三条边界不能破：
+ * 五条边界不能破：
  *   1. 执行者用的是本地/内网模型时，**绝不**把内容发到公有云；显式指定的
  *      `ORBIS_CRITIC_MODEL` 也不例外（环境变量写错就是数据外泄）；
  *   2. 熔断打开的候选不选（免得一上来就失败）；
  *   3. 没有别的可用模型时退回同模型 —— 但仍是**全新内存会话**，
- *      独立性靠「干净上下文 + 只读工具」保证，不靠模型不同。
+ *      独立性靠「干净上下文 + 只读工具」保证，不靠模型不同；
+ *   4. **遵守 `ORBIS_MODEL_FALLBACK`**（隐私/费用边界，与自动兜底同一份口径）：
+ *      `same-provider` 只在执行者同一家服务商里换（显式指定的也一样，跨家就拒绝并说明）；
+ *      `off` 不自动换模型（显式指定的照用 —— 那是用户的明确选择）；
+ *   5. **成员模型被锁定（`bot.lockModel === true`）**：只用同款模型在干净会话里审，
+ *      显式指定的评审模型也不用 —— 锁定的意思就是「这个成员的内容只走这一个模型」。
+ *   评审员会用 read/grep 读产物原文：「换一家模型审」就是把这些内容发给另一家，
+ *   不能绕过用户为自动兜底设的同一条边界。
  *
  * @param {object} p
  * @param {object} [p.executorModel] `{ slug, provider, model, baseUrl, local, groupId }`
@@ -439,7 +452,10 @@ function isLocalCandidate(candidate) {
  * @param {string|null} [p.explicitModel]
  * @param {boolean|null} [p.explicitLocal] 显式模型是否本地（调用方已解析过）
  * @param {boolean} [p.explicitResolvable] 显式模型能被 `resolveModel` 解析（不在候选里也算数）
+ * @param {string|null} [p.explicitProvider] 显式模型的服务商（调用方用 `resolveModel` 解析过）
  * @param {Function} [p.isBreakerOpen]
+ * @param {string} [p.policyMode] `ORBIS_MODEL_FALLBACK` 的值（调用方读环境变量传入；默认 `cloud`）
+ * @param {boolean} [p.userLocked] 执行者 `bot.lockModel === true`
  * @returns {{slug:string|null, label:string, why:string, sameAsExecutor:boolean, isolated:boolean, rejected?:string}}
  */
 export function selectCriticModel({
@@ -448,7 +464,10 @@ export function selectCriticModel({
   explicitModel = null,
   explicitLocal = null,
   explicitResolvable = false,
+  explicitProvider = null,
   isBreakerOpen = null,
+  policyMode = 'cloud',
+  userLocked = false,
 } = {}) {
   const executorSlug = String(executorModel?.slug ?? '').trim();
   // ★ provider / model 必须一起喂给 `isLocalEndpoint`：`ollama/qwen3`、`lmstudio/...`
@@ -466,6 +485,27 @@ export function selectCriticModel({
   const open = typeof isBreakerOpen === 'function' ? isBreakerOpen : () => false;
   const list = (Array.isArray(candidates) ? candidates : [])
     .filter((c) => c && c.slug && c.enabled !== false);
+  const mode = String(policyMode ?? 'cloud').trim().toLowerCase();
+  const executorProvider = providerKeyOf(executorProbe);
+  // same-provider：只认执行者同一家（执行者的服务商都认不出来时，一个也不认 —— 宁可同款）
+  const inProviderBoundary = (provider) => mode !== 'same-provider'
+    || (Boolean(executorProvider) && provider === executorProvider);
+  const sameModel = (why, rejectedWhy = '') => ({
+    slug: null,
+    label: executorSlug || '(执行者同款)',
+    why: [rejectedWhy, why].filter(Boolean).join('；'),
+    sameAsExecutor: true,
+    isolated: executorLocal,
+    ...(rejectedWhy ? { rejected: rejectedWhy } : {}),
+  });
+
+  // ★ 成员模型被锁定：显式指定的评审模型也不用（锁定 = 这个成员的内容只走这一个模型）
+  if (userLocked === true) {
+    return sameModel(
+      '成员模型已锁定：用执行者同款在干净会话里审',
+      explicitModel && explicitModel !== executorSlug ? '成员模型已锁定，不采用 ORBIS_CRITIC_MODEL' : '',
+    );
+  }
 
   let rejected = '';
   if (explicitModel) {
@@ -478,9 +518,13 @@ export function selectCriticModel({
         id: explicitModel,
         provider: providerOfSlug(explicitModel),
       }));
+    const explicitProviderKey = String(explicitProvider ?? '').trim().toLowerCase()
+      || (hit ? providerKeyOf(hit) : providerOfSlug(explicitModel).toLowerCase());
     if (executorLocal && !explicitIsLocal) {
       // ★ 不回退成「静默忽略环境变量」，要说清为什么不用它
       rejected = '显式指定的评审模型在云端，而执行者是本地模型：拒绝外泄';
+    } else if (explicitModel !== executorSlug && !inProviderBoundary(explicitProviderKey)) {
+      rejected = '显式指定的评审模型与执行者不是同一家服务商（ORBIS_MODEL_FALLBACK=same-provider）：拒绝使用';
     } else if (hit || explicitResolvable || executorSlug === explicitModel) {
       return {
         slug: explicitModel,
@@ -494,10 +538,16 @@ export function selectCriticModel({
     }
   }
 
+  // ★ ORBIS_MODEL_FALLBACK=off：不自动换模型（显式指定的上面已经处理过）
+  if (mode === 'off') {
+    return sameModel('ORBIS_MODEL_FALLBACK=off：不自动换模型，用执行者同款在干净会话里审', rejected);
+  }
+
   const allowed = list.filter((c) => {
     if (c.slug === executorSlug) return false;              // 先找不同模型
     if (open(c.slug, c.groupId ?? '')) return false;         // 熔断打开不选
     if (executorLocal && !isLocalCandidate(c)) return false; // 本地模型绝不外泄到公有云
+    if (!inProviderBoundary(providerKeyOf(c))) return false; // same-provider：不出这一家
     return true;
   });
   // 跨组优先：不同 groupId 能避开「同一家挂了全挂」
@@ -508,7 +558,7 @@ export function selectCriticModel({
     return {
       slug: pick.slug,
       label: String(pick.label ?? pick.slug),
-      why: [rejected, crossGroup.length ? '换一家健康的已启用模型' : '换一个健康的已启用模型']
+      why: [rejected, crossGroup.length ? '换一个其它模型组里健康的已启用模型' : '换一个健康的已启用模型']
         .filter(Boolean).join('；'),
       sameAsExecutor: false,
       isolated: executorLocal,
@@ -516,14 +566,7 @@ export function selectCriticModel({
     };
   }
 
-  return {
-    slug: null,
-    label: executorSlug || '(执行者同款)',
-    why: [rejected, '没有其它可用模型，用执行者同款在干净会话里审'].filter(Boolean).join('；'),
-    sameAsExecutor: true,
-    isolated: executorLocal,
-    ...(rejected ? { rejected } : {}),
-  };
+  return sameModel('没有其它可用模型，用执行者同款在干净会话里审', rejected);
 }
 
 /** 产物清单（给提示词与黑板用，去重限量）。 */

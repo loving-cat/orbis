@@ -226,6 +226,47 @@ await test('6. selectCriticModel：优先不同健康模型；本地执行者绝
   assert.equal(explicit.slug, 'cloud/b');
 });
 
+await test('6b. ★ selectCriticModel 遵守 ORBIS_MODEL_FALLBACK 与 lockModel（评审员会读产物原文）', () => {
+  const executor = { slug: 'azure/gpt-main', groupId: 'azure', provider: 'azure', baseUrl: 'https://corp.openai.azure.com' };
+  const candidates = [
+    { slug: 'azure/gpt-mini', label: 'gpt mini', groupId: 'azure-b', provider: 'azure', baseUrl: 'https://corp2.openai.azure.com' },
+    { slug: 'other/opus', label: 'opus', groupId: 'other', provider: 'other', baseUrl: 'https://api.other.example' },
+  ];
+  // 默认 cloud：沿用原行为（云端之间可以换，优先其它模型组）
+  assert.notEqual(C.selectCriticModel({ executorModel: executor, candidates }).slug, 'azure/gpt-main');
+
+  // same-provider：只在执行者同一家里换
+  const same = C.selectCriticModel({ executorModel: executor, candidates, policyMode: 'same-provider' });
+  assert.equal(same.slug, 'azure/gpt-mini', `same-provider 不能换到别家：${same.slug}`);
+  const onlyOther = C.selectCriticModel({ executorModel: executor, candidates: [candidates[1]], policyMode: 'same-provider' });
+  assert.equal(onlyOther.slug, null, '同一家里没有别的模型 → 用同款干净会话，绝不跨家');
+  assert.equal(onlyOther.sameAsExecutor, true);
+  // same-provider 下显式指定跨家的评审模型：拒绝并说明，不静默照用
+  const explicitCross = C.selectCriticModel({
+    executorModel: executor, candidates, policyMode: 'same-provider',
+    explicitModel: 'other/opus', explicitResolvable: true, explicitProvider: 'other',
+  });
+  assert.notEqual(explicitCross.slug, 'other/opus');
+  assert.match(String(explicitCross.rejected ?? ''), /same-provider/);
+
+  // off：不自动换（显式指定的照用 —— 那是用户的明确选择）
+  const off = C.selectCriticModel({ executorModel: executor, candidates, policyMode: 'off' });
+  assert.equal(off.slug, null);
+  assert.match(off.why, /ORBIS_MODEL_FALLBACK=off/);
+  assert.equal(
+    C.selectCriticModel({ executorModel: executor, candidates, policyMode: 'off', explicitModel: 'azure/gpt-mini' }).slug,
+    'azure/gpt-mini',
+  );
+
+  // lockModel：只用同款（显式指定的也不用）
+  const locked = C.selectCriticModel({
+    executorModel: executor, candidates, userLocked: true, explicitModel: 'other/opus', explicitResolvable: true,
+  });
+  assert.equal(locked.slug, null, '成员模型锁定时不能换评审模型');
+  assert.equal(locked.sameAsExecutor, true);
+  assert.match(String(locked.rejected ?? ''), /锁定/);
+});
+
 // ---------------------------------------------------------------------------
 // 2. 验收层：多条评审记录取最新且按尝试绑定
 // ---------------------------------------------------------------------------
@@ -964,10 +1005,18 @@ await test('20. ★ 评审员故障退避：到期前重复 notify 不连撞；�
     const now = taskRuns.read(kid).taskRun;
     assert.equal(Number(now.criticState?.errorCount ?? 0), round, `第 ${round} 次失败应记到 errorCount=${round}`);
   }
+  await sleep(250);
+  await sup.idle();
   const finalRun = taskRuns.read(kid).taskRun;
+  const rootRun = taskRuns.read(rootId).taskRun;
   sup.dispose();
   assert.equal(finalRun.state, STATE.blocked, '连续 3 次跑不起来就停下等人工，不是 4 次');
   assert.match(String(finalRun.flags?.blockedReason ?? ''), /连续 3 次无法完成/);
+  // ★ 评审员跑不起来不是「活没干好」：父任务醒来后不能把它交回负责人取消、再派人重做
+  assert.equal(finalRun.nonRetriableBlock?.kind, 'critic_unavailable', '要记成「不交回」的不可恢复类别');
+  assert.equal(Number(rootRun.childHandBacks ?? 0), 0, '评审员故障不能触发交回重做');
+  assert.equal(rootRun.state, STATE.blocked, '父任务应如实停下等人工');
+  assert.match(String(rootRun.flags?.blockedReason ?? ''), /critic_unavailable/);
 });
 
 await test('21. ★ criticRequired 达上限阻塞后，手动解除阻塞能回到返工（不原地秒阻）', async () => {

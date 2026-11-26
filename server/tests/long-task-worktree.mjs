@@ -76,6 +76,12 @@ function read(p) {
   try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
 }
 
+/** 读文本并统一换行：本机 git 若开了 core.autocrlf，合入后检出的文件是 CRLF。 */
+function readLf(p) {
+  const text = read(p);
+  return text === null ? null : text.replace(/\r\n/g, '\n');
+}
+
 function write(p, text) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, text, 'utf8');
@@ -272,15 +278,18 @@ function codeWriter(script) {
   };
 }
 
-function makeSupervisor({ executeMember, maxPerBot = 3, worktreeManager = manager } = {}) {
+function makeSupervisor({
+  executeMember, maxPerBot = 3, worktreeManager = manager, worktreeMainRetryMs = 60_000, execute = null,
+} = {}) {
   return createTaskSupervisor({
     taskRuns,
     maxSteps: 10,
     maxStallRounds: 5,
-    execute: async () => ({ ok: true, stop: 'returned' }),
+    execute: execute ?? (async () => ({ ok: true, stop: 'returned' })),
     executeMember,
     maxPerBot,
     worktreeManager,
+    worktreeMainRetryMs,
     criticMode: 'off',
     verify: async () => ({ passed: true, reason: '机械验收通过' }),
     access: { stat: async (ref) => ({ exists: Boolean(ref) }), readText: async () => ({ ok: false }), resolveRef: (r) => r },
@@ -326,6 +335,11 @@ await test('9. ★ 两个子任务并行写不同文件 → 各自 worktree → 
   // 主仓真的同时有两个文件
   assert.equal(fs.existsSync(path.join(repoDir, 'src', 'a.js')), true, '主仓应包含 src/a.js');
   assert.equal(fs.existsSync(path.join(repoDir, 'src', 'b.js')), true, '主仓应包含 src/b.js');
+  // ★ 合入文件清单只算**这次合入**带进来的：后合入的那份不能把先合入兄弟的文件也算成自己的
+  //   （旧实现用 baseHead..合入后HEAD，B 的清单里会多出 src/a.js）
+  const filesOf = Object.fromEntries(runs.map((run) => [run.id, run.worktree?.filesChanged ?? []]));
+  assert.deepEqual(filesOf[kidA], ['src/a.js'], `A 的合入清单：${JSON.stringify(filesOf[kidA])}`);
+  assert.deepEqual(filesOf[kidB], ['src/b.js'], `B 的合入清单：${JSON.stringify(filesOf[kidB])}`);
   const log = git(repoDir, ['log', '--oneline', '-5']).out;
   assert.match(log, /orbis\(task\)/, '应有 orbis(task) 的合入提交');
   // 临时 worktree 与分支都清理掉了
@@ -398,34 +412,49 @@ await test('10. ★ 同一文件同一行冲突：主仓 merge --abort 保持干
   assert.ok((rootRun.childHandBacks ?? 0) >= 1 || (rootRun.childFailures ?? []).length >= 1, '应把冲突的分工交回负责人');
 });
 
-await test('11. ★ 主仓有未提交改动：拒绝合并、保留分支、用户文件丝毫无损', async () => {
-  const wip = path.join(repoDir, 'local-wip.txt');
-  write(wip, '用户正在写的东西\n');
+await test('11. ★ 主仓已跟踪文件有未提交改动：不合并、保留分支、用户改动无损；按可恢复阻塞等，提交后自动合入', async () => {
+  const readme = path.join(repoDir, 'README.md');
+  const original = read(readme);
+  const edited = original + '用户正在写的东西\n';
+  write(readme, edited);
 
   const rootId = await makeRoot();
   const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/feature2.js' });
   const sup = makeSupervisor({
     executeMember: codeWriter(() => ({ files: { 'src/feature2.js': 'export const f2 = 1;\n' } })),
+    worktreeMainRetryMs: 150,
   });
   sup.notify(rootId);
-  const runs = await waitFor(sup, [kid], (rs) => [STATE.completed, STATE.blocked, STATE.cancelled].includes(rs[0].state));
+  const runs = await waitFor(sup, [kid], (rs) => rs[0].worktree?.status === 'preserved_dirty_main'
+    && rs[0].state === STATE.blocked);
   await sleep(150);
   await sup.idle();
-  const finalRun = taskRuns.read(kid).taskRun;
-  sup.dispose();
+  const waiting = taskRuns.read(kid).taskRun;
+  void runs;
 
-  assert.equal(finalRun.worktree?.status, 'preserved_dirty_main', `实际 ${finalRun.worktree?.status}`);
-  assert.equal(read(wip), '用户正在写的东西\n', '用户未提交的文件必须丝毫无损');
+  assert.equal(waiting.worktree?.status, 'preserved_dirty_main', `实际 ${waiting.worktree?.status}`);
+  assert.equal(waiting.worktree?.waitCode, 'dirty_main');
+  assert.equal(waiting.state, STATE.blocked);
+  assert.equal(waiting.recoverableBlock, 'worktree_main', '应是可恢复阻塞（到点自动重试），不是永久受阻');
+  assert.ok(Number.isFinite(waiting.retryAt), '要排一个到期重试');
+  assert.match(String(waiting.flags?.blockedReason ?? ''), /README\.md/, '原因里要点名是哪个文件');
+  assert.equal(read(readme), edited, '用户未提交的改动必须丝毫无损');
   assert.equal(fs.existsSync(path.join(repoDir, 'src', 'feature2.js')), false, '没有合并进来');
-  assert.match(git(repoDir, ['status', '--porcelain']).out, /local-wip\.txt/, '主仓仍是脏的（我们没有动它）');
-  assert.equal(git(repoDir, ['rev-parse', '--verify', `refs/heads/${finalRun.worktree.branch}`]).ok, true, '分支必须保留');
-  assert.notEqual(finalRun.worktree?.status, 'merged', '不能真的合入');
-  assert.equal(fs.existsSync(path.join(repoDir, '.orbis-worktrees', String(finalRun.worktree.branch ?? '').split('/').pop())), true,
-    'worktree 应保留');
+  assert.equal(git(repoDir, ['rev-parse', '--verify', `refs/heads/${waiting.worktree.branch}`]).ok, true, '分支必须保留');
+  assert.equal(fs.existsSync(waiting.worktree.worktreePath), true, 'worktree 应保留');
+  // ★ 自主父任务：可恢复等待不能触发「交回负责人」（那会把这份已验收的活取消掉、再派人重做）
+  const rootWhileWaiting = taskRuns.read(rootId).taskRun;
+  assert.equal(rootWhileWaiting.childHandBacks ?? 0, 0, '等主仓可合入期间不能交回/取消子任务');
 
-  // 收尾：把用户改动收进仓库，避免影响后续用例
+  // 用户把自己的改动提交掉 → 到点自动重试 → 合入（不需要任何人再点按钮）
   git(repoDir, ['add', '-A']);
   git(repoDir, ['commit', '-q', '-m', 'commit wip']);
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `主仓干净后应自动合入并交付，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  assert.equal(done[0].worktree?.status, 'merged');
+  assert.equal(done[0].recoverableBlock ?? null, null, '合入后可恢复记账要清掉');
+  assert.equal(readLf(path.join(repoDir, 'src', 'feature2.js')), 'export const f2 = 1;\n');
 });
 
 await test('12. ★ 取消活跃 worktree 会清理；冲突保留态的分支不被误删', async () => {
@@ -766,6 +795,9 @@ await test('19. ★ 只传 workDir 不传 cloneId：主会话不受影响，临�
   runner.releaseReportScope = (key, c) => { if (runner.reportScopes.get(key) === c) runner.reportScopes.delete(key); };
   runner.modelGroups = { list: () => [], get: () => null };
   runner.resolveModel = () => null;
+  // 回合收尾会在 setTimeout 里排空请求队列：假 runner 也要有这个口子，
+  // 否则后面还有用例在跑时定时器到点，进程直接崩在 TypeError 上。
+  runner.drainRequestQueue = async () => {};
 
   await executeTurn(runner, dm.id, bot.id, '写一段代码', { workDir, persist: false }).catch(() => null);
   // 主会话必须完好无损（没被替换、没被 dispose）
@@ -777,6 +809,341 @@ await test('19. ★ 只传 workDir 不传 cloneId：主会话不受影响，临�
   assert.deepEqual(leftover, [], `临时泳道应已释放，实测 ${JSON.stringify([...runner.sessions.keys()])}`);
   assert.ok(builtKey && builtKey.includes('#clone_'), `应走独立泳道，实际 ${builtKey}`);
   assert.equal(disposed.length, 1, '临时泳道必须 dispose');
+});
+
+// ---------------------------------------------------------------------------
+// 6. 主仓「此刻能不能安全合入」：只有真会伤到用户的状态才挡，挡了也是可恢复等待
+// ---------------------------------------------------------------------------
+
+/** 主仓当前分支名（`git init` 的默认分支随本机配置，不能写死 main/master）。 */
+const mainBranchOf = () => git(repoDir, ['symbolic-ref', '--short', 'HEAD']).out.trim();
+
+await test('20. ★ 主仓只有无关的未跟踪文件（草稿 / _inbox 附件副本）：照常合入，那些文件原样不动', async () => {
+  const notes = path.join(repoDir, 'notes.txt');
+  const inboxFile = path.join(repoDir, '_inbox', 'room1', 'spec.pdf');
+  write(notes, '用户草稿\n');
+  write(inboxFile, 'pdf bytes\n');
+
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/feature3.js' });
+  const sup = makeSupervisor({
+    executeMember: codeWriter(() => ({ files: { 'src/feature3.js': 'export const f3 = 1;\n' } })),
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [kid], (rs) => [STATE.completed, STATE.blocked, STATE.cancelled].includes(rs[0].state));
+  sup.dispose();
+  assert.equal(runs[0].state, STATE.completed, `无关的未跟踪文件不该挡合入，实际 ${runs[0].state}（${runs[0].flags?.blockedReason ?? ''}）`);
+  assert.equal(runs[0].worktree?.status, 'merged');
+  assert.deepEqual(runs[0].worktree?.filesChanged, ['src/feature3.js']);
+  assert.equal(read(notes), '用户草稿\n', '用户草稿必须原样不动');
+  assert.equal(read(inboxFile), 'pdf bytes\n', '附件副本必须原样不动');
+  fs.rmSync(notes, { force: true });
+  fs.rmSync(path.join(repoDir, '_inbox'), { recursive: true, force: true });
+});
+
+await test('21. ★ 未跟踪文件会被这次合入覆盖：不合并、点名是哪个文件、用户文件无损；挪走后自动合入', async () => {
+  const userCopy = path.join(repoDir, 'src', 'feature4.js');
+  write(userCopy, '// 用户自己的同名草稿\n');
+
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/feature4.js' });
+  const sup = makeSupervisor({
+    executeMember: codeWriter(() => ({ files: { 'src/feature4.js': 'export const f4 = 1;\n' } })),
+    worktreeMainRetryMs: 150,
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [kid], (rs) => rs[0].worktree?.status === 'preserved_dirty_main');
+  const waiting = runs[0];
+  assert.equal(waiting.worktree?.waitCode, 'untracked_collision', `实际 ${waiting.worktree?.waitCode}`);
+  assert.deepEqual(waiting.worktree?.waitFiles, ['src/feature4.js']);
+  assert.equal(waiting.recoverableBlock, 'worktree_main');
+  assert.equal(read(userCopy), '// 用户自己的同名草稿\n', '用户的同名文件必须丝毫无损');
+
+  fs.rmSync(userCopy, { force: true });
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `挪走后应自动合入，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  assert.equal(readLf(userCopy), 'export const f4 = 1;\n');
+});
+
+await test('22. ★ 主仓停在分离头指针（bisect / rebase 中）：不合入、不删任务分支；回到分支后自动合入到该分支', async () => {
+  const mainBranch = mainBranchOf();
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/feature5.js' });
+  let detached = false;
+  const sup = makeSupervisor({
+    executeMember: async (args) => {
+      write(path.join(args.workDir ?? repoDir, 'src/feature5.js'), 'export const f5 = 1;\n');
+      // 成员干活期间，用户在主仓开始 bisect：HEAD 变成分离头指针
+      if (!detached) {
+        git(repoDir, ['checkout', '-q', '--detach', 'HEAD']);
+        detached = true;
+      }
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: [] };
+    },
+    worktreeMainRetryMs: 150,
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [kid], (rs) => rs[0].worktree?.status === 'preserved_dirty_main');
+  const waiting = runs[0];
+  assert.equal(waiting.worktree?.waitCode, 'detached_head', `实际 ${waiting.worktree?.waitCode}`);
+  assert.equal(git(repoDir, ['rev-parse', '--verify', `refs/heads/${waiting.worktree.branch}`]).ok, true,
+    '任务分支必须保留（旧实现合进分离头指针后 -d 删掉了它，改动只剩 reflog）');
+  assert.equal(git(repoDir, ['symbolic-ref', '-q', 'HEAD']).ok, false, '不能替用户切回分支');
+
+  git(repoDir, ['checkout', '-q', mainBranch]);
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `回到分支后应自动合入，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  const holders = git(repoDir, ['branch', '--contains', done[0].worktree.mergedHead]).out;
+  assert.match(holders, new RegExp(`\\b${mainBranch}\\b`), `合入提交必须在用户的分支上：${holders}`);
+});
+
+await test('23. ★ 主仓切到了不含这份活起点的分支：不合入（不把无关提交带过去）；切回后自动合入', async () => {
+  const mainBranch = mainBranchOf();
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/feature6.js' });
+  let switched = false;
+  const sup = makeSupervisor({
+    executeMember: async (args) => {
+      write(path.join(args.workDir ?? repoDir, 'src/feature6.js'), 'export const f6 = 1;\n');
+      // 成员干活期间，用户切到了一条更早的分支（不含这份活的起点）
+      if (!switched) {
+        git(repoDir, ['checkout', '-q', '-b', 'old-line', 'HEAD~1']);
+        switched = true;
+      }
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: [] };
+    },
+    worktreeMainRetryMs: 150,
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [kid], (rs) => rs[0].worktree?.status === 'preserved_dirty_main');
+  assert.equal(runs[0].worktree?.waitCode, 'base_not_in_head', `实际 ${runs[0].worktree?.waitCode}`);
+  assert.equal(fs.existsSync(path.join(repoDir, 'src', 'feature6.js')), false, 'old-line 上不能被合进任何东西');
+
+  git(repoDir, ['checkout', '-q', mainBranch]);
+  git(repoDir, ['branch', '-q', '-D', 'old-line']);
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `切回后应自动合入，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  assert.equal(readLf(path.join(repoDir, 'src', 'feature6.js')), 'export const f6 = 1;\n');
+});
+
+await test('24. ★ 负责人这一轮里派出的活 + 主仓有未提交改动：父任务不交回、不重做；主仓干净后合入并继续', async () => {
+  const readme = path.join(repoDir, 'README.md');
+  write(readme, read(readme) + '又改了一行\n');
+  const rootId = await makeRoot();
+  let leadTurns = 0;
+  let memberRuns = 0;
+  const sup = makeSupervisor({
+    // 真实链路：子任务是负责人在**自己这一轮里**派出来的（之后由调度器单独跑）
+    execute: async () => {
+      leadTurns += 1;
+      const live = taskRuns.listAll().taskRuns.filter((r) => r.parentTaskId === rootId && r.state !== STATE.cancelled);
+      if (!live.length) await addKid(rootId, { botId: memberB.id, requirement: '写 src/feature7.js（第 ' + leadTurns + ' 次安排）' });
+      return { ok: true, stop: 'returned' };
+    },
+    executeMember: async (args) => {
+      memberRuns += 1;
+      write(path.join(args.workDir ?? repoDir, 'src/feature7.js'), 'export const f7 = 1;\n');
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: [] };
+    },
+    worktreeMainRetryMs: 150,
+  });
+  sup.notify(rootId);
+  const kidOf = () => taskRuns.listAll().taskRuns.filter((r) => r.parentTaskId === rootId);
+  for (let i = 0; i < 200 && !kidOf().some((k) => k.worktree?.status === 'preserved_dirty_main'); i += 1) {
+    await Promise.race([sup.idle(), sleep(40)]);
+    await sleep(40);
+  }
+  await sleep(400);
+  await sup.idle();
+  const whileWaiting = taskRuns.read(rootId).taskRun;
+  assert.equal(kidOf().length, 1, `不能交回重派（实测 ${kidOf().length} 份）`);
+  assert.equal(whileWaiting.childHandBacks ?? 0, 0, '可恢复等待不能触发交回');
+  assert.equal(kidOf()[0].state, STATE.blocked);
+
+  git(repoDir, ['add', '-A']);
+  git(repoDir, ['commit', '-q', '-m', 'commit second wip']);
+  const kid = kidOf()[0].id;
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `主仓干净后应自动合入，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  assert.equal(memberRuns, 1, `成员只该干一次活，实测 ${memberRuns} 次`);
+  assert.equal(readLf(path.join(repoDir, 'src', 'feature7.js')), 'export const f7 = 1;\n');
+});
+
+await test('25. ★ 同 HEAD 切到另一条分支（#3 branch_changed）：不合入新分支；切回原分支后自动合入', async () => {
+  const mainBranch = mainBranchOf();
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/feature8.js' });
+  let switched = false;
+  const sup = makeSupervisor({
+    executeMember: async (args) => {
+      write(path.join(args.workDir ?? repoDir, 'src/feature8.js'), 'export const f8 = 1;\n');
+      if (!switched) {
+        git(repoDir, ['checkout', '-q', '-b', 'other-branch']);
+        switched = true;
+      }
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: [] };
+    },
+    worktreeMainRetryMs: 150,
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [kid], (rs) => rs[0].worktree?.status === 'preserved_dirty_main');
+  assert.equal(runs[0].worktree?.waitCode, 'branch_changed', `实际 ${runs[0].worktree?.waitCode}`);
+  assert.equal(runs[0].worktree?.baseBranch, mainBranch);
+  assert.equal(runs[0].recoverableBlock, 'worktree_main');
+  assert.equal(fs.existsSync(path.join(repoDir, 'src', 'feature8.js')), false, 'other-branch 上绝不能被合进');
+
+  git(repoDir, ['checkout', '-q', mainBranch]);
+  git(repoDir, ['branch', '-q', '-D', 'other-branch']);
+  const done = await waitFor(sup, [kid], (rs) => rs[0].state === STATE.completed, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(done[0].state, STATE.completed, `切回原分支后应自动合入，实际 ${done[0].state}（${done[0].flags?.blockedReason ?? ''}）`);
+  assert.equal(done[0].worktree?.status, 'merged');
+  const holders = git(repoDir, ['branch', '--contains', done[0].worktree.mergedHead]).out;
+  assert.match(holders, new RegExp(`\\b${mainBranch}\\b`), `合入提交必须在原分支 ${mainBranch} 上：${holders}`);
+  assert.equal(readLf(path.join(repoDir, 'src', 'feature8.js')), 'export const f8 = 1;\n');
+});
+
+await test('26. ★ 启动恢复（#8 pruneOrphanWorktrees）：只清理已取消残留，已完成未合入/冲突/活跃一律保留', async () => {
+  const pruneRepo = makeRepo(path.join(workspace, 'prune-repo'));
+  const pruneMgr = createWorktreeManager({ workspace: pruneRepo, log: () => {} });
+  const rootId = await makeRoot();
+  const kidCancelled = await addKid(rootId, { botId: memberA.id, requirement: '取消崩溃残留' });
+  const kidCompleted = await addKid(rootId, { botId: memberA.id, requirement: '已完成但未合入' });
+  const kidConflict = await addKid(rootId, { botId: memberB.id, requirement: '冲突保留' });
+  const kidLive = await addKid(rootId, { botId: memberB.id, requirement: '仍在排队' });
+
+  for (const id of [kidCancelled, kidCompleted, kidConflict, kidLive]) {
+    const prep = await pruneMgr.prepareWorktree({ taskRun: taskRuns.read(id).taskRun, taskRuns });
+    assert.equal(prep.ok, true, prep.text ?? '');
+    write(path.join(prep.worktree.worktreePath, `${id}.txt`), `${id}\n`);
+  }
+  await taskRuns.mutate(kidCancelled, { mutate: (cur) => ({ ...cur, state: STATE.cancelled }) });
+  await taskRuns.mutate(kidCompleted, { mutate: (cur) => ({ ...cur, state: STATE.completed }) });
+  await taskRuns.mutate(kidConflict, {
+    mutate: (cur) => ({ ...cur, state: STATE.blocked, worktree: { ...cur.worktree, status: 'conflict' } }),
+  });
+
+  const sup = makeSupervisor({
+    executeMember: async () => ({ ok: true, stop: 'returned' }),
+    worktreeManager: pruneMgr,
+  });
+  const report = await sup.recover();
+  await sup.idle();
+  sup.dispose();
+
+  const wts = report.worktrees ?? {};
+  assert.ok((wts.pruned ?? []).includes(kidCancelled), `应清理已取消残留：${JSON.stringify(wts)}`);
+  assert.ok((wts.unmerged ?? []).includes(kidCompleted), `已完成未合入只报不删：${JSON.stringify(wts)}`);
+  assert.ok((wts.kept ?? []).includes(kidLive), `活跃任务必须保留：${JSON.stringify(wts)}`);
+
+  const rCancelled = taskRuns.read(kidCancelled).taskRun;
+  assert.equal(rCancelled.worktree?.status, 'cleaned');
+  assert.equal(fs.existsSync(rCancelled.worktree.worktreePath), false, '已取消残留目录应删除');
+  assert.equal(git(pruneRepo, ['rev-parse', '--verify', `refs/heads/${rCancelled.worktree.branch}`]).ok, false, '已取消残留分支应删除');
+
+  const rCompleted = taskRuns.read(kidCompleted).taskRun;
+  assert.equal(rCompleted.worktree?.status, 'active');
+  assert.equal(fs.existsSync(rCompleted.worktree.worktreePath), true, '已完成未合入的 worktree 绝不误删');
+  assert.equal(git(pruneRepo, ['rev-parse', '--verify', `refs/heads/${rCompleted.worktree.branch}`]).ok, true);
+
+  const rConflict = taskRuns.read(kidConflict).taskRun;
+  assert.equal(fs.existsSync(rConflict.worktree.worktreePath), true, '冲突分支 worktree 必须保留');
+  assert.equal(git(pruneRepo, ['rev-parse', '--verify', `refs/heads/${rConflict.worktree.branch}`]).ok, true);
+
+  const rLive = taskRuns.read(kidLive).taskRun;
+  assert.equal(fs.existsSync(rLive.worktree.worktreePath), true, '活跃任务 worktree 必须保留');
+  assert.equal(git(pruneRepo, ['rev-parse', '--verify', `refs/heads/${rLive.worktree.branch}`]).ok, true);
+});
+
+await test('27. ★ 异步 git（#9）：慢 pre-commit hook 期间事件循环不阻塞 + 源码零 spawnSync', async () => {
+  const worktreeSrc = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'tasks', 'task-worktree.js'), 'utf8');
+  assert.equal(/\bspawnSync\s*\(/.test(worktreeSrc) || /import\b[^;]*\bspawnSync\b/.test(worktreeSrc), false, 'task-worktree.js 不得调用 spawnSync 阻塞事件循环');
+
+  const hookRepo = makeRepo(path.join(workspace, 'hook-repo'));
+  const hooksDir = path.join(hookRepo, '.git', 'hooks');
+  git(hookRepo, ['config', 'core.hooksPath', hooksDir.replace(/\\/g, '/')]);
+  const hookPath = path.join(hooksDir, 'pre-commit');
+  write(hookPath, '#!/bin/sh\nsleep 1\n');
+  fs.chmodSync(hookPath, 0o755);
+
+  const hookMgr = createWorktreeManager({ workspace: hookRepo, log: () => {} });
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '慢 hook 异步合入' });
+  const prep = await hookMgr.prepareWorktree({ taskRun: taskRuns.read(kid).taskRun, taskRuns });
+  assert.equal(prep.ok, true, prep.text ?? '');
+  write(path.join(prep.worktree.worktreePath, 'src', 'async-check.js'), 'export const asyncGit = true;\n');
+
+  let ticks = 0;
+  const timer = setInterval(() => { ticks += 1; }, 25);
+  let merged;
+  try {
+    merged = await hookMgr.mergeWorktree({ taskRun: taskRuns.read(kid).taskRun, taskRuns, shortTitle: 'async' });
+  } finally {
+    clearInterval(timer);
+  }
+  assert.equal(merged.ok, true, merged.text ?? merged.code ?? '');
+  assert.equal(merged.status, 'merged');
+  assert.equal(readLf(path.join(hookRepo, 'src', 'async-check.js')), 'export const asyncGit = true;\n');
+  assert.ok(ticks >= 20, `1 秒 pre-commit hook 期间事件循环必须保持运转（实测 timer ticks=${ticks}）`);
+});
+
+await test('28. ★ gitEnv 动态生效 + 超时强杀兜底不锁死仓库队列', async () => {
+  const timeoutRepo = makeRepo(path.join(workspace, 'timeout-repo'));
+  const hooksDir = path.join(timeoutRepo, '.git', 'hooks');
+  git(timeoutRepo, ['config', 'core.hooksPath', hooksDir.replace(/\\/g, '/')]);
+  const hookPath = path.join(hooksDir, 'pre-commit');
+  const probeFile = path.join(timeoutRepo, '.git', 'env-probe.txt');
+  write(
+    hookPath,
+    '#!/bin/sh\n'
+      + 'if [ -n "$ORBIS_WT_ENV_PROBE" ] && [ -n "$ORBIS_WT_ENV_PROBE_FILE" ]; then\n'
+      + '  printf "%s" "$ORBIS_WT_ENV_PROBE" > "$ORBIS_WT_ENV_PROBE_FILE"\n'
+      + 'fi\n'
+      + 'trap "" TERM\n'
+      + 'sleep 5\n',
+  );
+  fs.chmodSync(hookPath, 0o755);
+
+  const timeoutMgr = createWorktreeManager({
+    workspace: timeoutRepo, gitTimeoutMs: 250, killGraceMs: 200, log: () => {},
+  });
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '超时兜底不锁死' });
+  const prep = await timeoutMgr.prepareWorktree({ taskRun: taskRuns.read(kid).taskRun, taskRuns });
+  assert.equal(prep.ok, true, prep.text ?? '');
+  write(path.join(prep.worktree.worktreePath, 'src', 'timeout-recover.js'), 'export const recovered = true;\n');
+
+  const t0 = Date.now();
+  process.env.ORBIS_WT_ENV_PROBE = 'live-env-ok';
+  process.env.ORBIS_WT_ENV_PROBE_FILE = probeFile;
+  let timedOutMerge;
+  try {
+    timedOutMerge = await timeoutMgr.mergeWorktree({
+      taskRun: taskRuns.read(kid).taskRun, taskRuns, shortTitle: 'timeout',
+    });
+  } finally {
+    delete process.env.ORBIS_WT_ENV_PROBE;
+    delete process.env.ORBIS_WT_ENV_PROBE_FILE;
+  }
+  const elapsed = Date.now() - t0;
+  assert.equal(timedOutMerge.ok, false, '超时不能报告成功');
+  assert.equal(timedOutMerge.code, 'commit_failed');
+  assert.match(String(timedOutMerge.text ?? ''), /超时/);
+  assert.ok(elapsed < 4000, `超时 + 宽限强杀应在数秒内返回（实测 ${elapsed}ms）`);
+  assert.equal(read(probeFile), 'live-env-ok', '模块加载后新增的 process.env 必须对后续 git 调用生效');
+
+  // 去掉阻塞 hook 后，同一仓库队列与锁必须依然可用，立刻重试能成功合入
+  fs.rmSync(hookPath, { force: true });
+  const retried = await timeoutMgr.mergeWorktree({
+    taskRun: taskRuns.read(kid).taskRun, taskRuns, shortTitle: 'recover',
+  });
+  assert.equal(retried.ok, true, `仓库队列与写锁不能锁死：${retried.text ?? retried.code ?? ''}`);
+  assert.equal(retried.status, 'merged');
+  assert.equal(readLf(path.join(timeoutRepo, 'src', 'timeout-recover.js')), 'export const recovered = true;\n');
 });
 
 await test('15. 行预算：pi-runner ≤ 850、turn-executor ≤ 1350', () => {

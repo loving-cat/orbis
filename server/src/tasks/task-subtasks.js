@@ -23,10 +23,26 @@
  *   · 不允许自依赖，也不允许形成任何长度的环（`detectDependencyCycle`）；
  * 理由：依赖写错的代价是“下游永远不跑”或“拿了半份前置产物开干”，
  * 而这两种在界面上都只能看到“任务卡住了”，排查成本极高。
+ *
+ * ## 计划条目（planStep / planHold）
+ *
+ * 负责人在 `task_plan` 里写的依赖与把关位，派活时**自动落到子任务上**：
+ * 每份新活先认领它对应的那条计划（`matchPlanStep`），再带上那一条的前置与把关。
+ * 以前计划只写在纸上 —— 负责人照着 @ 派活（或调工具时没重复写依赖），
+ * 下游就和上游同时开跑，拿不到上游的产物。
+ *
+ * 前置条目还没派出去时，这份活**挂起**（`planHold` + 临时把关位）而不是当成没有依赖：
+ * 等前置那条派出去，`releasePlanHolds` 自动接上依赖并撤掉临时把关；
+ * 负责人也可以直接放行（他决定不等了）。挂起走的是既有 checkpoint 唤醒链路，
+ * 所以不会出现「全队都在等一条没人派的活」的死等。
  */
 import { createTaskRun } from './task-run-factory.js';
 import { fileClaimList } from './task-file-claims.js';
-import { normalizeDependsOn, detectDependencyCycle } from './task-dag.js';
+import {
+  normalizeDependsOn, detectDependencyCycle,
+  planStepBindings, matchPlanStep, planLinksOf, planStepText, resolvePlanWaits,
+} from './task-dag.js';
+import { isTerminal } from './task-contract.js';
 
 /** 稳定序列化：对象键排序，数组保持顺序。 */
 function stableJson(value) {
@@ -94,8 +110,22 @@ export async function createChildTask({
    *   · 混着写。
    */
   dependsOn = [],
-  /** 前置完成后要不要先唤醒负责人把关再放行（默认不要）。 */
-  checkpointBeforeRun = false,
+  /**
+   * 前置完成后要不要先唤醒负责人把关再放行。
+   *
+   * 显式 `true/false` 说了算；不传（`undefined`）就跟这份活对应的计划条目走
+   * （计划里写了 `checkpoint` 就开），对不上计划就不开。
+   */
+  checkpointBeforeRun = undefined,
+  /**
+   * 负责人点名这份活是计划里的第几条（1 基，可空）。
+   *
+   * 不填时按「正文 == 步骤正文」→「这个成员在计划里还空着的最早一条」自动认领。
+   * 填了不存在的序号直接拒绝（不能猜一条错的依赖）。
+   */
+  planStep = null,
+  /** 是否按父任务的计划自动带上依赖/把关（只在测试或特殊入口里关）。 */
+  usePlan = true,
   /**
    * 强制独立复核（默认跟随父任务）。
    *
@@ -126,10 +156,34 @@ export async function createChildTask({
   const childId = parentId + '_c' + parentRevision + '_' + code;
   const requestId = parentId + '_r' + parentRevision + '_c' + code;
 
+  const allKids = childrenOf(taskRuns, parentTaskRun);
+  const siblings = allKids.filter((run) => run.id !== childId);
+
+  // ★ 计划条目：这份活是计划里的哪一条 → 带上那一条写好的前置与把关位。
+  //   负责人照着计划 @ 派活时不会再把依赖抄一遍；以前这里不认计划，
+  //   计划里「第 2 条等第 1 条」只是一行字，两份活照样同时开跑。
+  const planSteps = usePlan && Array.isArray(parentTaskRun.plan?.steps) ? parentTaskRun.plan.steps : [];
+  const bindings = planSteps.length ? planStepBindings(planSteps, allKids) : new Map();
+  const matched = planSteps.length
+    ? matchPlanStep({
+      steps: planSteps, bindings, memberBotId: botId, requirement: goal.requirement,
+      explicitStep: planStep, selfId: childId,
+    })
+    : null;
+  if (matched?.error) return { ok: false, code: 'bad_plan_step', text: matched.error };
+  const planLinks = matched
+    ? planLinksOf({ steps: planSteps, bindings, index: matched.index, selfId: childId })
+    : { dependsOn: [], waitSteps: [], checkpoint: false };
+  const planBinding = matched ? { index: matched.index, task: planStepText(matched.step) } : null;
+  // 显式写了就听显式的；没写才跟计划
+  const gate = typeof checkpointBeforeRun === 'boolean' ? checkpointBeforeRun : planLinks.checkpoint;
+  // 前置条目还没派出去：挂起（临时把关位），等它派出后由 releasePlanHolds 接上依赖
+  const waits = planLinks.waitSteps;
+
   // ★ 依赖必须在落盘前核完（fail-closed）：环与越界依赖一旦写进去，
   //   下游就永远不会跑，而界面上只会看到“排队中”。
-  const siblings = childrenOf(taskRuns, parentTaskRun).filter((run) => run.id !== childId);
-  const deps = normalizeDependsOn(dependsOn, siblings.map((run) => run.id), {
+  const explicitDeps = Array.isArray(dependsOn) ? dependsOn : (dependsOn === null || dependsOn === undefined ? [] : [dependsOn]);
+  const deps = normalizeDependsOn([...explicitDeps, ...planLinks.dependsOn], siblings.map((run) => run.id), {
     stepIds,
     selfId: childId,
   });
@@ -198,12 +252,22 @@ export async function createChildTask({
       fileClaims: claims.files,
       // ★ 受控 DAG：前置没完成就不启动。checkpoint 是“完成后先由负责人点头”。
       dependsOn: deps.ids,
-      checkpointBeforeRun: checkpointBeforeRun === true,
+      checkpointBeforeRun: gate === true || waits.length > 0,
       checkpointApprovedAt: null,
       checkpointApprovedBy: null,
+      // ★ 计划条目绑定与挂起（见文件头「计划条目」）
+      planStep: planBinding,
+      planHold: waits.length ? { waitSteps: waits, addedGate: gate !== true, at: clock() } : null,
     }),
     at: clock(),
   });
+  const planOut = planBinding
+    ? { ...planBinding, dependsOn: planLinks.dependsOn, waitSteps: waits, checkpoint: gate === true }
+    : null;
+  const linkOpts = {
+    dependsOn: deps.ids, checkpointBeforeRun: gate === true, modelTier, useWorktree, worktreeRepo, siblings, clock,
+    planStep: planBinding, planWaits: waits,
+  };
   if (!accepted.ok) {
     if (accepted.code === 'request_conflict') {
       return { ok: false, code: 'dispatch_conflict', text: '同一派工身份的内容不一致，拒绝复用' };
@@ -214,11 +278,10 @@ export async function createChildTask({
         return { ok: false, code: 'dispatch_conflict', text: '同一派工身份的内容不一致，拒绝复用' };
       }
       await mergeClaims(existing?.id, claims.files, taskRuns, clock);
-      const linkedA = await mergeChildLinks(taskRuns, existing?.id, {
-        dependsOn: deps.ids, checkpointBeforeRun, modelTier, useWorktree, worktreeRepo, siblings, clock,
-      });
+      const linkedA = await mergeChildLinks(taskRuns, existing?.id, linkOpts);
       if (!linkedA.ok) return linkedA;
-      return { ok: true, child: existing, reused: true };
+      await releasePlanHolds({ taskRuns, parentTaskRun, clock });
+      return { ok: true, child: existing, reused: true, plan: planOut };
     }
     return { ok: false, code: accepted.code ?? 'accept_failed', text: accepted.text };
   }
@@ -230,16 +293,123 @@ export async function createChildTask({
       return { ok: false, code: 'dispatch_conflict', text: '同一派工身份的内容不一致，拒绝复用' };
     }
     await mergeClaims(child?.id, claims.files, taskRuns, clock);
-    const linkedB = await mergeChildLinks(taskRuns, child?.id, {
-      dependsOn: deps.ids, checkpointBeforeRun, modelTier, useWorktree, worktreeRepo, siblings, clock,
-    });
+    const linkedB = await mergeChildLinks(taskRuns, child?.id, linkOpts);
     if (!linkedB.ok) return linkedB;
-    return { ok: true, child, reused: true };
+    await releasePlanHolds({ taskRuns, parentTaskRun, clock });
+    return { ok: true, child, reused: true, plan: planOut };
   }
   await taskRuns.mutate(child.id, {
     mutate: (cur) => (cur ? { ...cur, parentRevision, dispatchFingerprint: fingerprint, updatedAt: clock() } : null),
   });
-  return { ok: true, child, reused: false };
+  // 这条派出去了：之前挂起等它的兄弟现在可以接上依赖
+  await releasePlanHolds({ taskRuns, parentTaskRun, clock });
+  return { ok: true, child, reused: false, plan: planOut };
+}
+
+/** 同一条计划前置的身份（按正文认，序号可能被修订挪动）。 */
+const waitKey = (wait) => String(wait?.task ?? '').trim();
+
+/**
+ * 计划写好（或修订）之后，把它落到**还没开始**的子任务上。
+ *
+ * 「先派活、后补计划」也是常见路径：负责人先 @ 了两个人，再用 task_plan 写下
+ * 「第 2 条等第 1 条」。不回头补的话，这句依赖对已经派出去的活不生效。
+ *
+ * 只动从没开始过的（没有任何尝试、没放行过、未终态）：已经在跑的活补依赖没有意义，
+ * 中途改它的闸门只会让返工轮莫名其妙地停下来。依赖是并集，不清掉负责人原来写的。
+ *
+ * @returns {Promise<{applied:string[]}>} 核对过的子任务（没有可补的就原样不动）
+ */
+export async function applyPlanToChildren({ taskRuns, parentTaskRun, clock = () => Date.now() }) {
+  const out = { applied: [] };
+  if (!parentTaskRun?.id) return out;
+  const fresh = taskRuns.read?.(parentTaskRun.id);
+  const parent = fresh?.status === 'found' ? fresh.taskRun : parentTaskRun;
+  const steps = Array.isArray(parent.plan?.steps) ? parent.plan.steps : [];
+  if (!steps.length) return out;
+  const kids = childrenOf(taskRuns, parent);
+  const bindings = planStepBindings(steps, kids);
+  for (const [index, kid] of bindings) {
+    if (isTerminal(kid.state) || kid.checkpointApprovedAt || (kid.attempts ?? []).length) continue;
+    const links = planLinksOf({ steps, bindings, index, selfId: kid.id });
+    const step = steps[index - 1];
+    const linked = await mergeChildLinks(taskRuns, kid.id, {
+      dependsOn: links.dependsOn,
+      checkpointBeforeRun: links.checkpoint,
+      planStep: { index, task: planStepText(step) },
+      planWaits: links.waitSteps,
+      siblings: kids,
+      clock,
+    });
+    if (linked.ok) out.applied.push(kid.id);
+  }
+  await releasePlanHolds({ taskRuns, parentTaskRun: parent, clock });
+  return out;
+}
+
+/**
+ * 被计划挂起的子任务：前置条目现在派出去了就接上依赖；全接上了就撤掉临时把关位。
+ *
+ * 每次派出新活（以及负责人修订计划）之后调一次。幂等：没有可接的就什么都不写。
+ *
+ * ★ 撤掉的只是**挂起时临时加的**那道把关（`addedGate`）。计划或负责人本来就要求
+ *   「前置完成后先叫我把关」的，那道关照样留着。
+ * ★ 接上会成环的前置不接：留着挂起，由负责人放行或改派（它在提示词里看得到原因）。
+ *
+ * @param {object} p
+ * @param {object} p.taskRuns
+ * @param {object} p.parentTaskRun
+ * @param {()=>number} [p.clock]
+ * @returns {Promise<{linked:string[], released:string[]}>}
+ */
+export async function releasePlanHolds({ taskRuns, parentTaskRun, clock = () => Date.now() }) {
+  const out = { linked: [], released: [] };
+  if (!parentTaskRun?.id) return out;
+  // 计划读最新的：负责人可能刚在这一轮里改过
+  const fresh = taskRuns.read?.(parentTaskRun.id);
+  const parent = fresh?.status === 'found' ? fresh.taskRun : parentTaskRun;
+  if (parent.revision !== parentTaskRun.revision) return out;
+  const steps = Array.isArray(parent.plan?.steps) ? parent.plan.steps : [];
+  if (!steps.length) return out;
+  const kids = childrenOf(taskRuns, parent);
+  const held = kids.filter((kid) => !isTerminal(kid.state) && !kid.checkpointApprovedAt
+    && Array.isArray(kid.planHold?.waitSteps) && kid.planHold.waitSteps.length);
+  if (!held.length) return out;
+  const bindings = planStepBindings(steps, kids);
+  for (const kid of held) {
+    const usable = resolvePlanWaits(kid.planHold.waitSteps, steps, bindings).resolved
+      .filter(({ kidId }) => kidId !== kid.id);
+    if (!usable.length) continue;
+    let released = false;
+    const res = await taskRuns.mutate(kid.id, {
+      mutate: (cur) => {
+        if (!cur || isTerminal(cur.state) || cur.checkpointApprovedAt) return null;
+        const hold = cur.planHold;
+        if (!Array.isArray(hold?.waitSteps) || !hold.waitSteps.length) return null;
+        const done = new Set(usable.map(({ wait }) => waitKey(wait)));
+        const nextDeps = [...new Set([...(cur.dependsOn ?? []), ...usable.map(({ kidId }) => kidId)])];
+        const cycle = detectDependencyCycle([
+          ...kids.filter((k) => k.id !== cur.id).map((k) => ({ id: k.id, dependsOn: k.dependsOn ?? [] })),
+          { id: cur.id, dependsOn: nextDeps },
+        ]);
+        if (!cycle.ok) return null;
+        const still = hold.waitSteps.filter((wait) => !done.has(waitKey(wait)));
+        released = still.length === 0;
+        return {
+          ...cur,
+          dependsOn: nextDeps,
+          planHold: released ? null : { ...hold, waitSteps: still },
+          checkpointBeforeRun: released && hold.addedGate === true ? false : cur.checkpointBeforeRun,
+          updatedAt: clock(),
+        };
+      },
+    });
+    if (res?.ok && res.changed !== false) {
+      out.linked.push(kid.id);
+      if (released) out.released.push(kid.id);
+    }
+  }
+  return out;
 }
 
 /**
@@ -253,6 +423,7 @@ export async function createChildTask({
 async function mergeChildLinks(taskRuns, childId, {
   dependsOn = [], checkpointBeforeRun = false, modelTier = undefined,
   useWorktree = undefined, worktreeRepo = undefined, siblings = [], clock = () => Date.now(),
+  planStep = null, planWaits = [],
 } = {}) {
   if (!childId) return { ok: true };
   const others = siblings.filter((run) => run.id !== childId).map((run) => run.id);
@@ -268,7 +439,22 @@ async function mergeChildLinks(taskRuns, childId, {
       if (!cycle.ok) {
         return { __reject: { ok: false, code: 'dependency_cycle', text: '依赖成环：' + cycle.cycle.join(' → ') } };
       }
-      const gate = checkpointBeforeRun === true || cur.checkpointBeforeRun === true;
+      // ★ 计划绑定：已有绑定不改（同一份活不会换条目）；以前没绑上的（先派活、后写计划）补上。
+      const bindStep = !cur.planStep && planStep ? planStep : null;
+      // ★ 计划前置还没派出去：还没开始、负责人也没放行的活补挂起；已经在跑/放行过的不再拦。
+      const canHold = Array.isArray(planWaits) && planWaits.length > 0
+        && !isTerminal(cur.state) && !cur.checkpointApprovedAt && !(cur.attempts ?? []).length;
+      const prevWaits = Array.isArray(cur.planHold?.waitSteps) ? cur.planHold.waitSteps : [];
+      const addWaits = canHold ? planWaits.filter((w) => !prevWaits.some((p) => waitKey(p) === waitKey(w))) : [];
+      const nextHold = addWaits.length
+        ? {
+          waitSteps: [...prevWaits, ...addWaits],
+          // 原来就有一道「真」把关（计划/负责人要求的）时，挂起撤销后也要留着它
+          addedGate: cur.planHold ? cur.planHold.addedGate === true : cur.checkpointBeforeRun !== true && checkpointBeforeRun !== true,
+          at: cur.planHold?.at ?? clock(),
+        }
+        : (cur.planHold ?? null);
+      const gate = checkpointBeforeRun === true || cur.checkpointBeforeRun === true || addWaits.length > 0;
       const sameDeps = mergedDeps.ids.join('|') === (cur.dependsOn ?? []).join('|');
       // ★ 档位：显式传入合法值就跟着更新（它不进业务身份指纹，复用时可改）。
       //   `undefined` = 这次没指定，保持原样；不能因为没填就把已有档位清掉。
@@ -281,11 +467,14 @@ async function mergeChildLinks(taskRuns, childId, {
       const wantRepo = worktreeRepo === undefined ? null : (worktreeRepo ? String(worktreeRepo) : null);
       const worktreeChanged = (wantWorktree !== null && (cur.flags?.useWorktree === true) !== wantWorktree)
         || (wantRepo !== null && (cur.flags?.worktreeRepo ?? null) !== wantRepo);
-      if (sameDeps && gate === (cur.checkpointBeforeRun === true) && !tierChanged && !worktreeChanged) return null;
+      if (sameDeps && gate === (cur.checkpointBeforeRun === true) && !tierChanged && !worktreeChanged
+        && !bindStep && !addWaits.length) return null;
       return {
         ...cur,
         dependsOn: mergedDeps.ids,
         checkpointBeforeRun: gate,
+        ...(bindStep ? { planStep: bindStep } : {}),
+        planHold: nextHold,
         ...(tierChanged || worktreeChanged ? {
           flags: {
             ...(cur.flags ?? {}),

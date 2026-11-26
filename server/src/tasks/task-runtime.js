@@ -35,6 +35,7 @@ import { CRITIC_MODE, resolveCriticMode } from './task-critic.js';
 import { resolveCloneConfig } from './task-worker-pool.js';
 import { createWorktreeManager } from './task-worktree.js';
 import { resolveWorktreeMode, WORKTREE_MODE } from './task-worktree-policy.js';
+import { fallbackModeFrom } from '../runner/model-fallback.js';
 
 /**
  * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
@@ -436,13 +437,24 @@ export function createTaskRuntime({
     const plan = planMentionDispatch({ text, members, leadBotId, existingChildren: existing });
     if (!plan.targets.length && !plan.skipped.length) return null;
 
+    // ★ 父任务要读**最新**的：负责人常在同一轮里先 task_plan、再在正文里 @ 人。
+    //   拿开轮前的快照，这一轮刚写的计划（含「第 2 条等第 1 条」）对这批派活不生效 ——
+    //   两个人同时开跑，下游拿不到上游的产物。
+    //   这一轮里目标被改了版：@ 的是旧目标的分工，不再落成子任务（改版会让负责人重排）。
+    const latest = taskRuns.read(taskRun.id);
+    const parentNow = latest?.status === 'found' ? latest.taskRun : taskRun;
+    if (parentNow.revision !== taskRun.revision) {
+      log('@ 派工跳过：这一轮期间目标已改版', taskRun.id);
+      return { planned: plan.targets.length, created: 0, skipped: plan.skipped, failures: [], stale: true };
+    }
+
     const created = [];
     const failures = [];
     for (const target of plan.targets) {
       try {
         const out = await createChildTask({
           taskRuns,
-          parentTaskRun: taskRun,
+          parentTaskRun: parentNow,
           goal: {
             requirement: '完成负责人在群里交代给你的部分：' + target.excerpt,
             scope: '',
@@ -516,6 +528,8 @@ export function createTaskRuntime({
       baseModel,
       candidates: criticCandidatesOf(runner.modelGroups, { resolveModel: runner.resolveModel }),
       userLocked: bot?.lockModel === true,
+      // ★ 与自动兜底同一条隐私/费用边界（same-provider 不出这一家，off 不自动换）
+      policyMode: fallbackModeFrom(process.env),
       explicitTierModels: tierOverrides,
       isBreakerOpen: (slug, groupId) => {
         try {

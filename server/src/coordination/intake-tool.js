@@ -84,6 +84,8 @@ export function requestReceipts(dataDir = config.dataDir) {
  */
 export function buildIntakeTools({
   runner, store, roomId, botId, health = null, requestScopeOf = null, receipts = null,
+  /** 本会话泳道键：受管轮次可能跑在 `#fb`（分档/兜底换模型）泳道上，上下文要按它查。 */
+  laneKey = null,
 }) {
   const wanted = [
     defineTool({
@@ -162,7 +164,7 @@ export function buildIntakeTools({
         if (isToolBlockedInSummaryTurn('accept_task', { summaryTurn: runner.isSummaryTurn?.(roomId, botId) })) {
           return { content: [{ type: 'text', text: SUMMARY_TURN_BLOCK_MESSAGE }], isError: true };
         }
-        const submission = readManagedSubmission({ runner, taskRuns: store.taskRuns, roomId, botId });
+        const submission = readManagedSubmission({ runner, taskRuns: store.taskRuns, roomId, botId, laneKey });
 
         // 受管上下文残缺：明确拒绝，不降级
         if (submission.kind === SUBMISSION.invalid) {

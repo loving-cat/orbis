@@ -222,7 +222,7 @@ export function createSessionBuilder({
     const effectivePolicy = isolatedLane ? { ...policy, dangerous: 'deny' } : policy;
     const roleKey = roleConfigurationKey(room, bot);
     // isMain 决定要不要给 ask_user（主控不给 —— 它直接跟用户对话，不弹卡片）
-    const commonTools = buildCommonTools({ runner, roomId, botId, isMain: isChief, store, config, bus });
+    const commonTools = buildCommonTools({ runner, roomId, botId, isMain: isChief, store, config, bus, laneKey });
     // ★ 受管阶段报告工具：真的注册进 SDK，模型才能调用。
     //   收集器由 runner 按「房间:Bot」挂，工具 execute 时取当前那个。
     const reportTools = wantsReportTool
@@ -232,12 +232,14 @@ export function createSessionBuilder({
     // ★ 负责人先列计划、再按计划派活。
     //   正常团队是「先有分工方案，再照着分发」；没有计划的派活是
     //   一次性的，出了偏差没人知道该对齐到哪里。
+    // ★ 凡是读受管上下文的工具都要带 laneKey：负责人这一轮被分档或兜底换了模型时
+    //   跑在 `#fb` 泳道上，按主泳道查只会得到「当前没有受管任务」，计划/派活/放行全被拒。
     const memberTools = wantsReportTool && isDeptLead
       ? [
-        buildPlanTool({ runner, store, roomId, botId }),
-        buildMemberTaskTool({ runner, store, roomId, botId }),
+        buildPlanTool({ runner, store, roomId, botId, laneKey }),
+        buildMemberTaskTool({ runner, store, roomId, botId, laneKey }),
         // ★ 放行 checkpoint：只有本部门负责人能调（工具内部再核一次真实角色）
-        buildCheckpointApproveTool({ runner, store, roomId, botId }),
+        buildCheckpointApproveTool({ runner, store, roomId, botId, laneKey }),
       ]
       : [];
     // ★ 共享黑板：**负责人与成员都要能用** ——
@@ -248,7 +250,7 @@ export function createSessionBuilder({
       : [];
     // 验收能力与派工能力分开：单成员部门仍可有真实负责人做专业验收，只是不能派工。
     const expertTools = wantsReportTool && isRoomLead(room, botId)
-      ? [buildExpertReviewTool({ runner, store, roomId, botId })]
+      ? [buildExpertReviewTool({ runner, store, roomId, botId, laneKey })]
       : [];
 
     // ★ Git：负责人对自己的任务有 git 权限（用户 2026-11-14 的产品要求），
@@ -267,7 +269,7 @@ export function createSessionBuilder({
     const intakeTools =
       !isolatedLane && isChief && intakeOn
         ? buildIntakeTools({
-            runner, store, roomId, botId, health,
+            runner, store, roomId, botId, health, laneKey,
             requestScopeOf: () => runner.currentRequestScope?.(roomId, botId) ?? null,
           })
         : [];
@@ -289,7 +291,7 @@ export function createSessionBuilder({
           ...gitTools,
           ...intakeTools,
           ...insightTools,
-          ...(isChief ? buildChiefTools({ runner, health, roomId, botId, store, config, bus, modelGroups }) : []),
+          ...(isChief ? buildChiefTools({ runner, health, roomId, botId, store, config, bus, modelGroups, laneKey }) : []),
           // 宿主追加的工具要**过同一道** role 过滤：否则往一个只读角色的会话里
           // 塞一个写工具，就是绕开了策略层
           ...extraCustomTools,

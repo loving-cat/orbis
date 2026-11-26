@@ -31,6 +31,7 @@
 - 依赖状态只有四种：`ready` / `waiting` / `checkpoint`（前置都完成、等负责人放行）/ `upstream_failed`（前置已永久受阻或被取消 —— 下游绝不启动）。
 - 自动接力：子任务交付（机械验收通过）后，因它变 `ready` 的下游立即被唤醒 —— **零次负责人模型调用**。
 - 防死等：`upstream_failed` 与「受阻」等价参与父任务收口，自主模式交回负责人、非自主模式如实阻塞并说清是谁的失败。
+- 父任务一定会被叫醒：负责人在自己这一轮里派出的子任务，是在这一轮收尾后由调度器单独跑的（父任务那一轮已经返回 wait）。子任务在这条路上**变成**取消 / 永久受阻 / 预算暂停时，推进器主动叫醒父任务；用户单独取消一份子任务同样叫醒父任务。可恢复阻塞（等上游、等主仓可合入）不叫——它们到点会自己醒，父任务该等着。
 - 共享黑板挂在根任务 `blackboard` 上：最多 24 条（先淘汰最旧的非约束）、单条 ≤240 字、渲染 ≤1200 字；交付事实自动落一条 `artifact`，负责人/成员可用 `task_blackboard` 写 `decision`/`constraint`/`fact`。写入目标只取受管上下文的根任务，调用方无法指定（防跨任务串写）。
 
 ## 集群全景与候选经验（2.0 集群 C5）
@@ -50,7 +51,9 @@
 - **落点**：`<workspace>/.orbis-worktrees/<safeTaskId>`（必须在 workspace 内 —— 沙箱允许目录、`repoTrustVerdict`、git 工具的 `resolveRepo` 三条都按这条判）。**绝不落 `dataDir`**；**绝不改 `.gitignore`**（幂等写 `<commonDir>/info/exclude`）；分支固定 `orbis/task/<safeTaskId>`，`safeId` 只允许 `[A-Za-z0-9._-]`（防参数注入与路径穿越）。
 - **生命周期**（全部在 `withRepoWriteLock({ commonDir })` 内串行化，拿不到锁短暂重排而非判死）：
   1. `prepareWorktree`（幂等）：复用优先 —— 返工/续段直接接着用同一棵树，**绝不清空半成品**；空仓（无 HEAD）与越界 `worktreeRepo` fail-closed 拒绝。
-  2. `mergeWorktree`（**只在机械验收 + 独立复核全过之后、`verification_finished(passed)` 之前**，否则归约器已把任务置为 `completed`，再 `block()` 会被拒、冲突被静默吞掉）：自动 `git add -A` + `commit`（没配提交身份才用兜底身份，**绝不 `--no-verify`**）→ 无净提交记 `noop` 并清理 → **主仓脏则拒绝合并**（保留分支，`preserved_dirty_main`）→ 干净则 `git merge --no-ff` → 成功后核对 HEAD 前进、`worktree remove` + 安全 `branch -d`，记 `mergedHead` / `filesChanged` 并落黑板。
+  2. `mergeWorktree`（**只在机械验收 + 独立复核全过之后、`verification_finished(passed)` 之前**，否则归约器已把任务置为 `completed`，再 `block()` 会被拒、冲突被静默吞掉）：自动 `git add -A` + `commit`（没配提交身份才用兜底身份，**绝不 `--no-verify`**）→ 无净提交记 `noop` 并清理 → **主仓此刻不能安全合入就不合并**（保留分支，`preserved_dirty_main` + `waitCode`）→ 能则 `git merge --no-ff` → 成功后核对 HEAD 前进、`worktree remove` + 安全 `branch -d`，记 `mergedHead` / `filesChanged`（**只算这次合入带进主仓的文件**，即合入前后 HEAD 之差）并落黑板。
+     - 「不能安全合入」逐条判（与 merge 同一把写锁）：`detached_head`（分离头指针，bisect / rebase 停住时——合进去的提交不属于任何分支）、`operation_in_progress`（MERGE_HEAD / rebase-merge / rebase-apply / CHERRY_PICK_HEAD / REVERT_HEAD / BISECT_LOG）、`dirty_main`（**已跟踪**文件有未提交改动——带着它们 merge 一旦冲突，`merge --abort` 不保证能还原）、`base_not_in_head`（当前分支不包含这份活的起点，合入会带进无关提交）、`untracked_collision`（未跟踪文件会被这次合入覆盖）。**其余未跟踪文件不挡合入**（用户草稿、`_inbox/` 附件副本、构建产物合并根本碰不到）。
+     - 这些都是「用户处理一下就好」的状态，所以子任务进**可恢复阻塞**（`recoverableBlock: 'worktree_main'` + `retryAt`，默认 60 秒）：到点只重跑纯代码验收 + 合入（不调模型、不扣额度）；父任务视它为「在等、会自己醒」——**不交回、不取消、不重做**，下游依赖也只是继续等；用户点「解除阻塞」立即重试。
   3. **冲突 fail-closed**：冲突清单**先取再 `merge --abort`**（abort 会清空未合并索引），主工作树恢复 100% 干净，分支与 worktree **完整保留**（`conflict`），`block()` 交回负责人。
   4. `cleanupWorktree`：取消/改版时只清 `status === 'active'` 的树（`worktree remove --force` + `branch -D`）；`conflict` / `preserved_dirty_main` 的分支**绝不删**。`pruneOrphanWorktrees` 只扫终态残留。
 - **与文件互斥**：非 worktree 子任务 `fileClaims` 100% 照旧；**只有双方都在各自 worktree** 时才放宽（`worktreesBypassFileClaims`）——磁盘真分开了，冲突留到合并阶段。
@@ -66,7 +69,7 @@
 - **主槽 vs 分身**：子任务且（同 Bot 已有在途 **或** 主会话被用户聊天占着）且还有配额 → 直接开分身（`cloneId = taskRunId`）立刻跑，不再傻等 15 秒；否则走主会话。
 - **泳道键（`runner/session-lanes.js`）**：`room:bot` / `room:bot#fb` / `room:bot#clone_<id>` / `room:bot#clone_<id>#fb`。分身会话 `persist: false`（纯内存、不写 `store.sessionFile`），`finally` 里 `dispose()` 用完即焚。**五处按 key 存的状态全部绑泳道键**：`runner.sessions`、报告收集器（`activateReportScope`）、`currentTaskContext`（policy-hook / 黑板）、`dispatching`、`managedInflight`；房间级中止从键里剥离 `#…` 还原真实 `botId`。
 - **模型分档**：`ORBIS_MODEL_TIER` = `off` | `explicit`（默认）| `auto`；`ORBIS_TIER_MODEL_FAST` / `ORBIS_TIER_MODEL_STRONG` 可指定档位模型。`assign_member_task` / `createChildTask` / `createTaskRun` 可传 `modelTier`（存 `flags.modelTier`，不进业务身份指纹，子任务默认继承父任务）。
-- **六条硬边界**：`standard`/无效 → 零扰动；`bot.lockModel === true` → 绝不覆盖；本地/内网执行者绝不外泄到公有云（含 `ORBIS_TIER_MODEL_*`）；熔断组跳过；按档位打分（fast 偏 flash/mini，strong 偏 opus/reason/large）；挑出的模型与当前相同 → 不覆盖。**绝不写 `bot.model`**，只对这一次执行生效（纯内存会话，跑完即弃）。
+- **七条硬边界**：`standard`/无效 → 零扰动；`bot.lockModel === true` → 绝不覆盖；本地/内网执行者绝不外泄到公有云（含 `ORBIS_TIER_MODEL_*`）；熔断组跳过；按档位打分（fast 偏 flash/mini，strong 偏 opus/reason/large）；挑出的模型与当前相同 → 不覆盖；**遵守 `ORBIS_MODEL_FALLBACK`**（`same-provider` 只在执行者同一家里挑、显式档位模型跨家也拒绝；`off` 不自动挑，显式档位模型照用）。**绝不写 `bot.model`**，只对这一次执行生效（纯内存会话，跑完即弃）。
 - 实际生效的 `{ cloned, cloneId, tier, modelOverride, why }` 记在 `taskRun.lastDispatchMeta`，供可观测与面板展示。
 
 ## 独立评审 / 质检回路（2.0 集群 C2）
@@ -76,12 +79,12 @@
   - `all`：所有通过机械验收的任务都审；
   - `off`：完全关闭（也不注入执行器）。
 - **零浪费**：机械验收没过（`unmet` / `blocked` 非空）时**绝不调用**评审员，先让执行者修确定性错误。
-- 评审会话：全新 `SessionManager.inMemory`（不落盘、不复用执行者历史）+ 只读工具白名单 `read/ls/find/grep`（无写、无 shell、无 MCP、无宿主自定义工具）+ 策略层 `dangerous: 'deny'`；`finally` 里 `dispose()`。选模优先换一个健康且不同的模型（`ORBIS_CRITIC_MODEL` 可指定），**本地/内网执行者绝不被换到公有云**（`ORBIS_CRITIC_MODEL` 指向云端也一样拒绝，不做“静默忽略”），没有替代时退回同款模型但仍是干净会话。
+- 评审会话：全新 `SessionManager.inMemory`（不落盘、不复用执行者历史）+ 只读工具白名单 `read/ls/find/grep`（无写、无 shell、无 MCP、无宿主自定义工具）+ 策略层 `dangerous: 'deny'`；`finally` 里 `dispose()`。选模优先换一个健康且不同的模型（`ORBIS_CRITIC_MODEL` 可指定），**本地/内网执行者绝不被换到公有云**（`ORBIS_CRITIC_MODEL` 指向云端也一样拒绝，不做“静默忽略”），没有替代时退回同款模型但仍是干净会话。评审员会读产物原文，所以选模**与自动兜底守同一条 `ORBIS_MODEL_FALLBACK` 边界**：`same-provider` 只在执行者同一家里换（显式指定跨家也拒绝并说明），`off` 不自动换（显式指定照用）；成员 `lockModel === true` 时只用同款模型（显式指定也不用）。
 - 读评审输出按真实 SDK 事件：`message_start`（assistant）清本轮缓冲、`text_delta` 只追加、`message_end`（assistant）单点计 `usage` 并先判 `assistantFailure`（429/auth/模型错走 `prompt_failed`，不落成 `no_output`）；结论取**最后一个带 `verdict` 的平衡 JSON**（模型在结论前提字段、或先调只读工具都不会把解析带偏）。
 - 结论 fail-closed：只接受 `{verdict, summary, defects}`；`passed` 必须带结论依据且 `defects` 为空；`failed` 必须至少 1 条可执行缺陷；解析不了 = `parse_error`，绝不自动放行。
 - 绑定与去重：每次评审绑定 `(revision, 最新已结算 attemptId, 产物指纹)`；同一产出不重复审；**上一轮的 `failed` 记录不会挡住返工后的新一轮评审**（`expertReviews` 里的 `critic_review` 按尝试过滤，负责人的人工判断仍对整个版本有效）。
 - 有界返工：`MAX_CRITIC_REWORKS = 2`；未达标就走标准 `verification_finished(passed: false, unmet: defects)` 自动返工，返工提示词带完整缺陷清单；连续 2 轮不过 → `block`，子任务走既有 `handBackBlockedChildren` 把真实缺陷交给负责人。
-- 评审员自身故障（超时 / 429 / 抛错 / 输出无法解析）**不算业务缺陷**：不扣返工额度、不伪造通过，30 秒后重试（`retryAt` 在 `verifying` 态也生效，到期前的任何 `notify` 不得穿透连撞）；连续 3 次跑不起来才阻塞等人工。
+- 评审员自身故障（超时 / 429 / 抛错 / 输出无法解析）**不算业务缺陷**：不扣返工额度、不伪造通过，30 秒后重试（`retryAt` 在 `verifying` 态也生效，到期前的任何 `notify` 不得穿透连撞）；连续 3 次跑不起来才阻塞等人工，并记成「不交回」的不可恢复类别 `critic_unavailable`——活已经做完、只是没人能审，父任务如实停下，而不是把它交回负责人取消、再派人重做一遍。
 - 人工介入后的重置：手动解除阻塞 / 暂停后继续 会把 `criticState` 的 `reworkCount` / `errorCount` 清零（保留 `lastPassedKey` 等历史）——否则按钮按下去立刻又到上限、又 block。达上限时**先把验收收口（清 `verifyingAt`）再 block**，解除后回到 `queued` 让执行者真的再干一轮，而不是拿旧产出秒阻。
 - 追加额度（`onBudgetExtended`）会把整棵树的预算暂停一起恢复，且**先恢复全部子任务再唤醒**（否则先醒来的根会看到还在暂停的子任务，把它自己又暂停回去）。
 - 预算与竞态：评审前查根 `remainingTokensOf`（用尽走 `paused_budget`，不偷跑）；返回的 `usage` 计入根 `budget.usedTokens`；`await` 回来后重读任务，取消/暂停/改版则丢弃结论（写事务里再核一次 revision）。

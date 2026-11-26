@@ -7,6 +7,7 @@ import { remainingRuns } from './task-budget.js';
 import {
   budgetTokensView, buildTaskWaterfall, projectBlackboard, telemetrySummaryOf,
 } from './task-waterfall.js';
+import { planStepBindings } from './task-dag.js';
 
 const TRANSPORT_STATE_TEXT = Object.freeze({
   queued: '准备中', running: '执行中', verifying: '验收中',
@@ -127,6 +128,9 @@ export function projectTaskRun(taskRun, {
     ? remainingRuns(budgetRoot.budget)
     : (Number.isFinite(budget.maxRuns) ? Math.max(0, budget.maxRuns - Number(budget.usedRuns ?? 0)) : null);
   const gate = (taskRun.openGates ?? [])[0] ?? null;
+  // 计划条目 → 已派出的子任务（与调度同一份认领规则）；没传子任务（列表接口）时为 null
+  const planSteps = Array.isArray(taskRun.plan?.steps) ? taskRun.plan.steps : [];
+  const planBound = planSteps.length && Array.isArray(children) ? planStepBindings(planSteps, children) : null;
   return {
     id: taskRun.id,
     roomId: taskRun.origin?.roomId ?? taskRun.request?.roomId ?? null,
@@ -185,6 +189,13 @@ export function projectTaskRun(taskRun, {
     plan: Array.isArray(taskRun.plan?.steps) && taskRun.plan.steps.length
       ? {
           steps: taskRun.plan.steps.slice(0, 20).map((s, i) => {
+            // ★ 派出状态按调度同一份认领规则算（`planStepBindings`）：
+            //   以前读的 `s.status` 从来没人写，每一条恒为 pending。
+            //   没传子任务（列表接口）时无从判断，保持旧值。
+            const bound = planBound ? planBound.get(i + 1) : undefined;
+            const status = planBound
+              ? (!bound ? 'pending' : (bound.state === 'completed' ? 'completed' : 'dispatched'))
+              : String(s?.status ?? 'pending');
             const rawOwner = String(s?.memberName ?? s?.owner ?? s?.botName ?? '').trim();
             const ownerBotId = String(s?.memberBotId ?? s?.ownerBotId ?? '').trim();
             // ★ 名字要按 id 现查，不能只信落盘的那一列：
@@ -207,7 +218,11 @@ export function projectTaskRun(taskRun, {
               owner: String(resolved || rawOwner).slice(0, 80),
               // 前端按 id 再解析一次：服务端不认识这个 bot（已删）时也能兜底显示原值。
               ownerBotId,
-              status: String(s?.status ?? 'pending'),
+              status,
+              // 计划里写的依赖与把关（步骤号）：界面据此画出「谁等谁」
+              dependsOn: (Array.isArray(s?.dependsOn) ? s.dependsOn : [])
+                .map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0).slice(0, 12),
+              checkpoint: s?.checkpoint === true,
             };
           }),
           at: taskRun.plan.at ?? null,

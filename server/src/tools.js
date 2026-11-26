@@ -200,6 +200,14 @@ function deptLine(room, st = defaultStore) {
 export function buildCommonTools({
   runner, roomId, botId, isMain = false,
   store: scopedStore = null, config: scopedConfig = null, bus: scopedBus = null,
+  /**
+   * 本会话的泳道键（分身 `#clone_<id>` / 临时模型 `#fb`）。
+   *
+   * ★ 受管上下文挂在**泳道**会话上：分身、worktree 成员、分档/兜底换模型的负责人
+   *   都不在主泳道上跑。按 `roomId:botId` 去查会拿到空（或别人的）上下文 ——
+   *   后台 shell 不再挂到任务名下（取消时收不回），截图/租约记到错的任务上。
+   */
+  laneKey = null,
 }) {
   const store = scopedStore ?? runner?.store ?? defaultStore;
   const config = scopedConfig ?? runner?.config ?? defaultConfig;
@@ -216,6 +224,7 @@ export function buildCommonTools({
     return runner.escalate({
       roomId,
       fromBotId: botId,
+      laneKey,
       reason: `给「${targetName}」的活没送出去：${reason}`,
       task,
       attempts,
@@ -586,7 +595,7 @@ export function buildCommonTools({
 
         // ★ 截图落在 dataDir/desktop-shots，不进 workspace：
         //   workspace 里的新文件会被 changed_files 扫到、可能被自动附件发出去。
-        const taskId = runner.currentTaskContext?.(roomId, botId)?.taskRunId ?? null;
+        const taskId = runner.currentTaskContext?.(roomId, botId, laneKey)?.taskRunId ?? null;
         const spot = screenshotPath({ dataDir: config.dataDir, taskId, botId });
         const shot = await captureScreenshot({ outFile: spot.file, window: target, fullScreen: !!fullScreen });
         if (!shot.ok) return fail(`截图失败：${shot.error}`);
@@ -669,7 +678,7 @@ export function buildCommonTools({
         }),
         execute: async (_toolCallId, { action, epoch, ttlSeconds }) => {
           const session = desktopInputSession();
-          const taskCtx = runner.currentTaskContext?.(roomId, botId) ?? null;
+          const taskCtx = runner.currentTaskContext?.(roomId, botId, laneKey) ?? null;
           const taskId = taskCtx?.taskRunId ?? `${roomId}:${botId}`;
           const generation = taskCtx?.generation ?? 'runtime';
           if (action === 'status') {
@@ -778,7 +787,7 @@ export function buildCommonTools({
         }),
         execute: async (_toolCallId, input) => {
           const session = desktopInputSession();
-          const taskCtx = runner.currentTaskContext?.(roomId, botId) ?? null;
+          const taskCtx = runner.currentTaskContext?.(roomId, botId, laneKey) ?? null;
           const taskId = taskCtx?.taskRunId ?? `${roomId}:${botId}`;
           const point = Number.isFinite(input.x) && Number.isFinite(input.y)
             ? { x: Number(input.x), y: Number(input.y) }
@@ -1202,7 +1211,7 @@ export function buildCommonTools({
         }
 
         // 记上 taskId：任务结束/取消时按它回收（否则只能靠模型自己记得 kill）
-        const bgTaskId = runner.currentTaskContext?.(roomId, botId)?.taskRunId ?? null;
+        const bgTaskId = runner.currentTaskContext?.(roomId, botId, laneKey)?.taskRunId ?? null;
         const started = shells.start({ roomId, botId, taskId: bgTaskId, command, cwd: dir });
         if (started.error) return fail(started.error);
 
@@ -1395,6 +1404,8 @@ export function buildCommonTools({
 export function buildChiefTools({
   runner, health, roomId, botId,
   store: scopedStore = null, config: scopedConfig = null, bus: scopedBus = null, modelGroups: scopedModelGroups = null,
+  /** 本会话泳道键（见 buildCommonTools）：受管轮次可能跑在 `#fb` 泳道上。 */
+  laneKey = null,
 }) {
   const store = scopedStore ?? runner?.store ?? defaultStore;
   const config = scopedConfig ?? runner?.config ?? defaultConfig;
@@ -2017,7 +2028,7 @@ export function buildChiefTools({
           return fail('本轮是接单请求，建部门必须通过 accept_task 提案；只讨论不产生副作用。');
         }
         // ★ 薄适配：只做「取可信提交 → 备规格 → 交统一入口」，不在这里编排。
-        const submission = readManagedSubmission({ runner, taskRuns: store.taskRuns, roomId, botId });
+        const submission = readManagedSubmission({ runner, taskRuns: store.taskRuns, roomId, botId, laneKey });
         if (submission.kind === SUBMISSION.invalid) {
           return fail(`这次执行不能建组：${submission.text}`);
         }
@@ -2143,7 +2154,7 @@ export function buildChiefTools({
         }
 
         // 受管执行：翻成 existing 交接，记进同一任务的待派；不起无任务的旧执行
-        const submission = readManagedSubmission({ runner, taskRuns: store.taskRuns, roomId, botId });
+        const submission = readManagedSubmission({ runner, taskRuns: store.taskRuns, roomId, botId, laneKey });
         if (submission.kind === SUBMISSION.invalid) {
           return fail(`这次执行不能派活：${submission.text}`);
         }

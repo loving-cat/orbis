@@ -139,5 +139,26 @@ test('★ projectTaskRunList 把 nameOf 透传给每一条（WS hello 快照用�
   assert.equal(plain[0].plan.steps[0].owner, 'b1');
 });
 
+test('★ 计划每条的派出状态按真实子任务算（以前恒为 pending），并带出依赖与把关位', () => {
+  const run = taskRun({
+    steps: [
+      { task: '取数', memberName: '甲', memberBotId: 'b1' },
+      { task: '建模', memberName: '乙', memberBotId: 'b2', dependsOn: [1], checkpoint: true },
+      { task: '出图', memberName: '丙', memberBotId: 'b3', dependsOn: [2] },
+    ],
+  });
+  const children = [
+    { id: 'k1', state: 'completed', createdAt: 1, owner: { leadBotId: 'b1' }, goal: { requirement: '@甲 先取数' } },
+    { id: 'k2', state: 'running', createdAt: 2, owner: { leadBotId: 'b2' }, planStep: { index: 2, task: '建模' } },
+  ];
+  const out = projectTaskRun(run, { children });
+  assert.deepEqual(out.plan.steps.map((s) => s.status), ['completed', 'dispatched', 'pending']);
+  assert.deepEqual(out.plan.steps[1].dependsOn, [1]);
+  assert.equal(out.plan.steps[1].checkpoint, true);
+  assert.equal(out.plan.steps[0].checkpoint, false);
+  // 没传子任务（列表接口）时无从判断：保持旧值
+  assert.equal(projectTaskRun(run).plan.steps[2].status, 'pending');
+});
+
 console.log(`\n任务投影：${passed}/${passed + failed} 通过`);
 process.exit(failed ? 1 : 0);

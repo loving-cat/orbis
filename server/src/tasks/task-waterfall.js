@@ -25,7 +25,7 @@
  */
 import { remainingRuns } from './task-budget.js';
 import { isTerminal } from './task-contract.js';
-import { DEP_STATUS, dependencyStatus } from './task-dag.js';
+import { DEP_STATUS, dependencyStatus, planWaitingSteps } from './task-dag.js';
 
 /** 每个任务最多展示几条依赖 / 缺陷 / 冲突文件。 */
 export const MAX_LIST = 10;
@@ -122,27 +122,44 @@ export function tokensOf(taskRun) {
   return { input, output, total: input + output };
 }
 
-/** 一个任务的时间线：开始 / 结束（未结束返回 null）。 */
-export function timelineOf(taskRun) {
+/**
+ * 一个任务的时间线：排队 / 开始 / 结束。
+ *
+ * ★ `startedAt` 是**第一次真正派出去执行**的时刻（最早一次尝试的开始），不是建档时间。
+ *   等前置 / 等名额 / 等把关的那段不是在干活：以前拿 `createdAt` 当起点，
+ *   一份排了 30 分钟、只干了 2 分钟的活会画成一根 32 分钟的长条 ——
+ *   瀑布流要回答的「谁在等谁」恰好被抹平。排队那段单独给 `queuedAt`。
+ * ★ 还没结束（执行中 / 验收中 / 等返工）的任务，条子画到 `now`；没开始过的 `startedAt` 为 null。
+ *
+ * @param {object} taskRun
+ * @param {{now?:number|null}} [opts]
+ * @returns {{queuedAt:number|null, startedAt:number|null, endedAt:number|null, durationMs:number|null}}
+ */
+export function timelineOf(taskRun, { now = null } = {}) {
   const attempts = Array.isArray(taskRun?.attempts) ? taskRun.attempts : [];
-  const starts = attempts.map((a) => a?.startedAt ?? a?.at);
-  const settles = attempts.map((a) => a?.settledAt);
-  const startedAt = pickTime([taskRun?.createdAt, ...starts], 'min') ?? Number(taskRun?.createdAt) ?? null;
+  const startedAt = pickTime(attempts.map((a) => a?.startedAt ?? a?.at), 'min');
+  const queuedAt = pickTime([taskRun?.createdAt], 'min');
   const terminal = isTerminal(taskRun?.state);
-  const endedAt = pickTime(
-    [taskRun?.delivery?.at, ...settles, terminal ? taskRun?.updatedAt : null],
-    'max',
-  );
-  const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : (endedAt ? 0 : null);
-  return { startedAt, endedAt, durationMs };
+  const endedAt = terminal
+    ? pickTime([taskRun?.delivery?.at, ...attempts.map((a) => a?.settledAt), taskRun?.updatedAt], 'max')
+    : null;
+  const until = endedAt ?? pickTime([now], 'max');
+  const durationMs = startedAt && until ? Math.max(0, until - startedAt) : null;
+  return { queuedAt, startedAt, endedAt, durationMs };
 }
 
 /** Critic 摘要（C2）：没有复核记录就返回 null。 */
 export function criticOf(taskRun) {
   const state = taskRun?.criticState ?? null;
   const feedback = taskRun?.criticFeedback ?? null;
-  const rounds = num(state?.reworkCount ?? feedback?.round ?? 0);
   const verdict = state?.lastVerdict ?? (feedback ? 'failed' : null);
+  // ★ 被打回过几轮。通过时 `reworkCount` 已清零（下一轮重新计数），
+  //   打回轮数由 writeCriticPassed 记在 `criticState.rounds`；只读 reworkCount 的话，
+  //   每一份「返工两轮后通过」的活都显示成 0 轮，面板上的「复核返工」总数恒偏小。
+  //   老数据没有 `rounds` 时退回 reworkCount。
+  const rounds = verdict === 'passed'
+    ? num(state?.rounds ?? state?.reworkCount ?? 0)
+    : num(state?.reworkCount ?? feedback?.round ?? 0);
   const reviewed = verdict === 'passed' || verdict === 'failed' || rounds > 0;
   if (!reviewed) return null;
   return {
@@ -205,6 +222,12 @@ export function dependenciesOf(taskRun, siblings = []) {
       .slice(0, MAX_LIST),
     waitingCheckpoint: status === DEP_STATUS.checkpoint,
     checkpointApproved: approved,
+    // ★ 被计划挂起：「等把关」其实是在等计划里还没派出去的第 N 条。
+    //   不单独标出来，用户只看到「等把关」+「放行」按钮，点下去下游就抢跑了。
+    waitingPlanSteps: planWaitingSteps(taskRun)
+      .map((w) => Number(w.index))
+      .filter((n) => Number.isInteger(n) && n > 0)
+      .slice(0, MAX_LIST),
   };
 }
 
@@ -218,13 +241,15 @@ function orderKey(taskRun) {
  * 一个子任务 → 瀑布流条。
  *
  * @param {object} child
- * @param {object} ctx `{ siblings, nameOf, costOf, originAt }`
+ * @param {object} ctx `{ siblings, nameOf, costOf, originAt, now }`
  */
-export function waterfallItemOf(child, { siblings = [], nameOf = null, costOf = null, originAt = null } = {}) {
+export function waterfallItemOf(child, {
+  siblings = [], nameOf = null, costOf = null, originAt = null, now = null,
+} = {}) {
   const id = String(child?.id ?? '');
   const state = String(child?.state ?? 'queued');
   const botId = child?.owner?.leadBotId ?? null;
-  const tl = timelineOf(child);
+  const tl = timelineOf(child, { now });
   const tokens = tokensOf(child);
   const dispatch = dispatchOf(child);
   const name = typeof nameOf === 'function' ? String(nameOf(botId) ?? '') : '';
@@ -245,15 +270,19 @@ export function waterfallItemOf(child, { siblings = [], nameOf = null, costOf = 
     state,
     stateText: STATE_TEXT[state] ?? state,
     phase: phaseOf(state),
+    // 建档（开始排队）时刻：排队到开跑之间那段是「等」，客户端画成虚段
+    queuedAt: tl.queuedAt,
     startedAt: tl.startedAt,
     endedAt: tl.endedAt,
     durationMs: tl.durationMs,
     // 相对整棵树起点的偏移：客户端画甘特条用（服务端算好省得客户端各算一遍）
+    queuedOffsetMs: tl.queuedAt && originAt ? Math.max(0, tl.queuedAt - originAt) : null,
     offsetMs: tl.startedAt && originAt ? Math.max(0, tl.startedAt - originAt) : null,
     dependsOn: dep.dependsOn,
     waitingOn: dep.waitingOn,
     waitingCheckpoint: dep.waitingCheckpoint,
     checkpointApproved: dep.checkpointApproved,
+    waitingPlanSteps: dep.waitingPlanSteps,
     dispatch,
     critic: criticOf(child),
     worktree: worktreeOf(child),
@@ -316,7 +345,7 @@ export function buildTaskWaterfall({
   //   最后才截断给客户端 —— 否则 `truncated > 0` 时 byBot/byModel/counts
   //   都只统计到前 N 条，用户看到的"总分身数/总冲突数"是错的。
   const allItems = ordered.map((child) => waterfallItemOf(child, {
-    siblings, nameOf, costOf, originAt,
+    siblings, nameOf, costOf, originAt, now,
   }));
   const items = allItems.slice(0, max);
 

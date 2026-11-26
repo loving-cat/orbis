@@ -26,7 +26,9 @@ import {
 } from './task-dag.js';
 import { appendEntry, artifactEntryOf } from './task-blackboard.js';
 import { approveCheckpoint as approveCheckpointIn, approveCheckpointsOf as approveCheckpointsOfIn } from './task-checkpoint.js';
-import { classifyNonRetriableFailure, nonRetriableOf, handBackBlockedBy } from './task-guardrails.js';
+import {
+  NON_RETRIABLE, classifyNonRetriableFailure, nonRetriableOf, handBackBlockedBy,
+} from './task-guardrails.js';
 import { fileClaimList, pickBlockingClaim, claimsOverlap } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
 import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary, continuationNote } from './task-prompts.js';
@@ -168,6 +170,30 @@ const CRITIC_RETRY_MS = 30_000;
 const MAX_CRITIC_ERRORS = 3;
 
 /**
+ * 主仓此刻不能安全合入时（已跟踪文件有未提交改动 / 分离头指针 / git 操作做到一半 /
+ * 当前分支不含这份活的起点 / 未跟踪文件会被覆盖），隔多久再试一次合入。
+ *
+ * 这些都是「用户处理一下就好」的状态。以前判成永久受阻：自主模式会把这份**已验收**
+ * 的子任务交回负责人**取消**、再派人重做一遍 —— 重做的那份照样合不进去（实测复现）。
+ * 现在按可恢复阻塞等着，到点只重跑一次纯代码验收 + 合入（不调模型、不扣额度）。
+ */
+const WORKTREE_MAIN_RETRY_MS = 60_000;
+
+/** 「重试到期 → 解除阻塞」时，要把可恢复记账一并清掉的那几种可恢复阻塞。 */
+const RETRY_CLEARS_RECOVERABLE = new Set(['upstream', 'worktree_main']);
+
+/**
+ * 这个子任务现在需不需要父任务出面（交回负责人 / 如实阻塞 / 跟着预算暂停）。
+ *
+ * 只认三种「自己不会再动」的：被取消、永久受阻、预算用尽暂停。
+ * 可恢复阻塞（等上游 / 等主仓可合入）不算 —— 它们到点会自己醒，父任务该等着。
+ */
+function needsParentAttention(run) {
+  if (!run?.parentTaskId) return false;
+  return run.state === STATE.cancelled || run.state === STATE.paused_budget || permanentlyBlocked(run);
+}
+
+/**
  * @param {object} p
  * @param {object} p.taskRuns
  * @param {Function} p.execute
@@ -215,6 +241,8 @@ export function createTaskSupervisor({
    * 既有 203 个单测因此零改动零影响。生产装配按 `ORBIS_TASK_WORKTREE` 注入。
    */
   worktreeManager = null,
+  /** 主仓暂时不能安全合入时的重试间隔（单测注入毫秒级；生产 60 秒）。 */
+  worktreeMainRetryMs = WORKTREE_MAIN_RETRY_MS,
   criticMode = null,
   maxCriticReworks = null,
   access = null,
@@ -739,6 +767,8 @@ export function createTaskSupervisor({
           queue.delete(id);
           running.add(id);
           if (botId) laneAdd(schedulerBusyBots, botId, id);
+          // 开跑前就已经停住的不算：只在**这一轮变成**停住时叫醒父任务（避免空唤醒来回弹）
+          const stuckBefore = needsParentAttention(taskRun);
           const p = (async () => {
             let outcome = null;
             try {
@@ -767,6 +797,7 @@ export function createTaskSupervisor({
               //   就会把自己再叫醒一次 —— 名额没空，于是又撞门、又让出、又唤醒，
               //   两个等待者能这样互相唤醒到进程堆爆（实测直接 OOM）。
               if (SLOT_FREED.has(outcome?.status)) wakeSlotWaiters(taskRun, id).catch(() => {});
+              wakeParentIfNewlyStuck(id, stuckBefore);
               // 有人空出来就继续排，不用等整批做完。
               setImmediate(() => schedule());
             }
@@ -1342,6 +1373,9 @@ export function createTaskSupervisor({
         }
         if (out === 'critic_blocked') return { status: 'blocked', why: 'critic_exhausted' };
         if (out === 'worktree_blocked') return { status: 'blocked', why: 'worktree_merge_failed' };
+        if (out === 'worktree_wait') {
+          return { status: 'retry_scheduled', why: '主仓暂时不能安全合入，分支已保留，到点自动重试合入' };
+        }
         if (out === 'worktree_retry') return { status: 'retry_scheduled', why: '主仓正在被别的任务写入，稍后重试合入' };
         if (out === 'critic_error') {
           // ★ 评审员自身故障：不伪造通过、不扣返工额度，过一会儿重跑。
@@ -1365,7 +1399,7 @@ export function createTaskSupervisor({
         //   `recoverableBlock: 'upstream'` 留着会让启动恢复以为「还在等上游」，
         //   `retryAt` 留着会让下一轮重复判「重试到期」。
         const revived = read(taskRun.id);
-        if (revived?.recoverableBlock === 'upstream') {
+        if (RETRY_CLEARS_RECOVERABLE.has(revived?.recoverableBlock)) {
           await patch(taskRun.id, { recoverableBlock: null, retryAt: null });
         }
         continue;
@@ -2142,6 +2176,7 @@ export function createTaskSupervisor({
           setTimer(clock() + CLAIM_RETRY_MS, taskRun.id);
           return 'worktree_retry';
         }
+        if (merged.wait) return 'worktree_wait';
         return 'worktree_blocked';
       }
     }
@@ -2307,10 +2342,15 @@ export function createTaskSupervisor({
     });
     // ★ `>=` 而不是 `>`：常量说的是「连续这么多次就停」，差一就是 4 次。
     if (errors >= MAX_CRITIC_ERRORS) {
-      await block(
-        current.id,
-        `独立复核连续 ${errors} 次无法完成（${String(result?.why ?? result?.reason ?? '未知原因').slice(0, 120)}），已停下等人工处理`,
-      );
+      const why = `独立复核连续 ${errors} 次无法完成（${String(result?.why ?? result?.reason ?? '未知原因').slice(0, 120)}），已停下等人工处理`;
+      // ★ 记成「不交回」的不可恢复类别：活已经做完、只是评审员跑不起来 ——
+      //   父任务醒来后若按普通受阻「取消并交回负责人重排」，做好的活就被扔掉，
+      //   重做的那份还会再撞同一个评审员。正确的结局是如实停下等人工。
+      //   （手动解除阻塞会把这个标记与评审计数一起清掉，见 task-controls。）
+      await patch(current.id, {
+        nonRetriableBlock: { kind: NON_RETRIABLE.criticUnavailable, why, at: clock() },
+      });
+      await block(current.id, why);
       return true;
     }
     return false;
@@ -2595,12 +2635,31 @@ export function createTaskSupervisor({
       // 锁一时被占：不判死，让调度器稍后重试（下一轮验收还会再进来）
       return { ok: false, retry: true, status: 'retry' };
     }
+    if (out?.status === 'preserved_dirty_main') {
+      // ★ 主仓此刻不能安全合入（未提交改动 / 分离头指针 / git 操作做到一半 / 切到了别的分支 /
+      //   未跟踪文件会被覆盖）：按**可恢复**阻塞等着，到点只重跑纯代码验收 + 合入。
+      //   可恢复阻塞在父任务眼里是「在等、会自己醒」—— 不会被交回负责人取消，
+      //   下游依赖也只是继续等，而不是判上游失败。
+      const dueAt = clock() + Math.max(1, Number(worktreeMainRetryMs) || WORKTREE_MAIN_RETRY_MS);
+      const why = `主仓暂时不能安全合入：${String(out.text ?? '').slice(0, 180)}`
+        + '处理好后会自动重试合入（也可以点「解除阻塞」立即重试）。';
+      const current = read(taskRun.id);
+      if (current?.state === STATE.blocked) {
+        // block() 见到 blocked 会提前返回：可恢复记账与到期时间必须显式落盘，否则没人来叫醒
+        await patch(taskRun.id, {
+          nextAction: null, recoverableBlock: 'worktree_main', retryAt: dueAt,
+          flags: { ...(current.flags ?? {}), blockedAt: clock(), blockedReason: why },
+        });
+      } else {
+        await block(taskRun.id, why, 'worktree_main', dueAt);
+      }
+      setTimer(dueAt, taskRun.id);
+      return { ok: false, wait: true, status: out.status, dueAt, summary: why };
+    }
     const files = (out?.conflictFiles ?? []).slice(0, 6).join('、');
     const why = out?.status === 'conflict'
       ? `合入主仓发生冲突（分支 ${out.branch ?? note.branch}${files ? '，冲突文件：' + files : ''}）。改动已完整保留在该分支，请负责人处理冲突后重试。`
-      : (out?.status === 'preserved_dirty_main'
-        ? `主仓库有未提交改动，已拒绝合并以免覆盖（分支 ${out.branch ?? note.branch} 完整保留）。`
-        : `Worktree 合入失败：${String(out?.text ?? out?.code ?? '未知原因').slice(0, 200)}`);
+      : `Worktree 合入失败：${String(out?.text ?? out?.code ?? '未知原因').slice(0, 200)}`;
     await block(taskRun.id, why);
     return { ok: false, status: out?.status ?? 'error', summary: why };
   }
@@ -2744,6 +2803,24 @@ export function createTaskSupervisor({
   }
 
   /**
+   * 调度器路径上跑完一个子任务：如果它**这一轮**停住了（取消 / 永久受阻 / 预算暂停），叫醒父任务。
+   *
+   * ## 为什么必须有这一步
+   *
+   * 负责人在自己那一轮里 `assign_member_task` 派出的子任务，是在负责人这一轮收尾之后
+   * 由调度器单独跑的 —— 父任务那一轮早已因「签名没变、有在途子任务」返回 wait。
+   * 以前只有「交付」与「上游退避耗尽」会叫醒父任务：子任务一旦永久受阻（401 快停、
+   * 复核到上限、worktree 准备/合入失败、自主重试用尽……），父任务就永远停在「准备中」，
+   * 既不交回负责人、也不如实阻塞（rc.1 / beta.1 都能稳定复现）。
+   * 父任务内联推进（`runKidOnce`）那条路不需要这一步：它自己就在场。
+   */
+  function wakeParentIfNewlyStuck(taskRunId, stuckBefore) {
+    if (stuckBefore) return;
+    const run = read(taskRunId);
+    if (needsParentAttention(run)) notifyParent(run);
+  }
+
+  /**
    * 收掉这个任务子树里所有「还活着」的 worktree。
    *
    * `conflict` / `preserved_dirty_main` 的分支会被保留（那是已验收的成果）。
@@ -2806,7 +2883,15 @@ export function createTaskSupervisor({
     // ★ C4：作废未交付的 worktree（conflict / preserved_dirty_main 会保留分支）
     await cleanupWorktreesUnder(taskRunId, '取消任务');
 
-    return onControl(taskRunId, { ...control, type: CONTROL.cancel });
+    const result = await onControl(taskRunId, { ...control, type: CONTROL.cancel });
+    // ★ 单独取消一份子任务：父任务可能正等着它。叫醒父任务按新的子任务全集重新判定
+    //   （继续汇总验收 / 交回负责人），否则父任务会一直停在「准备中」——
+    //   取消发生在控制通道里，不经过调度器那一轮，`wakeParentIfNewlyStuck` 看不到它。
+    if (result?.ok) {
+      const run = read(taskRunId);
+      if (run?.parentTaskId) notifyParent(run);
+    }
+    return result;
   }
 
   async function bumpRevision(taskRunId, control = {}) {
@@ -3086,6 +3171,18 @@ export function createTaskSupervisor({
           await block(snapshot.id, '恢复多次写盘失败，暂停自动恢复，需人工确认（不重放外部动作）', 'recovery_exhausted');
         }
         report.blocked.push({ taskRunId: snapshot.id, reason: 'recovery_write_failed', tries, detail: String(failed).slice(0, 120) });
+      }
+    }
+    // ★ C4：扫掉「任务已取消、worktree 却还挂着」的残留。
+    //   来源：取消清理时进程正好崩了，或当时目录被占用没删掉（cleanupWorktree 会留着 active 等这里再试）。
+    //   以前 pruneOrphanWorktrees 写好了却没有任何调用方 —— 残留目录与分支只会越积越多。
+    //   已完成但没合入的成果只报不删（见 task-worktree.pruneOrphanWorktrees）。
+    if (worktreeActive && typeof worktreeManager?.pruneOrphanWorktrees === 'function') {
+      try {
+        report.worktrees = await worktreeManager.pruneOrphanWorktrees({ taskRuns });
+      } catch (err) {
+        report.worktrees = { error: String(err?.message ?? err).slice(0, 200) };
+        log('worktree 残留扫描失败（不影响任务恢复）', String(err?.message ?? err).slice(0, 120));
       }
     }
     return report;

@@ -20,7 +20,7 @@
  */
 import { RunUsage } from '../run-stats.js';
 import { assistantFailure, replyText } from '../model-reply.js';
-import { isLocalEndpoint, providerOfSlug } from '../runner/model-fallback.js';
+import { fallbackModeFrom, isLocalEndpoint, providerOfSlug } from '../runner/model-fallback.js';
 import { buildCriticPrompt, parseCriticVerdict, selectCriticModel, criticModelFromEnv } from './task-critic.js';
 
 /** 评审默认超时：比一次执行短得多（只读核对，不需要长时间改文件）。 */
@@ -179,6 +179,12 @@ export function createCriticReviewer({
     const picked = selectCriticModel({
       executorModel,
       candidates: criticCandidatesOf(runner.modelGroups, { resolveModel }),
+      // ★ 与自动兜底同一条隐私/费用边界：评审员会读产物原文，「换一家审」就是把内容发给另一家
+      policyMode: fallbackModeFrom(process.env),
+      userLocked: store?.getBot?.(botId)?.lockModel === true,
+      explicitProvider: explicitModel
+        ? (String(explicitResolved?.provider ?? '').trim() || providerOfSlug(explicitModel))
+        : null,
       explicitModel,
       explicitLocal: explicitModel
         ? [

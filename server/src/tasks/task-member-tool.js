@@ -16,6 +16,7 @@
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { createChildTask, childrenOf } from './task-subtasks.js';
+import { planStepBindings } from './task-dag.js';
 import { readManagedSubmission, revalidateManaged, SUBMISSION } from '../coordination/task-context.js';
 import { isLeadOfRoom } from '../role-tools.js';
 
@@ -29,8 +30,11 @@ const error = (text) => ({ content: [{ type: 'text', text }], isError: true });
  * @param {object} p.store 应用 store
  * @param {string} p.roomId
  * @param {string} p.botId
+ * @param {string|null} [p.laneKey] 本会话泳道键。
+ *   ★ 负责人这一轮被分档（`ORBIS_MODEL_TIER`）或兜底换了模型时跑在 `#fb` 泳道上，
+ *   受管上下文挂在那条泳道的会话上 —— 按主泳道查只会得到「当前没有受管任务」。
  */
-export function buildMemberTaskTool({ runner, store, roomId, botId }) {
+export function buildMemberTaskTool({ runner, store, roomId, botId, laneKey = null }) {
   const taskRuns = store.taskRuns;
   return defineTool({
     name: 'assign_member_task',
@@ -50,18 +54,25 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
             + '填了就与其它正在跑的活互斥：别人也在改同一批文件时，这份会排队而不是同时写坏。不填表示不知道/不冲突。',
         }),
       ),
+      planStep: Type.Optional(
+        Type.Number({
+          description:
+            '这份活是 task_plan 计划里的第几条（序号）。计划里那一条写的依赖与把关会自动带上，不用再抄一遍。'
+            + '不填时按正文 / 成员自动对应到计划里还没派出的那一条。',
+        }),
+      ),
       dependsOn: Type.Optional(
         Type.Array(Type.String(), {
           description:
             '前置子任务 id（也可以是计划里的步骤号）：这些子任务全部验收完成后，这份活才会开跑。'
-            + '不填表示不依赖任何分工（立刻可跑）。不要填成本身，也不许成环。',
+            + '计划里已经写了的依赖不用重复填（会自动带上）。不要填成本身，也不许成环。',
         }),
       ),
       checkpointBeforeRun: Type.Optional(
         Type.Boolean({
           description:
             '前置都完成后，先唤醒你（负责人）审一下上游产物再放行，而不是直接开跑。'
-            + '适合“下一步依赖上一步的结论与口径”的活。不填默认直接开跑。',
+            + '适合“下一步依赖上一步的结论与口径”的活。不填就跟计划里这一条的设置走（计划没写则直接开跑）。',
         }),
       ),
       modelTier: Type.Optional(
@@ -112,7 +123,7 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
     }),
     execute: async (_toolCallId, params) => {
       // 1) 复用 04 可信提交与统一 guard
-      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId });
+      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId, laneKey });
       if (submission.kind === SUBMISSION.invalid) {
         return error(`这次执行不能派活：${submission.text}`);
       }
@@ -167,7 +178,10 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
         botId: memberBotId,
         files: params.files ?? [],
         dependsOn: params.dependsOn ?? [],
-        checkpointBeforeRun: params.checkpointBeforeRun === true,
+        // 不填 = 跟计划里这一条走（计划没写就直接开跑）；显式 true/false 说了算
+        checkpointBeforeRun: typeof params.checkpointBeforeRun === 'boolean' ? params.checkpointBeforeRun : undefined,
+        // 负责人点名「这是计划第 N 条」；不填由 createChildTask 按正文/成员自动对应
+        planStep: params.planStep ?? null,
         // 不填就是 undefined（跟随父任务），不能写成 false —— 那会把父任务的要求吞掉
         criticRequired: typeof params.criticRequired === 'boolean' ? params.criticRequired : undefined,
         modelTier: params.modelTier ? String(params.modelTier) : undefined,
@@ -183,24 +197,36 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
       const stillSame = after?.status === 'found' && after.taskRun?.revision === submission.revision;
       if (!stillSame) return error('派工期间父目标已改版，这次派工不生效。');
 
-      const claims = created.child?.fileClaims ?? [];
-      const deps = created.child?.dependsOn ?? [];
+      // 以落盘后的那一份为准（复用 / 计划回填都可能改过依赖与把关位）
+      const saved = taskRuns.read(created.child?.id);
+      const child = saved?.status === 'found' ? saved.taskRun : created.child;
+      const claims = child?.fileClaims ?? [];
+      const deps = child?.dependsOn ?? [];
+      const plan = created.plan ?? null;
+      const waits = Array.isArray(child?.planHold?.waitSteps) ? child.planHold.waitSteps : [];
       return {
         content: [{
           type: 'text',
-          text: `已派给成员，子任务 ${created.child?.id} 已登记。`
+          text: `已派给成员，子任务 ${child?.id} 已登记。`
+            + (plan ? `\n对应计划第 ${plan.index} 条（计划里写的依赖与把关已自动带上）。` : '')
             + (claims.length ? `\n占用的文件：${claims.join('、')}（撞车的活会排队）` : '')
             + (deps.length
               ? `\n等这些前置完成才开跑：${deps.join('、')}`
-                + (created.child?.checkpointBeforeRun ? '（前置完成后先叫你来把关）' : '')
+                + (child?.checkpointBeforeRun && !waits.length ? '（前置完成后先叫你来把关）' : '')
+              : '')
+            + (waits.length
+              ? `\n计划里它还要等第 ${waits.map((w) => w.index).join('、')} 条，那几条还没派出去：`
+                + '这份活先挂着不开跑；把那几条派出去后会自动接上依赖。确定不用等就用 approve_subtask_checkpoint 放行。'
               : ''),
         }],
         details: {
-          childTaskRunId: created.child?.id ?? null,
+          childTaskRunId: child?.id ?? null,
           reused: created.reused === true,
           files: claims,
           dependsOn: deps,
-          checkpointBeforeRun: created.child?.checkpointBeforeRun === true,
+          checkpointBeforeRun: child?.checkpointBeforeRun === true,
+          planStep: plan?.index ?? null,
+          waitingPlanSteps: waits.map((w) => w.index),
         },
       };
     },
@@ -208,13 +234,12 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
 }
 
 /**
- * 计划步骤号 → 真实子任务 id 的对照表（只含已真的派出去的那些）。
+ * 计划步骤号 → 真实子任务 id 的对照表（只含已真的派出去、还占着那一条的）。
  *
  * 负责人写依赖时手里只有「第 2 条」，而调度需要的是 `tr_x_c1_ab12cd34`。
- * 计划条目与子任务本没有硬关联，所以按「成员 + 任务正文」匹配：
- * 正文是负责人在 task_plan 里写的那一句，派活时通常原样带过来。
- * 匹配不上就不给映射 —— 宁可让 normalizeDependsOn 明确报“不存在”，
- * 也不能猜一条错的依赖（猜错的代价是下游永远不跑）。
+ * 对照规则与派活时的认领是**同一份**（`planStepBindings`）：派活时记下的绑定 →
+ * 正文相同 → 同一成员按派出先后。对不上就不给映射 —— 宁可让 normalizeDependsOn
+ * 明确报“不存在”，也不能猜一条错的依赖（猜错的代价是下游永远不跑）。
  *
  * @returns {Map<string,string>} 步骤号（1 基字符串）→ 子任务 id
  */
@@ -222,13 +247,9 @@ export function planStepIds(taskRuns, parentTaskRun) {
   const steps = parentTaskRun?.plan?.steps ?? [];
   const map = new Map();
   if (!Array.isArray(steps) || !steps.length) return map;
-  const kids = childrenOf(taskRuns, parentTaskRun);
-  steps.forEach((step, index) => {
-    const wanted = String(step?.task ?? '').trim();
-    if (!wanted) return;
-    const hit = kids.find((kid) => String(kid?.goal?.requirement ?? '').trim() === wanted);
-    if (hit?.id) map.set(String(index + 1), hit.id);
-  });
+  for (const [index, kid] of planStepBindings(steps, childrenOf(taskRuns, parentTaskRun))) {
+    if (kid?.id) map.set(String(index), kid.id);
+  }
   return map;
 }
 
@@ -245,7 +266,7 @@ export function planStepIds(taskRuns, parentTaskRun) {
  * 放行只是“允许开始”，真正跑起来要靠统一的唤醒链路：自己写 state 会造成
  * “账本说该跑了、调度器却不知道”的隐形任务。
  */
-export function buildCheckpointApproveTool({ runner, store, roomId, botId }) {
+export function buildCheckpointApproveTool({ runner, store, roomId, botId, laneKey = null }) {
   const taskRuns = store.taskRuns;
   return defineTool({
     name: 'approve_subtask_checkpoint',
@@ -259,7 +280,7 @@ export function buildCheckpointApproveTool({ runner, store, roomId, botId }) {
       reason: Type.Optional(Type.String({ description: '放行理由（一句话，会记在子任务上）' })),
     }),
     execute: async (_toolCallId, params) => {
-      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId });
+      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId, laneKey });
       if (submission.kind === SUBMISSION.invalid) return error(`这次执行不能放行：${submission.text}`);
       if (submission.kind !== SUBMISSION.managed) return error('当前没有受管任务，不能放行。');
 

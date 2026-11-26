@@ -46,9 +46,11 @@ export function stallCleanupEntry(runner, info) {
 export function escalateFailure(runner, args) {
   const runtime = runner.taskRuntime;
   if (runtime?.onEscalation) {
-    // 身份来自这次失败执行自己的受管上下文；没有上下文才走旧逻辑
+    // 身份来自这次失败执行自己的受管上下文；没有上下文才走旧逻辑。
+    // ★ 带泳道键：分身 / `#fb` 泳道上的受管执行，上下文挂在泳道会话上，
+    //   按主泳道查会落空 → 误走旧升级（往群里发「这单断了」再起一轮非受管执行）。
     const ctx = args?.roomId && args?.fromBotId
-      ? runner.currentTaskContext(args.roomId, args.fromBotId)
+      ? runner.currentTaskContext(args.roomId, args.fromBotId, args.laneKey ?? null)
       : null;
     if (ctx) {
       // 非空作用域但字段残缺：属于 invalid，明确拒绝，不借用其他目标也不降级 legacy。

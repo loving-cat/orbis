@@ -22,7 +22,8 @@ import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { readManagedSubmission, SUBMISSION } from '../coordination/task-context.js';
 import { fileClaimList } from './task-file-claims.js';
-import { detectDependencyCycle, normalizeDependsOn } from './task-dag.js';
+import { detectDependencyCycle, normalizeDependsOn, planStepNote } from './task-dag.js';
+import { applyPlanToChildren } from './task-subtasks.js';
 
 const ok = (text, details = {}) => ({ content: [{ type: 'text', text }], details });
 const error = (text) => ({ content: [{ type: 'text', text }], isError: true });
@@ -123,11 +124,8 @@ export function renderPlan(steps) {
   if (!Array.isArray(steps) || !steps.length) return '';
   return steps
     .map((s, i) => {
-      const deps = (s.dependsOn ?? []).filter((n) => n !== i + 1);
-      const note = [
-        deps.length ? '等第 ' + deps.join('、') + ' 条完成' : '',
-        s.checkpoint === true ? '完成后先叫你把关' : '',
-      ].filter(Boolean).join('；');
+      // 与负责人每轮读到的计划同一句说明（task-dag.planStepNote），两处不会说成两样
+      const note = planStepNote(s, i);
       return (i + 1) + '. ' + s.memberName + '：' + s.task
         + (s.deliverable ? '（交付：' + s.deliverable + '）' : '')
         + (note ? '［' + note + '］' : '');
@@ -170,8 +168,9 @@ export function planMembersFor(store, roomId) {
  * @param {object} p.store
  * @param {string} p.roomId
  * @param {string} p.botId
+ * @param {string|null} [p.laneKey] 本会话泳道键（分档/兜底换模型时负责人跑在 `#fb` 泳道上）
  */
-export function buildPlanTool({ runner, store, roomId, botId }) {
+export function buildPlanTool({ runner, store, roomId, botId, laneKey = null }) {
   const taskRuns = store.taskRuns;
   return defineTool({
     name: 'task_plan',
@@ -207,7 +206,7 @@ export function buildPlanTool({ runner, store, roomId, botId }) {
       ),
     }),
     execute: async (_toolCallId, params) => {
-      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId });
+      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId, laneKey });
       if (submission.kind === SUBMISSION.invalid) return error('现在不能写计划：' + submission.text);
       if (submission.kind !== SUBMISSION.managed) return error('当前没有受管任务，不能写计划。');
       // ★ 受管提交里没有 taskRun 对象，只有身份字段。
@@ -234,15 +233,26 @@ export function buildPlanTool({ runner, store, roomId, botId }) {
           };
         },
       });
-      if (!updated?.ok) return error('计划没写进去：任务已被改动，重新读一次再写。');
+      // 版本对不上时 mutate 是「不改」（changed:false），不能当成写进去了
+      if (!updated?.ok || updated.changed === false) return error('计划没写进去：任务已被改动，重新读一次再写。');
+
+      // ★ 已经派出去、还没开始的活也按这份计划补上依赖/把关（先派活、后写计划的情形）；
+      //   之前因前置没派出而挂起的活，按修订后的计划重新核一遍能不能接上。
+      try {
+        await applyPlanToChildren({ taskRuns, parentTaskRun: updated.taskRun ?? run });
+      } catch {
+        // 补依赖失败不影响计划本身已经登记（下一次派活时还会再核）
+      }
 
       const missing = normalized.steps.filter((s) => !s.memberBotId);
+      const gated = normalized.steps.some((s) => (s.dependsOn ?? []).length || s.checkpoint === true);
       return ok(
         '计划已登记，共 ' + normalized.steps.length + ' 条：\n' + text
           + (missing.length
             ? '\n注意：这些条目没对上部门成员：' + missing.map((s) => s.memberName).join('、')
             : '')
-          + '\n接下来按这个顺序用 assign_member_task 或 @ 一个一个派出去。',
+          + '\n接下来按这个顺序用 assign_member_task 或 @ 一个一个派出去。'
+          + (gated ? '计划里写的依赖与把关会在派活时自动带上，不用再重复写。' : ''),
         { steps: normalized.steps },
       );
     },
