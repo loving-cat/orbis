@@ -32,6 +32,11 @@
 - 自动接力：子任务交付（机械验收通过）后，因它变 `ready` 的下游立即被唤醒 —— **零次负责人模型调用**。
 - 防死等：`upstream_failed` 与「受阻」等价参与父任务收口，自主模式交回负责人、非自主模式如实阻塞并说清是谁的失败。
 - 父任务一定会被叫醒：负责人在自己这一轮里派出的子任务，是在这一轮收尾后由调度器单独跑的（父任务那一轮已经返回 wait）。子任务在这条路上**变成**取消 / 永久受阻 / 预算暂停时，推进器主动叫醒父任务；用户单独取消一份子任务同样叫醒父任务。可恢复阻塞（等上游、等主仓可合入）不叫——它们到点会自己醒，父任务该等着。
+- **计划里写的依赖派活时生效**：`task_plan` 每条的 `dependsOn`（步骤号）与 `checkpoint` 在派活时自动落到子任务上（`assign_member_task` 与 @ 派活走同一条 `createChildTask`），负责人不用再抄一遍。
+  - 认领哪一条（`task-dag.js` 的 `planStepBindings` / `matchPlanStep`）：显式 `planStep` → 这份活已有的绑定 → 正文与某条相同（同成员空位优先；全被占满就不认，绝不错绑）→ 这个成员在计划里还空着的最早一条（@ 派活的正文是摘录，对不上原文）。被取消 / 永久受阻的子任务不占条目。绑定落盘在子任务 `planStep`。
+  - 前置条目**还没派出去**：这份活挂起（`planHold.waitSteps` + 临时把关位），走既有 checkpoint 唤醒链路，不会死等；前置一派出，`releasePlanHolds` 自动接上依赖并撤掉**临时**把关（计划本身要求的把关保留）；负责人放行 = 决定不等了，挂起记录一并清掉。
+  - 「先派活、后写计划」：计划写下后，还没开跑过的活按计划补依赖（`applyPlanToChildren`）；「同一轮里先 `task_plan` 再 @ 人」读的是**最新**计划（这一轮里目标改了版则不再落子任务）。
+  - 负责人每轮读到的计划带依赖/把关说明与派出状态；被计划挂起的活与「前置已交付、等你审」分开列出。投影 `plan.steps[].status` = `pending` / `dispatched` / `completed`，并带 `dependsOn` / `checkpoint`。
 - 共享黑板挂在根任务 `blackboard` 上：最多 24 条（先淘汰最旧的非约束）、单条 ≤240 字、渲染 ≤1200 字；交付事实自动落一条 `artifact`，负责人/成员可用 `task_blackboard` 写 `decision`/`constraint`/`fact`。写入目标只取受管上下文的根任务，调用方无法指定（防跨任务串写）。
 
 ## 集群全景与候选经验（2.0 集群 C5）
@@ -40,7 +45,10 @@
   - `GET /api/task-runs`（列表）保持轻量：`budget` 补全 token 维度（`maxTokens`/`usedTokens`/`extraTokens`/`remainingTokens`）+ 一个只有几个标量的 `telemetrySummary`；
   - `GET /api/task-runs/:id`（单条详情）额外投影 `waterfall`（时间线 `originAt`/`endAt`/`items`/`truncated`）、`telemetry`（`totalTokens`/`byBot`/`byModel`/`counts`/`budget`）与 `blackboard`（精选 10 条）；
   - **Token 口径不双计**：`totalTokens` 优先用根 `budget.usedTokens`（整棵树权威累计），缺失时才退化为子树已结算尝试求和，并用 `totalTokensSource` 标明来源；
-  - **不编造价格**：没有单价时 `costUsd` / `estimatedCostUsd` 一律 `null`（服务端不内置价目表，由宿主注入 `costOf`）。
+  - **不编造价格**：没有单价时 `costUsd` / `estimatedCostUsd` 一律 `null`（服务端不内置价目表，由宿主注入 `costOf`）；
+  - **时间线口径**：`startedAt` = **第一次真正派出执行**（不是建档时刻——排队等前置/名额/把关不算干活）；排队段单独给 `queuedAt` / `queuedOffsetMs`（客户端画成淡色段）；没开跑过的 `startedAt` / `offsetMs` / `durationMs` 为 `null`（不画执行条），还没结束的执行条画到此刻；
+  - **复核轮数**：`critic.rounds` = 被打回的轮数；通过后读 `criticState.rounds`（通过时 `reworkCount` 会清零，直接读它会把「返工两轮才通过」显示成 0）；
+  - 被计划挂起的子任务带 `waitingPlanSteps`（客户端显示「等派第 N 条」，不只说「等把关」——否则用户点放行，下游就抢跑了）。
 - **控制通道**：`POST /api/task-runs/:id/control` 的 `extend` 支持同时或单独传 `extraRuns` / `extraTokens`；新增 `approve_checkpoint`（`childTaskRunId`），记成用户放行（`checkpointApprovedBy = 'user'`）并走与负责人相同的放行链路。
 - **候选经验通知**：复盘生成新 `candidate` 时广播轻量 `{ t: 'lessons.changed', roomId, count }`（不带正文），客户端收到后自行 `loadLessons()`；启用仍受 `lessons.js` 的「无证据不可启用」fail-closed 校验。
 - **客户端**：详情弹窗打开即异步 `fetchDetail` 拉完整快照；轻量列表/WS 推送合并时**保留已有明细**（不会把瀑布流冲成 null）；侧栏顶部常驻候选经验卡（0 条时 0 像素，无证据禁用采纳）。
@@ -49,13 +57,15 @@
 
 - **何时启用**：`ORBIS_TASK_WORKTREE` = `off` | `explicit`（默认）| `auto`。只有**子任务**可开（负责人/主控永远在主工作区协调）；`explicit` 只在 `assign_member_task` / `createChildTask` / `createTaskRun` 显式给了 `useWorktree: true` 或 `worktreeRepo` 时建，`auto` 额外按「声明了仓库内文件 / 目标是改代码」判定。
 - **落点**：`<workspace>/.orbis-worktrees/<safeTaskId>`（必须在 workspace 内 —— 沙箱允许目录、`repoTrustVerdict`、git 工具的 `resolveRepo` 三条都按这条判）。**绝不落 `dataDir`**；**绝不改 `.gitignore`**（幂等写 `<commonDir>/info/exclude`）；分支固定 `orbis/task/<safeTaskId>`，`safeId` 只允许 `[A-Za-z0-9._-]`（防参数注入与路径穿越）。
+- **git 一律异步**（`spawn` 直接给 argv，不经 shell）：merge / commit 会跑用户的 hook（lint、测试，几十秒很常见），同步执行会让整个服务端事件循环停摆。异步之后同一仓库（按 `commonDir`）的 prepare / merge / cleanup 在管理器内**排队串行**——repo-lock 对同一 taskId 可重入，挡不住同一任务的取消清理插进它自己的合入。单次 git 默认 60 秒超时，SIGTERM 无响应时宽限 3 秒强杀并兜底返回，队列不会被一个卡死的 hook 永久锁住。
 - **生命周期**（全部在 `withRepoWriteLock({ commonDir })` 内串行化，拿不到锁短暂重排而非判死）：
   1. `prepareWorktree`（幂等）：复用优先 —— 返工/续段直接接着用同一棵树，**绝不清空半成品**；空仓（无 HEAD）与越界 `worktreeRepo` fail-closed 拒绝。
   2. `mergeWorktree`（**只在机械验收 + 独立复核全过之后、`verification_finished(passed)` 之前**，否则归约器已把任务置为 `completed`，再 `block()` 会被拒、冲突被静默吞掉）：自动 `git add -A` + `commit`（没配提交身份才用兜底身份，**绝不 `--no-verify`**）→ 无净提交记 `noop` 并清理 → **主仓此刻不能安全合入就不合并**（保留分支，`preserved_dirty_main` + `waitCode`）→ 能则 `git merge --no-ff` → 成功后核对 HEAD 前进、`worktree remove` + 安全 `branch -d`，记 `mergedHead` / `filesChanged`（**只算这次合入带进主仓的文件**，即合入前后 HEAD 之差）并落黑板。
-     - 「不能安全合入」逐条判（与 merge 同一把写锁）：`detached_head`（分离头指针，bisect / rebase 停住时——合进去的提交不属于任何分支）、`operation_in_progress`（MERGE_HEAD / rebase-merge / rebase-apply / CHERRY_PICK_HEAD / REVERT_HEAD / BISECT_LOG）、`dirty_main`（**已跟踪**文件有未提交改动——带着它们 merge 一旦冲突，`merge --abort` 不保证能还原）、`base_not_in_head`（当前分支不包含这份活的起点，合入会带进无关提交）、`untracked_collision`（未跟踪文件会被这次合入覆盖）。**其余未跟踪文件不挡合入**（用户草稿、`_inbox/` 附件副本、构建产物合并根本碰不到）。
+     - 「不能安全合入」逐条判（与 merge 同一把写锁）：`detached_head`（分离头指针，bisect / rebase 停住时——合进去的提交不属于任何分支）、`operation_in_progress`（MERGE_HEAD / rebase-merge / rebase-apply / CHERRY_PICK_HEAD / REVERT_HEAD / BISECT_LOG）、`dirty_main`（**已跟踪**文件有未提交改动——带着它们 merge 一旦冲突，`merge --abort` 不保证能还原）、`base_not_in_head`（当前分支不包含这份活的起点，合入会带进无关提交）、`branch_changed`（当前分支与建 worktree 时的分支不同——同一个 HEAD 上新开的分支也算，切回原分支后自动合入）、`untracked_collision`（未跟踪文件会被这次合入覆盖）。**其余未跟踪文件不挡合入**（用户草稿、`_inbox/` 附件副本、构建产物合并根本碰不到）。
      - 这些都是「用户处理一下就好」的状态，所以子任务进**可恢复阻塞**（`recoverableBlock: 'worktree_main'` + `retryAt`，默认 60 秒）：到点只重跑纯代码验收 + 合入（不调模型、不扣额度）；父任务视它为「在等、会自己醒」——**不交回、不取消、不重做**，下游依赖也只是继续等；用户点「解除阻塞」立即重试。
   3. **冲突 fail-closed**：冲突清单**先取再 `merge --abort`**（abort 会清空未合并索引），主工作树恢复 100% 干净，分支与 worktree **完整保留**（`conflict`），`block()` 交回负责人。
-  4. `cleanupWorktree`：取消/改版时只清 `status === 'active'` 的树（`worktree remove --force` + `branch -D`）；`conflict` / `preserved_dirty_main` 的分支**绝不删**。`pruneOrphanWorktrees` 只扫终态残留。
+  4. `cleanupWorktree`：取消/改版时只清 `status === 'active'` 的树（`worktree remove --force` + `branch -D`）；`conflict` / `preserved_dirty_main` 的分支**绝不删**。**以结果为准**：目录或分支还在（Windows 上文件被占用、树被 lock）就不标 `cleaned`，留 `active` + `cleanupError`，等启动时再试。
+  5. `pruneOrphanWorktrees`：服务端启动恢复（`recover()`）时跑一遍，**只清已取消**任务还挂着的树；已完成但没合入的只报 `unmerged`、绝不删（作废清理用 `branch -D`，会把验收过的成果直接删掉）；冲突 / 等主仓 / 活跃任务一律保留。
 - **与文件互斥**：非 worktree 子任务 `fileClaims` 100% 照旧；**只有双方都在各自 worktree** 时才放宽（`worktreesBypassFileClaims`）——磁盘真分开了，冲突留到合并阶段。
 - **Critic 联动**：`task-critic-runner` 把 `workDir = taskRun.worktree.worktreePath` 传给 `criticLane`，评审员的 `read/ls/find/grep` 直接在子任务那棵树里验真改动；没过就在同一棵里返工，绝不污染主仓。
 - **会话隔离**：带 `workDir` 的执行一律走独立内存泳道（`cloneId = taskRun.id` + `persist: false`）；`session-factory` 用 `effectiveWorkDir = opts.workDir || config.workspace` 注入 `cwd` / 沙箱 `workDir` / `createAgentSession.cwd` / git 工具目标。
@@ -67,7 +77,7 @@
 - **实际并发还被压两次**：根 `budget.concurrencyLimit` / 部门并发预算，以及上游健康度（有熔断打开 → 自动退回串行）。
 - **两条硬不变量绝不放松**：① 文件占用互斥（`fileClaims` / `claimsOverlap`）—— 同一个 Bot 的两个分身撞文件照样排队；② 根并发上限与 DAG 依赖/checkpoint 闸门。
 - **主槽 vs 分身**：子任务且（同 Bot 已有在途 **或** 主会话被用户聊天占着）且还有配额 → 直接开分身（`cloneId = taskRunId`）立刻跑，不再傻等 15 秒；否则走主会话。
-- **泳道键（`runner/session-lanes.js`）**：`room:bot` / `room:bot#fb` / `room:bot#clone_<id>` / `room:bot#clone_<id>#fb`。分身会话 `persist: false`（纯内存、不写 `store.sessionFile`），`finally` 里 `dispose()` 用完即焚。**五处按 key 存的状态全部绑泳道键**：`runner.sessions`、报告收集器（`activateReportScope`）、`currentTaskContext`（policy-hook / 黑板）、`dispatching`、`managedInflight`；房间级中止从键里剥离 `#…` 还原真实 `botId`。
+- **泳道键（`runner/session-lanes.js`）**：`room:bot` / `room:bot#fb` / `room:bot#clone_<id>` / `room:bot#clone_<id>#fb`。分身会话 `persist: false`（纯内存、不写 `store.sessionFile`），`finally` 里 `dispose()` 用完即焚。**五处按 key 存的状态全部绑泳道键**：`runner.sessions`、报告收集器（`activateReportScope`）、`currentTaskContext`（policy-hook / 黑板）、`dispatching`、`managedInflight`；房间级中止从键里剥离 `#…` 还原真实 `botId`。**凡是读受管上下文的工具也按本会话的泳道键查**：`task_plan` / `assign_member_task` / `approve_subtask_checkpoint` / `task_expert_review` / `accept_task` / 建组 / 派活 / 截图 / 桌面租约与输入 / 后台 shell 的任务归属 / 失败升级——负责人因分档或兜底换模型跑在 `#fb` 泳道上时，按主泳道查只会得到「当前没有受管任务」。
 - **模型分档**：`ORBIS_MODEL_TIER` = `off` | `explicit`（默认）| `auto`；`ORBIS_TIER_MODEL_FAST` / `ORBIS_TIER_MODEL_STRONG` 可指定档位模型。`assign_member_task` / `createChildTask` / `createTaskRun` 可传 `modelTier`（存 `flags.modelTier`，不进业务身份指纹，子任务默认继承父任务）。
 - **七条硬边界**：`standard`/无效 → 零扰动；`bot.lockModel === true` → 绝不覆盖；本地/内网执行者绝不外泄到公有云（含 `ORBIS_TIER_MODEL_*`）；熔断组跳过；按档位打分（fast 偏 flash/mini，strong 偏 opus/reason/large）；挑出的模型与当前相同 → 不覆盖；**遵守 `ORBIS_MODEL_FALLBACK`**（`same-provider` 只在执行者同一家里挑、显式档位模型跨家也拒绝；`off` 不自动挑，显式档位模型照用）。**绝不写 `bot.model`**，只对这一次执行生效（纯内存会话，跑完即弃）。
 - 实际生效的 `{ cloned, cloneId, tier, modelOverride, why }` 记在 `taskRun.lastDispatchMeta`，供可观测与面板展示。
