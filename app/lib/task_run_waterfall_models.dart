@@ -265,6 +265,9 @@ class TaskRunTelemetry {
   final int worktreeConflicts;
   final int checkpointsPending;
 
+  /// 有没有设 token 上限（没设＝不限，不是剩 0）。
+  bool get hasBudget => maxTokens != null && maxTokens! > 0;
+
   /// 预算用量比例（0..1）：没设上限时返回 null（界面画「不限」而不是满格）。
   double? get budgetRatio {
     final max = maxTokens;
@@ -364,13 +367,17 @@ class TaskRunWaterfall {
 
   /// 某条在整棵树里的相对区间（0..1，已做边界保护：除零、越界、负宽）。
   ({double left, double width}) spanOf(TaskRunWaterfallItem item) {
+    const minWidth = 0.02;
     final span = durationMs;
     if (span == null || span <= 0) return (left: 0.0, width: 1.0);
     final start = (item.offsetMs ?? 0).toDouble();
     final duration = (item.durationMs ?? 0).toDouble();
-    final left = (start / span).clamp(0.0, 1.0).toDouble();
+    // ★ 两个边界都要管：
+    //   · left 最多到 `1 - minWidth`（否则条子会从右边界外开始画）；
+    //   · width 至少 minWidth、最多 `1 - left`（否则条子会溢出容器）。
+    final left = (start / span).clamp(0.0, 1.0 - minWidth).toDouble();
     final room = 1.0 - left;
-    final width = (duration / span).clamp(0.02, room <= 0.02 ? 0.02 : room).toDouble();
+    final width = (duration / span).clamp(minWidth, room < minWidth ? minWidth : room).toDouble();
     return (left: left, width: width);
   }
 

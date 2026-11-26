@@ -41,9 +41,18 @@ export async function approveCheckpoint({
   const child = loaded?.status === 'found' ? loaded.taskRun : null;
   const parentLoaded = child?.parentTaskId ? taskRuns.read(child.parentTaskId) : null;
   const parent = parentLoaded?.status === 'found' ? parentLoaded.taskRun : null;
-  if (!child || !parent) return { ok: false, approved: [], text: '找不到这份子任务或它的父任务。' };
+  if (!child || !parent) {
+    // ★ 语义拒绝必须带 code：调用方据此回 409 而不是 500（服务端没坏）。
+    return { ok: false, approved: [], code: 'not_found', text: '找不到这份子任务或它的父任务。' };
+  }
   if (parent.state === 'cancelled' || parent.state === 'completed') {
-    return { ok: false, approved: [], text: '父任务已经结束，不用再放行。' };
+    return { ok: false, approved: [], code: 'terminal', text: '父任务已经结束，不用再放行。' };
+  }
+  if (child.state === 'cancelled' || child.state === 'completed') {
+    return { ok: false, approved: [], code: 'terminal', text: '这份分工已经结束，不用再放行。' };
+  }
+  if (child.checkpointBeforeRun !== true) {
+    return { ok: false, approved: [], code: 'not_checkpoint', text: '这份分工没有设「先由负责人把关」。' };
   }
   if (needsApprove(child)) {
     const out = await taskRuns.mutate(child.id, {
@@ -73,7 +82,7 @@ export async function approveCheckpointsOf({
 }) {
   const loaded = parentTaskRunId ? taskRuns.read(parentTaskRunId) : null;
   const parent = loaded?.status === 'found' ? loaded.taskRun : null;
-  if (!parent) return { ok: false, approved: [], text: '找不到这个任务。' };
+  if (!parent) return { ok: false, approved: [], code: 'not_found', text: '找不到这个任务。' };
   const all = taskRuns.listAll?.();
   const list = all?.taskRuns ?? all ?? [];
   const siblings = list.filter((run) => run.parentTaskId === parent.id
@@ -84,7 +93,9 @@ export async function approveCheckpointsOf({
     const one = await approveCheckpoint({ taskRuns, childTaskRunId: kid.id, botId, reason, notify, clock });
     if (one.ok) approved.push(...one.approved);
   }
-  if (!approved.length) return { ok: false, approved: [], text: '没有等把关的分工。' };
+  if (!approved.length) {
+    return { ok: false, approved: [], code: 'no_pending', text: '没有等把关的分工。' };
+  }
   if (typeof notify === 'function') notify(parent.id);
   return { ok: true, approved, text: '已放行 ' + approved.length + ' 份分工，它们会自己开跑。' };
 }

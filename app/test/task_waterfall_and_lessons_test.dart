@@ -230,6 +230,36 @@ void main() {
     });
   });
 
+  group('预算口径与时间线边界', () {
+    test('remainingTokens 用 max - used（maxTokens 已含 extraTokens）', () {
+      final run = TaskRun.fromJson({
+        'id': 'tr_x', 'revision': 1, 'state': 'paused_budget', 'phase': 'needs_user',
+        'budget': {'maxTokens': 1500, 'usedTokens': 1600, 'extraTokens': 500, 'remainingTokens': 0},
+      });
+      expect(run.budget.remainingTokens, 0);
+      expect(run.budget.tokensExhausted, isTrue, reason: '额度已用尽要能识别出来');
+    });
+
+    test('119600ms 不能输出「1分60秒」', () {
+      expect(formatDuration(119600), '2分00秒');
+      expect(formatDuration(119000), '1分59秒');
+      expect(formatDuration(59_800), '59.8s');
+      expect(formatDuration(null), '—');
+    });
+
+    test('spanOf 左/右边界都不越界', () {
+      const waterfall = TaskRunWaterfall(durationMs: 1000);
+      final atEnd = TaskRunWaterfallItem.fromJson({
+        'id': 'k', 'botId': 'b', 'botName': '', 'state': 'queued', 'stateText': '准备中',
+        'phase': 'active', 'offsetMs': 5000, 'durationMs': 5000,
+      });
+      final span = waterfall.spanOf(atEnd);
+      expect(span.left, lessThanOrEqualTo(1.0 - 0.02));
+      expect(span.left + span.width, lessThanOrEqualTo(1.0001), reason: '右边界不能溢出');
+      expect(span.width, greaterThan(0));
+    });
+  });
+
   group('TaskWaterfallSection', () {
     Future<void> pump(
       WidgetTester tester,
@@ -343,8 +373,8 @@ void main() {
       addTearDown(controller.dispose);
       final run = await controller.fetchDetail('tr_root');
       await controller.approveCheckpoint(run!, 'k2');
-      final call = api.calls.last;
-      expect(call.path, contains('/control'));
+      // 放行之后会自动再拉一次详情，所以不能取 last，要挑出那条控制请求
+      final call = api.calls.firstWhere((c) => c.path.contains('/control'));
       expect(call.body?['type'], 'approve_checkpoint');
       expect(call.body?['childTaskRunId'], 'k2');
     });
@@ -355,7 +385,7 @@ void main() {
       addTearDown(controller.dispose);
       final run = await controller.fetchDetail('tr_root');
       await controller.control(run!, type: 'extend', extraTokens: 50000);
-      final call = api.calls.last;
+      final call = api.calls.firstWhere((c) => c.path.contains('/control'));
       expect(call.body?['type'], 'extend');
       expect(call.body?['extraTokens'], 50000);
       expect(call.body?.containsKey('extraRuns'), isFalse); // 没填次数就不发这个字段
@@ -432,6 +462,78 @@ void main() {
       expect(controlCalls, isNotEmpty);
       expect(controlCalls.last.body?['type'], 'extend');
       expect(controlCalls.last.body?['extraTokens'], 77777);
+    });
+  });
+
+  group('详情合并与刷新保护', () {
+    test('跨 revision 不保留旧详情', () async {
+      final api = _FakeApi();
+      final controller = TaskRunController(api: api);
+      addTearDown(controller.dispose);
+      await controller.fetchDetail('tr_root');
+      expect(controller.merge.byId('tr_root')!.waterfall, isNotNull);
+      // 改版后的轻量快照（revision + 1，无明细）
+      final bumped = Map<String, dynamic>.from(detailJson())
+        ..remove('waterfall')
+        ..remove('telemetry')
+        ..remove('blackboard')
+        ..['revision'] = 2
+        ..['storeVersion'] = 99;
+      controller.merge.applyEvent({'taskRun': bumped});
+      final after = controller.merge.byId('tr_root')!;
+      expect(after.revision, 2);
+      expect(after.waterfall, isNull, reason: '旧版本的瀑布流不能挂到新版本上');
+      expect(after.blackboard, isEmpty, reason: '旧黑板不能复活');
+    });
+
+    test('旧 storeVersion 的 applyDetail 不回退状态、也不覆盖新明细', () async {
+      final api = _FakeApi();
+      final controller = TaskRunController(api: api);
+      addTearDown(controller.dispose);
+      await controller.fetchDetail('tr_root');
+      final newer = Map<String, dynamic>.from(detailJson())
+        ..['state'] = 'completed'
+        ..['stateText'] = '已完成'
+        ..['storeVersion'] = 50;
+      controller.merge.applyEvent({'taskRun': newer});
+      expect(controller.merge.byId('tr_root')!.state, 'completed');
+      // 迟到的旧详情（storeVersion 更小）：不能把状态改回去
+      final stale = TaskRun.fromJson(Map<String, dynamic>.from(detailJson())..['storeVersion'] = 12);
+      controller.merge.applyDetail(stale);
+      expect(controller.merge.byId('tr_root')!.state, 'completed', reason: '迟到的详情不能回退状态');
+    });
+
+    test('放行成功后会自动刷新父任务详情（瀑布流立刻更新）', () async {
+      final api = _FakeApi();
+      final controller = TaskRunController(api: api);
+      addTearDown(controller.dispose);
+      final run = await controller.fetchDetail('tr_root');
+      final before = api.calls.where((c) => c.method == 'get').length;
+      await controller.approveCheckpoint(run!, 'k2');
+      final after = api.calls.where((c) => c.method == 'get').length;
+      expect(after, greaterThan(before), reason: '放行后要重新拉一次详情');
+      expect(api.calls.last.method, 'get');
+    });
+
+    test('control 成功后若已含明细会自动刷新', () async {
+      final api = _FakeApi();
+      final controller = TaskRunController(api: api);
+      addTearDown(controller.dispose);
+      final run = await controller.fetchDetail('tr_root');
+      final before = api.calls.where((c) => c.method == 'get').length;
+      await controller.control(run!, type: 'extend', extraTokens: 10);
+      await Future<void>.delayed(Duration.zero);
+      final after = api.calls.where((c) => c.method == 'get').length;
+      expect(after, greaterThan(before), reason: '命令成功后要刷新详情');
+
+      // 没有明细时不该白白多拉一次
+      final fresh = TaskRunController(api: api);
+      addTearDown(fresh.dispose);
+      fresh.merge.applySnapshot({'tasks': [detailJson()..remove('waterfall')..remove('telemetry')..remove('blackboard')]});
+      final before2 = api.calls.where((c) => c.method == 'get').length;
+      await fresh.control(fresh.merge.byId('tr_root')!, type: 'extend', extraTokens: 10);
+      await Future<void>.delayed(Duration.zero);
+      expect(api.calls.where((c) => c.method == 'get').length, before2);
     });
   });
 

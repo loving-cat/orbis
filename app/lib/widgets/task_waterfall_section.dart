@@ -49,15 +49,25 @@ class _TaskWaterfallSectionState extends State<TaskWaterfallSection> {
     final waterfall = task.waterfall;
     final telemetry = task.telemetry;
     final blackboard = task.blackboard;
+    // ★ 遥测卡不该只在"有 token"时才出现：预算上限、分身/复核/worktree 计数
+    //   本身就是可看的信息（举例：全部没烧 token 但已经开了 3 个分身）。
+    final hasTelemetry = telemetry != null &&
+        (telemetry.totalTokens > 0 ||
+            telemetry.hasBudget ||
+            telemetry.clonedRuns > 0 ||
+            telemetry.criticReworks > 0 ||
+            telemetry.worktreeMerged > 0 ||
+            telemetry.worktreeConflicts > 0 ||
+            telemetry.checkpointsPending > 0);
     final hasAny = (waterfall != null && waterfall.items.isNotEmpty) ||
-        (telemetry != null && telemetry.totalTokens > 0) ||
+        hasTelemetry ||
         blackboard.isNotEmpty;
     if (!hasAny) return const SizedBox.shrink();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (telemetry != null && telemetry.totalTokens > 0)
+        if (hasTelemetry)
           _TelemetryCard(
             telemetry: telemetry,
             showUsage: _showUsage,
@@ -108,13 +118,16 @@ String? formatCost(double? value) {
 }
 
 /// 毫秒 → `1.2s` / `1分05秒`。
+///
+/// ★ 必须先 `round()` 成整秒再拆分：直接拿浮点秒取模会让 119600ms
+///   算出 `1分60秒`（59.8 秒四舍五入成 60，但分钟位还是 1）。
 String formatDuration(int? ms) {
   if (ms == null || ms <= 0) return '—';
   if (ms < 1000) return '${ms}ms';
-  final seconds = ms / 1000;
-  if (seconds < 60) return '${seconds.toStringAsFixed(1)}s';
-  final m = (seconds / 60).floor();
-  final s = (seconds % 60).round();
+  if (ms < 60_000) return '${(ms / 1000).toStringAsFixed(1)}s';
+  final totalSeconds = (ms / 1000).round();
+  final m = totalSeconds ~/ 60;
+  final s = totalSeconds % 60;
   return '$m分${s.toString().padLeft(2, '0')}秒';
 }
 

@@ -30,18 +30,30 @@ class TaskRunMerge {
 
   /// 写回一份**详情**快照（含瀑布流/遥测/黑板）。
   ///
-  /// 详情接口的 storeVersion 与列表一致，所以不能只靠版本号判定"要不要收"：
-  /// 同版本也要收（否则用户点开详情永远刷不出瀑布流）。
+  /// 三种情形必须分开处理，混在一起会出两类真事故：
+  ///   · 详情请求比列表推送**慢**：回来的 storeVersion 更旧，此时拿它整个覆盖
+  ///     会把用户刚看到的状态回退（例如已完成的又变回执行中）；
+  ///   · 同一份数据重复拉取：同版本要收（否则点开详情永远刷不出瀑布流）；
+  ///   · 任务改版（revision 变了）：旧版本的 waterfall/telemetry/黑板说的
+  ///     是另一件事，绝不能挂到新版本上。
   void applyDetail(TaskRun detail) {
     if (detail.id.isEmpty) return;
     final current = _byId[detail.id];
-    _byId[detail.id] = current == null
-        ? detail
-        : detail.withDetail(
-            waterfall: detail.waterfall ?? current.waterfall,
-            telemetry: detail.telemetry ?? current.telemetry,
-            blackboard: detail.blackboard.isEmpty ? current.blackboard : detail.blackboard,
-          );
+
+    // 1) 老快照：只在"当前还没有明细 + 同版本"时补挂明细，其余一律不动
+    if (current != null && detail.storeVersion < current.storeVersion) {
+      if (!current.hasDetail && detail.revision == current.revision) {
+        _byId[detail.id] = current.withDetail(
+          waterfall: detail.waterfall,
+          telemetry: detail.telemetry,
+          blackboard: detail.blackboard,
+        );
+      }
+      return;
+    }
+
+    // 2) 新快照：直接信任它带来的明细（它是最全的那一份）
+    _byId[detail.id] = detail;
     if (detail.storeVersion > _cursor) _cursor = detail.storeVersion;
   }
 
@@ -51,6 +63,8 @@ class TaskRunMerge {
   ///   `waterfall` 就变成 null，面板当场空白。
   TaskRun _keepDetail(TaskRun next, TaskRun? current) {
     if (current == null || next.hasDetail || !current.hasDetail) return next;
+    // ★ 改版之后不能沿用旧版本的明细：那份 waterfall/黑板说的是另一版目标
+    if (current.revision != next.revision) return next;
     return next.withDetail(
       waterfall: current.waterfall,
       telemetry: current.telemetry,

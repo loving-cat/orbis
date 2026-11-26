@@ -94,6 +94,9 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
         goal: body?.goal ?? null, reason: body?.reason ?? null, deferNotify: body?.deferNotify === true,
         extraRuns: body?.extraRuns ?? null,
         extraTokens: body?.extraTokens ?? null,
+        // ★ 必须进指纹：同一个 commandId 换一个子任务放行是**另一个操作**，
+        //   漏了它就会被当成幂等重放，用户点第二下什么都不发生。
+        childTaskRunId: body?.childTaskRunId ?? null,
       });
       const requesterId = device?.id ?? 'device_unknown';
       const runNow = () => (typeof findRun === 'function' ? findRun(taskRunId) : null);
@@ -180,6 +183,10 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
         commandId, type, expectedRevision,
         ref: body?.ref ?? null, decision: body?.decision ?? null,
         text: body?.text ?? null, goal: body?.goal ?? null, reason: body?.reason ?? null, deferNotify: body?.deferNotify === true,
+        // 信封要能**按原操作重试**：额度与放行目标都得在里面
+        extraRuns: body?.extraRuns ?? null,
+        extraTokens: body?.extraTokens ?? null,
+        childTaskRunId: body?.childTaskRunId ?? null,
       };
       const pendingRecord = {
         requesterId, commandId, fingerprint, kind: type, taskRunId,
@@ -237,6 +244,10 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
           const child = findRun(childId);
           if (!child) return fail(404, 'CHILD_TASK_NOT_FOUND', '子任务不存在');
           if (child.parentTaskId !== taskRunId) return fail(409, 'NOT_CHILD_OF_TASK', '这个子任务不属于该任务');
+          // ★ 子任务必须是**当前这一版目标**下的：改版后旧版本的子任务放行了也没人跑。
+          if ((child.parentRevision ?? child.revision) !== run.revision) {
+            return fail(409, 'STALE_CHILD_REVISION', '这个子任务属于旧版本目标，放行不会有任何效果');
+          }
           result = typeof runtime.approveCheckpoint === 'function'
             ? await runtime.approveCheckpoint(childId, { by: 'user' })
             : { ok: false, code: 'unknown_control_type', text: '这个服务端不支持放行把关位' };
@@ -269,7 +280,12 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
           commands.write({ ...pendingRecord, stage: 'failed', error: String(result?.code ?? 'EFFECT_NOT_APPLIED') });
           if (result && result.ok === false) {
             // 语义性拒绝（状态不允许这个控制）是 409，不是服务端故障。
-            const semantic = new Set(['not_paused', 'not_blocked', 'terminal', 'budget_paused', 'unknown_control_type']);
+            // ★ 语义拒绝一律 409（服务端没坏，是当前状态不允许这个动作）。
+            //   遗漏的码会让用户看到 500，以为服务端挂了。
+            const semantic = new Set([
+              'not_paused', 'not_blocked', 'terminal', 'budget_paused', 'unknown_control_type',
+              'not_found', 'no_pending', 'already_approved', 'not_checkpoint',
+            ]);
             const status = semantic.has(String(result.code ?? '')) ? 409 : 500;
             return fail(status, result.code ?? 'CONTROL_FAILED', String(result.text ?? '控制未完成'));
           }

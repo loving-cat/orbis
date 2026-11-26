@@ -151,8 +151,10 @@ await test('5. byBot / byModel 聚合排序（Token 降序），byModel 认 last
 });
 
 await test('6. C1–C4 字段完整投影：依赖/把关/Critic/分身/档位/Worktree', () => {
-  const dep = makeKid('k0', { state: 'running' });
+  const dep = makeKid('k0', { state: 'completed' });
   const kid = makeKid('k1', {
+    // 等把关的活一定是「还没结束」的；已完成的子任务谈不上等放行
+    state: 'queued',
     dependsOn: ['k0'],
     checkpointBeforeRun: true,
     criticState: { lastVerdict: 'failed', reworkCount: 2, maxRounds: 2, reviewerModel: 'critic-x' },
@@ -166,7 +168,7 @@ await test('6. C1–C4 字段完整投影：依赖/把关/Critic/分身/档位/W
   const out = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [dep, kid], now: 5000 });
   const item = out.items.find((i) => i.id === 'k1');
   assert.deepEqual(item.dependsOn, ['k0']);
-  assert.deepEqual(item.waitingOn, ['k0'], '前置还没完成要标出来');
+  assert.deepEqual(item.waitingOn, [], 'k0 已完成，不在「还在等」里');
   assert.equal(item.waitingCheckpoint, true, '等把关');
   assert.equal(item.checkpointApproved, false);
   assert.equal(item.critic.verdict, 'failed');
@@ -220,7 +222,7 @@ await test('9. budget 补全 Token 维度；列表轻量 vs 详情完整', () =>
   assert.equal(light.budget.maxTokens, 1000);
   assert.equal(light.budget.usedTokens, 500);
   assert.equal(light.budget.extraTokens, 100);
-  assert.equal(light.budget.remainingTokens, 600, '1000 + 100 - 500');
+  assert.equal(light.budget.remainingTokens, 500, 'maxTokens 已含 extraTokens：1000 - 500');
   assert.equal(light.budget.maxRuns, null);
   assert.equal(light.waterfall, undefined, '列表不该带完整瀑布流');
   assert.equal(light.telemetry, undefined);
@@ -257,7 +259,6 @@ await test('11. 复盘生成候选时广播 lessons.changed；无证据候选仍
   const { store } = await import(src('store.js'));
   const { createCapabilityService } = await import(src('services/capability-service.js'));
   const svc = createCapabilityService({ store });
-  const events = [];
 
   // (a) 有证据的候选：可以启用
   const good = store.addLesson({
@@ -289,7 +290,6 @@ await test('11. 复盘生成候选时广播 lessons.changed；无证据候选仍
   const sourceText = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'lesson-reflect.js'), 'utf8');
   assert.match(sourceText, /lessons\.changed/, '必须广播 lessons.changed');
   assert.match(sourceText, /count:\s*added/, '事件要带新增条数');
-  void events;
 });
 
 await test('12. 控制通道：extend 支持 extraTokens；approve_checkpoint 校验归属并放行', async () => {
@@ -351,6 +351,169 @@ await test('12. 控制通道：extend 支持 extraTokens；approve_checkpoint �
     snapshotOf,
   });
   assert.equal(denied.status, 409, '不属于该任务的子任务要 409');
+});
+
+await test('13. ★ budgetTokensView：maxTokens 已含 extraTokens，不再重复加（P1-1）', () => {
+  // extendRootBudget 把追加额度加进 maxTokens，所以剩余只能是 max - used
+  const view = WF.budgetTokensView({ maxTokens: 1500, extraTokens: 500, usedTokens: 1600 });
+  assert.equal(view.maxTokens, 1500);
+  assert.equal(view.extraTokens, 500, 'extraTokens 只作为展示字段');
+  assert.equal(view.remainingTokens, 0, `已用尽就该是 0（旧口径会算成 400），实际 ${view.remainingTokens}`);
+
+  // 还有余量的情形
+  assert.equal(WF.budgetTokensView({ maxTokens: 2000, extraTokens: 500, usedTokens: 1600 }).remainingTokens, 400);
+  // 没设上限：null（"不限"不是"剩 0"）
+  assert.equal(WF.budgetTokensView({ usedTokens: 999 }).remainingTokens, null);
+  // 上层投影同口径
+  const run = projectTaskRun({
+    id: 'tr_b', revision: 1, sequence: 1, state: 'paused_budget',
+    budget: { maxTokens: 1500, extraTokens: 500, usedTokens: 1600 },
+  }, { includeDetail: true });
+  assert.equal(run.budget.remainingTokens, 0);
+  assert.equal(run.telemetry.budget.remainingTokens, 0);
+});
+
+await test('14. ★ criticTokens 只认真实复核用量，不拿成员执行 token 冒充（P1-2）', () => {
+  const heavyMember = makeKid('k1', {
+    attempts: [settled(1200, 1800, 4000, 1000)], // 成员自己跑了 5000 tokens
+    criticState: { lastVerdict: 'passed', reworkCount: 1 }, // 没记 usedTokens
+  });
+  const none = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [heavyMember], now: 5000 });
+  assert.equal(none.telemetry.criticTokens, 0, '没记复核用量就是 0，绝不是 5000');
+
+  const recorded = makeKid('k2', {
+    attempts: [settled(1200, 1800, 4000, 1000)],
+    criticState: { lastVerdict: 'passed', reworkCount: 1, usedTokens: 300 },
+  });
+  const withCritic = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [recorded], now: 5000 });
+  assert.equal(withCritic.telemetry.criticTokens, 300, `严格等于记录的复核用量，实际 ${withCritic.telemetry.criticTokens}`);
+});
+
+await test('15. ★ waitingCheckpoint 与推进器同判据；paused_budget 的 phase 是 needs_user（P1-3）', () => {
+  const unsettled = makeKid('k_up', { state: 'running', attempts: [settled(1200, 1300, 1, 1)] });
+  const cases = [
+    // 已取消：谈不上"等把关"
+    ['k_cancelled', makeKid('k_cancelled', { state: 'cancelled', checkpointBeforeRun: true }), false],
+    // 上游还在跑：它在等前置，不是在等放行
+    ['k_waiting', makeKid('k_waiting', { state: 'queued', checkpointBeforeRun: true, dependsOn: ['k_up'] }), false],
+    // 上游永久失败：它在等一个不会来的前置
+    ['k_failed', makeKid('k_failed', {
+      state: 'queued', checkpointBeforeRun: true, dependsOn: ['k_up'],
+    }), false],
+    // 真·等放行：前置都完成（本例无前置）、没被放行
+    ['k_gate', makeKid('k_gate', { state: 'queued', checkpointBeforeRun: true }), true],
+  ];
+  const blockers = makeKid('k_up', { state: 'running' });
+  const kids = [blockers, ...cases.map(([, kid]) => kid)];
+  const out = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: kids, now: 5000 });
+  for (const [id, , expected] of cases) {
+    const item = out.items.find((i) => i.id === id);
+    assert.equal(item.waitingCheckpoint, expected, `${id} 的 waitingCheckpoint 应为 ${expected}`);
+  }
+  assert.equal(out.telemetry.counts.checkpointsPending, 1, '只有真正等放行的那一份计入');
+  assert.equal(out.telemetry.counts.childrenTotal, kids.length);
+
+  // 上游永久失败 → upstream_failed
+  const dead = makeKid('k_dead', { state: 'blocked', attempts: [settled(1200, 1300, 1, 1)] });
+  const downstream = makeKid('k_down', { state: 'queued', checkpointBeforeRun: true, dependsOn: ['k_dead'] });
+  const failedOut = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [dead, downstream], now: 5000 });
+  assert.equal(failedOut.items.find((i) => i.id === 'k_down').waitingCheckpoint, false);
+  assert.equal(failedOut.telemetry.counts.checkpointsPending, 0);
+
+  // phase：paused_budget 需要用户加额度 → needs_user（不是 paused）
+  const paused = makeKid('k_paused', { state: 'paused_budget' });
+  const pausedOut = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [paused], now: 5000 });
+  assert.equal(pausedOut.items[0].phase, 'needs_user', '额度用尽要显示「追加额度」入口');
+});
+
+await test('16. ★ 超 limit 时聚合仍覆盖全量子任务（P2-1）', () => {
+  const kids = Array.from({ length: 6 }, (_, i) => makeKid('k' + i, {
+    createdAt: 1100 + i,
+    attempts: [settled(1200 + i, 1800 + i, 10, 5)],
+    lastDispatchMeta: { cloned: i % 2 === 0, tier: i % 2 === 0 ? 'strong' : 'fast', modelOverride: i % 2 === 0 ? 'cloud/opus' : null },
+    criticState: { lastVerdict: 'passed', reworkCount: 1, usedTokens: 10 },
+    worktree: i < 3
+      ? { status: 'merged', branch: 'b' + i, filesChanged: ['f'] }
+      : { status: 'conflict', branch: 'c' + i, conflictFiles: ['x'] },
+  }));
+  const out = WF.buildTaskWaterfall({
+    rootRun: makeRoot(), children: kids, limit: 2, now: 5000, costOf: ({ inputTokens }) => inputTokens / 1000,
+  });
+  assert.equal(out.items.length, 2, 'items 截断到 limit');
+  assert.equal(out.truncated, 4);
+  // 但聚合与计数必须是**全量**的
+  assert.equal(out.telemetry.counts.childrenTotal, 6);
+  assert.equal(out.telemetry.counts.clonedRuns, 3, '分身次数要按 6 条算');
+  assert.equal(out.telemetry.counts.worktreeMerged, 3);
+  assert.equal(out.telemetry.counts.worktreeConflicts, 3);
+  assert.equal(out.telemetry.counts.criticReworks, 6);
+  assert.equal(out.telemetry.criticTokens, 60, '复核用量也按全量算');
+  assert.equal(out.telemetry.byBot.length, 1);
+  assert.equal(out.telemetry.byBot[0].runs, 6, 'byBot 的 runs 是 6 而不是 2');
+  assert.equal(out.telemetry.byModel.find((m) => m.model === 'cloud/opus')?.runs, 3);
+  assert.equal(typeof out.telemetry.estimatedCostUsd, 'number', '有单价时全量都算过才给总数');
+});
+
+await test('17. ★ 控制通道：同一 commandId 不同子任务 → 409；终态/跨版本放行 → 409（P1-4）', async () => {
+  const { store } = await import(src('store.js'));
+  const { createTaskCommands } = await import(src('tasks/task-commands.js'));
+  const calls = [];
+  const runtime = {
+    approveCheckpoint: async (id, opts) => { calls.push({ id, opts }); return { ok: true }; },
+    onExtendBudget: async () => ({ ok: true }),
+  };
+  const taskRuns = store.taskRuns;
+  const root = { id: 'tr_cmd_root', revision: 2, sequence: 0, state: 'running', request: { requesterId: 'local' } };
+  const kidA = { id: 'tr_cmd_a', parentTaskId: root.id, parentRevision: 2, revision: 2, sequence: 0, state: 'queued', checkpointBeforeRun: true };
+  const kidB = { id: 'tr_cmd_b', parentTaskId: root.id, parentRevision: 2, revision: 2, sequence: 0, state: 'queued', checkpointBeforeRun: true };
+  const staleKid = { id: 'tr_cmd_old', parentTaskId: root.id, parentRevision: 1, revision: 1, sequence: 0, state: 'queued', checkpointBeforeRun: true };
+  const byId = new Map([[root.id, root], [kidA.id, kidA], [kidB.id, kidB], [staleKid.id, staleKid]]);
+  const commands = createTaskCommands({ store, runner: { taskRuntime: runtime }, taskRuns, commandDir: path.join(fixture, 'commands2') });
+  const snapshotOf = (run) => ({ id: run.id, state: run.state, revision: run.revision, sequence: run.sequence, flags: run.flags ?? {} });
+  const handle = (body) => commands.handle({
+    taskRunId: root.id, body, device: { id: 'dev' },
+    findRun: (id) => byId.get(id) ?? null, snapshotOf,
+  });
+
+  // 同一 commandId、不同 childTaskRunId → 内容指纹不符
+  await handle({ commandId: 'cmd_ck_0001', type: 'approve_checkpoint', childTaskRunId: kidA.id, expectedRevision: 2 });
+  const conflict = await handle({ commandId: 'cmd_ck_0001', type: 'approve_checkpoint', childTaskRunId: kidB.id, expectedRevision: 2 });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.code, 'COMMAND_CONFLICT');
+  assert.equal(calls.length, 1, '第二个不能真的去放行');
+
+  // 跨版本子任务 → 409 STALE_CHILD_REVISION
+  const stale = await handle({ commandId: 'cmd_ck_0002', type: 'approve_checkpoint', childTaskRunId: staleKid.id, expectedRevision: 2 });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, 'STALE_CHILD_REVISION');
+
+  // 服务层语义拒绝（终态 / 没有关卡位）也要回 409，不能 500
+  runtime.approveCheckpoint = async () => ({ ok: false, code: 'terminal', text: '父任务已经结束' });
+  const rejected = await handle({ commandId: 'cmd_ck_0003', type: 'approve_checkpoint', childTaskRunId: kidB.id, expectedRevision: 2 });
+  assert.equal(rejected.status, 409, `语义拒绝应 409，实际 ${rejected.status}`);
+  assert.equal(rejected.body.code, 'terminal');
+});
+
+await test('18. ★ approveCheckpoint 的语义拒绝都带 code（调用方据此回 409）', async () => {
+  const { approveCheckpoint } = await import(src('tasks/task-checkpoint.js'));
+  const taskRuns = {
+    read: (id) => ({ status: 'found', taskRun: {
+      tr_p: { id: 'tr_p', state: 'running', revision: 1 },
+      tr_done_child: { id: 'tr_done_child', parentTaskId: 'tr_p', state: 'completed', checkpointBeforeRun: true },
+      tr_no_gate: { id: 'tr_no_gate', parentTaskId: 'tr_p', state: 'queued' },
+    }[id] }),
+    mutate: async () => ({ ok: true }),
+  };
+  const notify = () => {};
+  const missing = await approveCheckpoint({ taskRuns, childTaskRunId: 'tr_nope', notify });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, 'not_found');
+
+  const terminal = await approveCheckpoint({ taskRuns, childTaskRunId: 'tr_done_child', notify });
+  assert.equal(terminal.code, 'terminal');
+
+  const noGate = await approveCheckpoint({ taskRuns, childTaskRunId: 'tr_no_gate', notify });
+  assert.equal(noGate.code, 'not_checkpoint');
 });
 
 // ---------------------------------------------------------------------------

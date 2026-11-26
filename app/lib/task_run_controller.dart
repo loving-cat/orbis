@@ -238,9 +238,17 @@ class TaskRunController extends ChangeNotifier {
       _lastReplay = body['replayed'] == true;
       // 保留最近一次命令信封：未知结果/重复回包都可按原操作重试
       final updated = body['taskRun'];
+      // 命令回包本身是轻量快照：它不含 waterfall / telemetry。
+      // 若这个任务此前已经拉过明细，就要**再拉一次详情**，否则用户点完
+      // 「放行」后瀑布流上的按钮与数字还是旧的（他会以为没生效）。
+      final hadDetail = _merge.byId(task.id)?.hasDetail == true;
       if (updated is Map) {
         _merge.applyEvent({'taskRun': Map<String, dynamic>.from(updated)});
         notifyListeners();
+      }
+      if (hadDetail) {
+        // 刷新失败不影响主命令结果：命令已经成功落了
+        unawaited(fetchDetail(task.id).catchError((Object _) => null));
       }
       return _merge.byId(task.id);
     } catch (err) {
@@ -265,9 +273,16 @@ class TaskRunController extends ChangeNotifier {
   }
 
   /// 一键放行某个等把关的子任务（C5：瀑布流里的「放行」）。
+  ///
+  /// 放行成功后**主动刷新父任务详情**：子任务那一行的「等把关」徽章与
+  /// 遥测里的 `checkpointsPending` 都变了，不刷新用户会重复点。
   Future<TaskRun?> approveCheckpoint(TaskRun task, String childTaskRunId) async {
     final parent = _merge.byId(task.parentTaskId ?? task.id) ?? task;
-    return control(parent, type: 'approve_checkpoint', childTaskRunId: childTaskRunId);
+    final result = await control(
+      parent, type: 'approve_checkpoint', childTaskRunId: childTaskRunId,
+    );
+    await fetchDetail(parent.id).catchError((Object _) => null);
+    return result;
   }
 
   /// 原操作未知结果重试：使用发出前保存的命令信封，不重新拼字段。

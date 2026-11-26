@@ -2267,6 +2267,21 @@ export function createTaskSupervisor({
     const tokens = tokenCountOf(usage);
     if (!tokens) return 0;
     const rootId = taskRun.rootTaskId ?? taskRun.id;
+    // ★ 两件事一起记：根预算（花了就是花了）+ 被复核任务上的**真实复核用量**。
+    //   `criticState.usedTokens` 是全景面板里「复核花了多少」的唯一真源 ——
+    //   以前面板拿成员执行 token 冒充，等于把两个完全不同的数混成一个。
+    //   任务本身就是根时合并进同一次 mutate，避免二次写回把 budget 覆盖掉。
+    await taskRuns.mutate(taskRun.id, {
+      mutate: (cur) => {
+        if (!cur) return null;
+        const state = cur.criticState ?? {};
+        return {
+          ...cur,
+          criticState: { ...state, usedTokens: Number(state.usedTokens ?? 0) + tokens },
+          updatedAt: clock(),
+        };
+      },
+    });
     await taskRuns.mutate(rootId, {
       mutate: (cur) => {
         if (!cur) return null;
@@ -2326,6 +2341,7 @@ export function createTaskSupervisor({
             at: clock(),
           });
         }
+        // ★ `...prev` 已保留 usedTokens（真实复核用量）：不能在这里被覆盖掉
         const prev = cur.criticState ?? {};
         return {
           ...cur,

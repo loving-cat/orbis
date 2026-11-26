@@ -25,6 +25,7 @@
  */
 import { remainingRuns } from './task-budget.js';
 import { isTerminal } from './task-contract.js';
+import { DEP_STATUS, dependencyStatus } from './task-dag.js';
 
 /** 每个任务最多展示几条依赖 / 缺陷 / 冲突文件。 */
 export const MAX_LIST = 10;
@@ -39,11 +40,16 @@ const STATE_TEXT = Object.freeze({
   completed: '已完成', cancelled: '已取消',
 });
 
-/** 客户端用的四类阶段（与 task-transport 的 userPhaseOf 同口径）。 */
+/**
+ * 客户端用的四类阶段（与 task-transport 的 PHASE_OF_STATE 同口径）。
+ *
+ * ★ `paused_budget` 是 `needs_user`：额度用尽需要用户加钱/加次数才能继续，
+ *   把它归成 `paused`（＝用户主动停）会让界面不显示「追加额度」入口。
+ */
 function phaseOf(state) {
   if (state === 'completed' || state === 'cancelled') return 'done';
-  if (state === 'paused_user' || state === 'paused_budget') return 'paused';
-  if (['waiting_approval', 'waiting_input', 'blocked'].includes(state)) return 'needs_user';
+  if (state === 'paused_user') return 'paused';
+  if (['paused_budget', 'waiting_approval', 'waiting_input', 'blocked'].includes(state)) return 'needs_user';
   return 'active';
 }
 
@@ -84,7 +90,11 @@ function usageOf(attempt) {
 /**
  * 根预算的 token 视图。
  *
- * `remainingTokens` 与任务预算闸门同口径：`maxTokens + extraTokens - usedTokens`，
+ * ★ `maxTokens` **已经包含历次追加的 `extraTokens`**（`extendRootBudget` 与
+ *   `task-reduce.js` 都是这么加的口径）。所以剩余额度只能是 `max - used`；
+ *   再减一次 extra 会把额度凭空算多（1500+500-1600 会算出 400，实际已经用尽）。
+ *   `extraTokens` 只作为「追加过多少」的展示字段，不参与计算。
+ *
  * 不设上限时返回 `null`（"不限"与"剩 0"是两件事，不能混）。
  */
 export function budgetTokensView(budget) {
@@ -96,7 +106,7 @@ export function budgetTokensView(budget) {
     maxTokens: hasMax ? max : null,
     usedTokens: used || null,
     extraTokens: extra,
-    remainingTokens: hasMax ? Math.max(0, max + extra - used) : null,
+    remainingTokens: hasMax ? Math.max(0, max - used) : null,
   };
 }
 
@@ -168,11 +178,23 @@ export function dispatchOf(taskRun) {
   };
 }
 
-/** 依赖 + 把关状态（C1）。 */
+/**
+ * 依赖 + 把关状态（C1）。
+ *
+ * ★ `waitingCheckpoint` 必须与推进器同一判据（`dependencyStatus === 'checkpoint'`），
+ *   而不是"设了 checkpointBeforeRun 且没放行"这么一句：
+ *   · 已取消 / 已完成的子任务谈不上"等把关"；
+ *   · 前置还没完成、或上游已经永久失败时，它停在那里**不是**在等负责人放行 ——
+ *     显示「等把关」会让用户去点一个点了也没用的按钮。
+ *   这里传的是**同父子任务**数组（不含 root），与推进器一致。
+ */
 export function dependenciesOf(taskRun, siblings = []) {
-  const byId = new Map((siblings ?? []).map((s) => [String(s?.id ?? ''), s]));
+  const brothers = (Array.isArray(siblings) ? siblings : []).filter((s) => s && s.id);
+  const byId = new Map(brothers.map((s) => [String(s.id), s]));
   const deps = Array.isArray(taskRun?.dependsOn) ? taskRun.dependsOn : [];
-  const waitingCheckpoint = taskRun?.checkpointBeforeRun === true && !taskRun?.checkpointApprovedAt;
+  const terminal = isTerminal(taskRun?.state);
+  const status = terminal ? null : dependencyStatus(taskRun, brothers);
+  const approved = taskRun?.checkpointBeforeRun === true && Boolean(taskRun?.checkpointApprovedAt);
   return {
     dependsOn: deps.map((d) => String(d)).filter(Boolean).slice(0, MAX_LIST),
     // 依赖里还有谁没完成（客户端据此显示「等 A、B」）
@@ -181,8 +203,8 @@ export function dependenciesOf(taskRun, siblings = []) {
       .filter((d) => d && !isTerminal(d.state))
       .map((d) => String(d.id))
       .slice(0, MAX_LIST),
-    waitingCheckpoint,
-    checkpointApproved: taskRun?.checkpointBeforeRun === true && Boolean(taskRun?.checkpointApprovedAt),
+    waitingCheckpoint: status === DEP_STATUS.checkpoint,
+    checkpointApproved: approved,
   };
 }
 
@@ -290,9 +312,13 @@ export function buildTaskWaterfall({
   const endAt = pickTime([endRaw, running ? now : null], 'max');
   const durationMs = originAt && endAt && endAt >= originAt ? endAt - originAt : null;
 
-  const items = ordered.slice(0, max).map((child) => waterfallItemOf(child, {
+  // ★ 先把**全量**子任务都投影一遍（聚合与计数要用完整数据），
+  //   最后才截断给客户端 —— 否则 `truncated > 0` 时 byBot/byModel/counts
+  //   都只统计到前 N 条，用户看到的"总分身数/总冲突数"是错的。
+  const allItems = ordered.map((child) => waterfallItemOf(child, {
     siblings, nameOf, costOf, originAt,
   }));
+  const items = allItems.slice(0, max);
 
   // ---- Token：根预算优先（权威），子树求和不与它相加
   const treeTokens = siblings.reduce((acc, run) => {
@@ -304,17 +330,20 @@ export function buildTaskWaterfall({
   const rootUsed = Number(root?.budget?.usedTokens);
   const hasRootUsed = Number.isFinite(rootUsed) && rootUsed > 0;
   const totalTokens = hasRootUsed ? Math.round(rootUsed) : treeTokens.input + treeTokens.output;
-  const criticTokens = siblings.reduce((sum, run) => sum + (criticOf(run) ? tokensOf(run).total : 0), 0);
+  // ★ 只汇总**真实记录下来的**复核用量（`criticState.usedTokens`）。
+  //   以前这里拿 `tokensOf(run).total`（成员执行的 token）冒充评审用量 ——
+  //   那会把"评审花了多少"说成一个完全不一样的数。
+  const criticTokens = siblings.reduce((sum, run) => sum + num(run?.criticState?.usedTokens), 0);
 
-  const withCost = items.filter((item) => item.costUsd !== null);
-  const estimatedCostUsd = typeof costOf === 'function' && items.length && withCost.length === items.length
+  const withCost = allItems.filter((item) => item.costUsd !== null);
+  const estimatedCostUsd = typeof costOf === 'function' && allItems.length && withCost.length === allItems.length
     ? Number(withCost.reduce((sum, item) => sum + item.costUsd, 0).toFixed(6))
     : null;
 
-  const byBot = groupBy(items, (item) => item.botId, (item) => ({ botId: item.botId, name: item.botName }))
+  const byBot = groupBy(allItems, (item) => item.botId, (item) => ({ botId: item.botId, name: item.botName }))
     .slice(0, MAX_GROUPS)
     .map((row) => ({ ...row, clonedRuns: row.clonedRuns ?? 0 }));
-  const byModel = groupBy(items, (item) => item.dispatch?.model || 'default', (item) => ({
+  const byModel = groupBy(allItems, (item) => item.dispatch?.model || 'default', (item) => ({
     model: item.dispatch?.model || 'default',
   }))
     .slice(0, MAX_GROUPS)
@@ -323,11 +352,11 @@ export function buildTaskWaterfall({
   const counts = {
     childrenTotal: kids.length,
     childrenDone: kids.filter((k) => isTerminal(k.state)).length,
-    clonedRuns: items.filter((item) => item.dispatch?.cloned).length,
-    criticReworks: items.reduce((sum, item) => sum + num(item.critic?.rounds), 0),
-    worktreeMerged: items.filter((item) => item.worktree?.status === 'merged').length,
-    worktreeConflicts: items.filter((item) => item.worktree?.status === 'conflict').length,
-    checkpointsPending: items.filter((item) => item.waitingCheckpoint).length,
+    clonedRuns: allItems.filter((item) => item.dispatch?.cloned).length,
+    criticReworks: allItems.reduce((sum, item) => sum + num(item.critic?.rounds), 0),
+    worktreeMerged: allItems.filter((item) => item.worktree?.status === 'merged').length,
+    worktreeConflicts: allItems.filter((item) => item.worktree?.status === 'conflict').length,
+    checkpointsPending: allItems.filter((item) => item.waitingCheckpoint).length,
   };
 
   return {
@@ -389,7 +418,9 @@ export function telemetrySummaryOf(rootRun, children = []) {
   for (const kid of kids) {
     criticReworks += num(criticOf(kid)?.rounds);
     if (kid?.worktree?.status === 'conflict') worktreeConflicts += 1;
-    if (kid?.checkpointBeforeRun === true && !kid?.checkpointApprovedAt) checkpointsPending += 1;
+    if (!isTerminal(kid?.state) && dependencyStatus(kid, kids) === DEP_STATUS.checkpoint) {
+      checkpointsPending += 1;
+    }
   }
   return {
     totalTokens: tokens,
