@@ -30,6 +30,11 @@ import { classifyNonRetriableFailure, nonRetriableOf, handBackBlockedBy } from '
 import { fileClaimList, pickBlockingClaim, claimsOverlap } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
 import { LEAD_PHASE, buildLeadPrompt, buildMemberPrompt, buildDeliverySummary, continuationNote } from './task-prompts.js';
+import {
+  CRITIC_MODE, MAX_CRITIC_REWORKS, buildCriticPrompt, criticTargetKeyOf, latestSettledAttempt,
+  pendingExpertConditions, resolveCriticMode, shouldRunCritic,
+} from './task-critic.js';
+import { tokenCountOf } from './task-budget.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
 
 const PAUSED = new Set([STATE.paused_user, STATE.paused_budget]);
@@ -144,12 +149,30 @@ function isBusyOutcome(raw) {
 }
 
 /**
+ * 独立评审（Critic）基础设施出错后的重试间隔。
+ *
+ * 评审员也是远端模型：超时 / 429 / 掉线都可能。这不是「交付不合格」，
+ * 所以不扣返工额度、不伪造通过 —— 只是稍后重跑一次。
+ */
+const CRITIC_RETRY_MS = 30_000;
+
+/**
+ * 同一目标下评审连续失败几次就停下等人工。
+ *
+ * 没有这个上限时，一个永远不可用的评审模型会把任务永远停在「验收中」。
+ */
+const MAX_CRITIC_ERRORS = 3;
+
+/**
  * @param {object} p
  * @param {object} p.taskRuns
  * @param {Function} p.execute
  * @param {Function} [p.executeMember]
  * @param {Function} [p.inspectOutcome] 只读核验未知结果
  * @param {Function} [p.verify]
+ * @param {Function} [p.criticReview] 独立评审执行器（不注入 = 永不跑 Critic）
+ * @param {string} [p.criticMode] off | auto | all（不传按 ORBIS_CRITIC_REVIEW）
+ * @param {number} [p.maxCriticReworks] 同一目标版本内允许的评审轮数上限
  * @param {object} [p.access]
  * @param {Function} [p.abortInflight] 取消本任务在途执行（必须按任务/版本定位）
  * @param {()=>number} [p.clock]
@@ -166,6 +189,16 @@ export function createTaskSupervisor({
   isExecutorBusy = null,
   inspectOutcome = null,
   verify = null,
+  /**
+   * 独立评审执行器（Critic）。
+   *
+   * ★ 不注入就完全不会跑 Critic —— 这是测试零回归的边界：
+   *   `createTaskSupervisor` 多了一个**可选**能力，不需要它的调用方行为不变。
+   *   生产装配在 `createTaskRuntime` 里按 `ORBIS_CRITIC_REVIEW` 注入。
+   */
+  criticReview = null,
+  criticMode = null,
+  maxCriticReworks = null,
   access = null,
   abortInflight = null,
   clock = () => Date.now(),
@@ -214,6 +247,16 @@ export function createTaskSupervisor({
 } = {}) {
   if (!taskRuns) throw new Error('推进器需要 TaskRunStore');
   if (typeof execute !== 'function') throw new Error('推进器需要执行器');
+
+  /** 评审档位与轮数上限：装配时定下来，不在每轮重读环境变量。 */
+  const criticSetting = Object.values(CRITIC_MODE).includes(criticMode)
+    ? criticMode
+    : resolveCriticMode(process.env);
+  const criticReworkLimit = Number.isInteger(maxCriticReworks) && maxCriticReworks >= 0
+    ? maxCriticReworks
+    : MAX_CRITIC_REWORKS;
+  /** 真的能跑评审吗：没注入执行器 / 关了都不跑。 */
+  const criticActive = typeof criticReview === 'function' && criticSetting !== CRITIC_MODE.off;
 
   /** 执行者名字（拿不到就退回一个中性的称呼）。 */
   function nameOfBot(botId) {
@@ -1159,6 +1202,16 @@ export function createTaskSupervisor({
           await recordStall(taskRun);
           continue;
         }
+        if (out === 'critic_blocked') return { status: 'blocked', why: 'critic_exhausted' };
+        if (out === 'critic_error') {
+          // ★ 评审员自身故障：不伪造通过、不扣返工额度，过一会儿重跑。
+          //   不在这里 return wait 是因为“等一个不会到来的事件”＝静死；
+          //   必须自己排一个到期唤醒。
+          const dueAt = clock() + CRITIC_RETRY_MS;
+          await patch(taskRun.id, { nextAction: null, retryAt: dueAt });
+          setTimer(dueAt, taskRun.id);
+          return { status: 'retry_scheduled', dueAt, why: '独立复核暂时不可用，稍后重试' };
+        }
         continue;
       }
 
@@ -1791,23 +1844,302 @@ export function createTaskSupervisor({
   async function doVerify(taskRun) {
     const checker = verify ?? defaultVerify;
     const verification = await checker(taskRun, { access, attemptId: null });
+
+    // ★ 独立评审（Critic）闸门。顺序不能反：
+    //   机械验收没过时 `shouldRunCritic` 恒为 false —— 先让执行者修确定性错误，
+    //   这时候叫评审员只会把“文件都没写”说成“质量不行”。
+    let finalVerdict = verification;
+    const critic = await maybeCriticReview(taskRun, verification);
+    if (critic?.kind === 'paused_budget') {
+      const now = read(taskRun.id) ?? taskRun;
+      const rootId = now.rootTaskId ?? now.id;
+      const rootBudget = (rootId === now.id ? now : read(rootId))?.budget ?? {};
+      const paused = await settle(taskRun.id, {
+        type: EVENT.budget_exhausted, revision: now.revision, at: clock(),
+        reason: `Token 预算已用尽（${rootBudget.usedTokens ?? 0}/${rootBudget.maxTokens}），不再启动独立复核`,
+      });
+      if (paused.ok) await patch(taskRun.id, { nextAction: null });
+      return 'ok';
+    }
+    if (critic?.kind === 'error') return critic.exhausted ? 'critic_blocked' : 'critic_error';
+    if (critic?.kind === 'stale') {
+      // 评审期间被取消/暂停/改版：结论丢弃，不写任何脏状态。循环顶部会重读。
+      log('独立评审结论已过期，丢弃', taskRun.id, critic.why ?? '');
+      return 'ok';
+    }
+    if (critic?.kind === 'over_limit') return 'critic_blocked';
+    if (critic?.kind === 'failed') {
+      finalVerdict = {
+        ...verification, passed: false, needsReview: [], unmet: critic.unmet ?? [],
+        reason: critic.reason,
+      };
+    } else if (critic?.kind === 'passed') {
+      // 评审记录已经落盘，重跑一次验收：这次 expert 条件应该真能过。
+      const again = await checker(read(taskRun.id) ?? taskRun, { access, attemptId: null });
+      finalVerdict = { ...again, reason: critic.reason ?? again.reason };
+    }
+
     const out = await settle(taskRun.id, {
       type: EVENT.verification_finished, revision: taskRun.revision, at: clock(),
-      passed: verification?.passed === true,
-      unmet: verification?.unmet ?? [],
+      passed: finalVerdict?.passed === true,
+      unmet: finalVerdict?.unmet ?? [],
       // ★ 通过时必须给出依据，否则归约器不会接受（防「空壳完成」）。
       //   验收器没写理由时由这里补一条可核对的说明，而不是让它被拒。
-      reason: String(verification?.reason ?? '').trim()
-        || (verification?.passed === true ? '已按条件完成验收' : '验收未通过'),
+      reason: String(finalVerdict?.reason ?? '').trim()
+        || (finalVerdict?.passed === true ? '已按条件完成验收' : '验收未通过'),
     });
     const after = read(taskRun.id);
-    if (after) await patch(taskRun.id, { stall: bumpStall(after) });
+    // ★ 顺手清掉上一轮遗留的 `retryAt`（评审员故障重试时写下的）：
+    //   不清就会让返工轮白等到期，或被误判成“重试到期”。
+    if (after) await patch(taskRun.id, { stall: bumpStall(after), retryAt: null });
     if (!out.ok) {
       log('验收归约被拒：', taskRun.id, out.text ?? out.code);
       return 'rejected';
     }
-    log('验收', taskRun.id, 'passed=', verification?.passed === true);
+    log('验收', taskRun.id, 'passed=', finalVerdict?.passed === true,
+      critic ? '(' + String(critic.kind) + ')' : '');
     return 'ok';
+  }
+
+  /**
+   * 机械验收全过之后，按档位跑一次独立评审，并把结论写进任务。
+   *
+   * 返回的 `kind` 就是调用方要做的事：
+   *   · `passed`      评审通过（expert 评审记录已写入）→ 重跑验收；
+   *   · `failed`      评审不通过且还有返工额度 → 按缺陷返工；
+   *   · `over_limit`  返工额度用完 → 已 block；
+   *   · `error`       评审员自身故障（不伪造通过、不扣返工额度）；
+   *   · `stale`       评审期间任务被取消/暂停/改版 → 丢弃结论；
+   *   · `paused_budget` token 预算已尽，不偷跑模型。
+   */
+  async function maybeCriticReview(taskRun, verification) {
+    if (!criticActive) return null;
+    if (!shouldRunCritic({ taskRun, verification, mode: criticSetting })) return null;
+    // ★ 预算闸门：评审也要烧 token，预算不够就停在预算暂停，不能偷跑。
+    if (remainingTokensOf(taskRun) <= 0) return { kind: 'paused_budget' };
+
+    const revision = taskRun.revision;
+    const targetKey = criticTargetKeyOf(taskRun);
+    const attemptId = latestSettledAttempt(taskRun)?.attemptId ?? null;
+    const prompt = buildCriticPrompt({
+      taskRun, verification, blackboard: rootRunOf(taskRun)?.blackboard ?? null,
+    });
+
+    let result = null;
+    try {
+      result = await criticReview({ taskRun, verification, prompt, attemptId, targetKey });
+    } catch (err) {
+      result = { status: 'error', code: 'threw', why: String(err?.message ?? err) };
+    }
+
+    // ★ 花了token就是花了：先记账，再判结论是不是过期（不能因为丢弃结论就不计消耗）。
+    await chargeCriticTokens(taskRun, result?.usage);
+
+    const current = read(taskRun.id);
+    if (!current) return { kind: 'stale', why: 'task_missing' };
+    if (current.revision !== revision) return { kind: 'stale', why: 'revision_changed' };
+    if (current.state === STATE.cancelled || PAUSED.has(current.state)) {
+      return { kind: 'stale', why: current.state };
+    }
+
+    if (result?.status !== 'reviewed' || result.ok !== true) {
+      // 基础设施故障 / 解析失败：都不算业务缺陷，也不扣返工额度。
+      const exhausted = await noteCriticError(current, result);
+      return {
+        kind: 'error', exhausted,
+        code: result?.code ?? (result?.ok === false ? 'parse_error' : 'unknown'),
+        why: result?.why ?? result?.reason ?? '评审失败',
+      };
+    }
+
+    if (result.verdict === 'passed') {
+      const written = await writeCriticPassed({
+        taskRun: current, verification, result, revision, targetKey, attemptId,
+      });
+      if (!written) return { kind: 'stale', why: 'write_skipped' };
+      return { kind: 'passed', reason: '独立复核通过：' + String(result.summary ?? '').slice(0, 120) };
+    }
+
+    const rounds = Number(current.criticState?.reworkCount ?? 0) + 1;
+    const written = await writeCriticFailed({
+      taskRun: current, verification, result, revision, targetKey, attemptId, rounds,
+    });
+    if (!written) return { kind: 'stale', why: 'write_skipped' };
+
+    // ★ 有界：到上限就停，不再自动返工（无限重做是最贵的失败模式）。
+    //
+    //   ★ 顺序不能反：必须**先**把这次验收收口（`verification_finished` 会清掉
+    //     `flags.verifyingAt`），**再** block。只 block 不清验证位的话，
+    //     任务记录仍停在「验收中」：用户手动解除阻塞后会立刻被当成
+    //     待验收任务重新 verify —— `criticRequired` 的任务拿旧产出秒回
+    //     同一个 blocked，等于解除阻塞这个动作根本不生效（死锁）。
+    if (rounds >= criticReworkLimit) {
+      const top = String(result.defects?.[0] ?? result.summary ?? '').slice(0, 160);
+      const reason = `独立复核连续 ${rounds} 轮未通过（上限 ${criticReworkLimit}）：${top}`;
+      await settle(taskRun.id, {
+        type: EVENT.verification_finished,
+        revision,
+        at: clock(),
+        passed: false,
+        unmet: (result.defects ?? []).map((d) => '独立复核：' + d),
+        reason,
+      });
+      await block(taskRun.id, reason);
+      return { kind: 'over_limit', rounds };
+    }
+    return {
+      kind: 'failed',
+      rounds,
+      unmet: (result.defects ?? []).map((d) => '独立复核：' + d),
+      reason: `独立复核未通过（第 ${rounds}/${criticReworkLimit} 轮），需按缺陷返工`,
+    };
+  }
+
+  /** 评审消耗的 token 计入根预算（不得绕过 PR #43 的 maxTokens 闸门）。 */
+  async function chargeCriticTokens(taskRun, usage) {
+    const tokens = tokenCountOf(usage);
+    if (!tokens) return 0;
+    const rootId = taskRun.rootTaskId ?? taskRun.id;
+    await taskRuns.mutate(rootId, {
+      mutate: (cur) => {
+        if (!cur) return null;
+        const budget = { ...(cur.budget ?? {}) };
+        budget.usedTokens = Number(budget.usedTokens ?? 0) + tokens;
+        return { ...cur, budget, updatedAt: clock() };
+      },
+    });
+    return tokens;
+  }
+
+  /** 记一笔「评审员自己没跑成」（不当作业务缺陷，有限重试）。 */
+  async function noteCriticError(current, result) {
+    const state = current?.criticState ?? {};
+    const errors = Number(state.errorCount ?? 0) + 1;
+    await patch(current.id, {
+      criticState: {
+        ...state,
+        errorCount: errors,
+        lastError: String(result?.why ?? result?.reason ?? '评审失败').slice(0, 200),
+        lastErrorAt: clock(),
+      },
+    });
+    // ★ `>=` 而不是 `>`：常量说的是「连续这么多次就停」，差一就是 4 次。
+    if (errors >= MAX_CRITIC_ERRORS) {
+      await block(
+        current.id,
+        `独立复核连续 ${errors} 次无法完成（${String(result?.why ?? result?.reason ?? '未知原因').slice(0, 120)}），已停下等人工处理`,
+      );
+      return true;
+    }
+    return false;
+  }
+
+  /** 评审通过：写入 expert 评审记录（若有 expert 条件）与 criticState。 */
+  async function writeCriticPassed({
+    taskRun, verification, result, revision, targetKey, attemptId,
+  }) {
+    const conditions = pendingExpertConditions(verification);
+    const out = await taskRuns.mutate(taskRun.id, {
+      mutate: (cur) => {
+        if (!cur) return null;
+        // ★ 写事务内再核一次版本/状态：评审耗时几十秒，中途什么都可能变。
+        if (cur.revision !== revision) return null;
+        if (cur.state === STATE.cancelled) return null;
+        const reviews = [...(cur.expertReviews ?? [])];
+        for (const condition of conditions) {
+          reviews.push({
+            taskRunId: cur.id,
+            revision,
+            conditionId: condition.id,
+            verdict: 'passed',
+            note: ('独立复核通过：' + String(result.summary ?? '')).slice(0, 600),
+            attemptId,
+            source: 'critic_review',
+            reviewerModel: result.reviewerModel ?? null,
+            at: clock(),
+          });
+        }
+        const prev = cur.criticState ?? {};
+        return {
+          ...cur,
+          expertReviews: reviews.slice(-200),
+          criticState: {
+            ...prev,
+            lastTargetKey: targetKey,
+            lastPassedKey: targetKey,
+            lastVerdict: 'passed',
+            lastSummary: String(result.summary ?? '').slice(0, 300),
+            reviewerModel: result.reviewerModel ?? null,
+            rounds: Number(prev.reworkCount ?? 0),
+            reworkCount: 0,
+            maxRounds: criticReworkLimit,
+            errorCount: 0,
+            at: clock(),
+          },
+          // 通过之后清掉返工清单：留着会让下一轮提示词继续骂人
+          criticFeedback: null,
+          updatedAt: clock(),
+        };
+      },
+    });
+    return out?.ok === true && out.changed !== false;
+  }
+
+  /** 评审不通过：写入 failed 评审记录 + 返工清单 + 轮次计数。 */
+  async function writeCriticFailed({
+    taskRun, verification, result, revision, targetKey, attemptId, rounds,
+  }) {
+    const conditions = pendingExpertConditions(verification);
+    const defects = (result.defects ?? []).slice(0, 8);
+    const note = defects[0] ?? String(result.summary ?? '');
+    const out = await taskRuns.mutate(taskRun.id, {
+      mutate: (cur) => {
+        if (!cur) return null;
+        if (cur.revision !== revision) return null;
+        if (cur.state === STATE.cancelled) return null;
+        const reviews = [...(cur.expertReviews ?? [])];
+        for (const condition of conditions) {
+          reviews.push({
+            taskRunId: cur.id,
+            revision,
+            conditionId: condition.id,
+            verdict: 'failed',
+            note: String(note ?? '').slice(0, 600),
+            attemptId,
+            source: 'critic_review',
+            reviewerModel: result.reviewerModel ?? null,
+            at: clock(),
+          });
+        }
+        const prev = cur.criticState ?? {};
+        return {
+          ...cur,
+          expertReviews: reviews.slice(-200),
+          criticState: {
+            ...prev,
+            lastTargetKey: targetKey,
+            lastVerdict: 'failed',
+            reworkCount: rounds,
+            maxRounds: criticReworkLimit,
+            reviewerModel: result.reviewerModel ?? null,
+            errorCount: 0,
+            at: clock(),
+          },
+          criticFeedback: {
+            revision,
+            round: rounds,
+            maxRounds: criticReworkLimit,
+            summary: String(result.summary ?? '').slice(0, 300),
+            defects,
+            reviewerModel: result.reviewerModel ?? null,
+            attemptId,
+            at: clock(),
+          },
+          updatedAt: clock(),
+        };
+      },
+    });
+    return out?.ok === true && out.changed !== false;
   }
 
   async function defaultVerify(taskRun, opts) {
@@ -2099,6 +2431,9 @@ export function createTaskSupervisor({
   async function bumpRevision(taskRunId, control = {}) {
     const result = await onControl(taskRunId, { ...control, type: CONTROL.revision });
     if (!result?.ok) return result;
+    // ★ 改版就从头算：上一版的评审结论（含返工轮次、缺陷清单、已通过指纹）
+    //   绑的都是旧目标，留着只会让新一轮被旧结论卡住或被旧清单误骂。
+    await patch(taskRunId, { criticState: null, criticFeedback: null });
     // ★ 改版后，上一版的子任务必须收口。
     //
     //   childrenOf 按 parentRevision 过滤：父任务一改版，旧子任务立刻
@@ -2158,6 +2493,8 @@ export function createTaskSupervisor({
     const sharedExtraTokens = Number(rootNow?.budget?.extraTokens ?? extraTokens ?? 0);
 
     const results = [];
+    /** 恢复成功、待统一唤醒的任务（子任务在前，根在最后）。 */
+    const resumedIds = [];
     const resumeBudgetPaused = async (candidate) => {
       const current = read(candidate.id);
       if (!current || current.state !== STATE.paused_budget) return null;
@@ -2177,7 +2514,11 @@ export function createTaskSupervisor({
         type: EVENT.resumed, revision: current.revision, at: clock(),
       });
       results.push({ taskRunId: current.id, ok: resumed.ok, code: resumed.code ?? null });
-      if (resumed.ok) notify(current.id);
+      // ★ 这里**不能**立刻 notify：整棵树是逐个恢复的，先醒来的根会看到
+      //   还在 paused_budget 的子任务，于是「全部子任务都在预算暂停」那条
+      //   判定又把根暂停回去 —— 扩额按钮就变成了假的（子任务永远起不来）。
+      //   统一在循环结束后一次性唤醒（子任务在内、根在最后）。
+      if (resumed.ok) resumedIds.push(current.id);
       return resumed;
     };
 
@@ -2186,6 +2527,8 @@ export function createTaskSupervisor({
     for (const candidate of candidates) await resumeBudgetPaused(candidate);
     // 本次目标若不在候选里（例如自身就是 root 但尚未建立 rootTaskId），兜底一次
     if (!candidates.some((c) => c.id === taskRunId)) await resumeBudgetPaused(run);
+    // 全部恢复完再唤醒：子任务先醒，根最后（否则根会看见还没恢复的子任务又暂停自己）
+    for (const id of [...resumedIds].reverse()) notify(id);
 
     // ★ 追加额度只解决「钱」的问题，不替用户做「要不要继续」的决定。
     //

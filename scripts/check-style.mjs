@@ -58,6 +58,8 @@ const PURE_MODULES = [
   'tasks/task-dag.js',
   // 根任务共享黑板：有界裁剪 / 幂等去重 / 字数硬控 / 交付产物条目
   'tasks/task-blackboard.js',
+  // 独立评审（Critic）纯判定：档位 / 目标指纹 / fail-closed 解析 / 选模策略
+  'tasks/task-critic.js',
 ];
 
 const TEST_OVERRIDES = new Map([
@@ -70,6 +72,8 @@ const TEST_OVERRIDES = new Map([
   // 拆成两个文件反而要重建两次同一套账本夹具。
   ['tasks/task-dag.js', 'long-task-dag-blackboard.mjs'],
   ['tasks/task-blackboard.js', 'long-task-dag-blackboard.mjs'],
+  // 评审回路的纯逻辑与端到端回路在同一个文件里（同一套账本夹具）
+  ['tasks/task-critic.js', 'long-task-critic.mjs'],
 ]);
 
 const FORBIDDEN_IMPORT =

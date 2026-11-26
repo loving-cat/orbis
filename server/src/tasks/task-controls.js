@@ -122,6 +122,31 @@ export function matchGate(taskRun, fact) {
 }
 
 /**
+ * 人工介入后重置「独立复核」的计数。
+ *
+ * ★ 为什么必须清：`reworkCount` 到上限会 block，`errorCount` 到上限也会 block。
+ *   用户手动解除阻塞 = 「我处理过了」（换了评审模型 / 改了产物 / 接受现状），
+ *   若这两个计数还留着，解除后立刻又到上限、又 block —— 按钮等于没用。
+ *
+ * 保留 `lastPassedKey` / `lastVerdict` / `lastSummary` 等历史字段：
+ * 那些是「审过什么」的证据，不影响新一轮能不能跑。
+ */
+export function criticResetFields(taskRun, now = Date.now()) {
+  const state = taskRun?.criticState;
+  if (!state || typeof state !== 'object') return {};
+  return {
+    criticState: {
+      ...state,
+      reworkCount: 0,
+      errorCount: 0,
+      lastError: null,
+      lastErrorAt: null,
+      resetAt: now,
+    },
+  };
+}
+
+/**
  * 应用一条控制事实。
  *
  * @param {object} p
@@ -180,6 +205,7 @@ export async function applyControl({
       //   必须一起清掉，否则恢复后仍会被判死、连普通失败都走不了自主重试。
       await patch(taskRunId, {
         recoverableBlock: null, retryAt: null, retry: null, stall: null, nonRetriableBlock: null,
+        ...criticResetFields(taskRun),
       });
     }
     notify(taskRunId);
@@ -201,6 +227,7 @@ export async function applyControl({
     // ★ 手动恢复就等于「我处理过了」：连不可恢复标记一起清，否则永远被判死
     await patch(taskRunId, {
       recoverableBlock: null, retryAt: null, retry: null, stall: null, nonRetriableBlock: null,
+      ...criticResetFields(taskRun),
     });
     notify(taskRunId);
     return { ok: true, applied: true, released: true };

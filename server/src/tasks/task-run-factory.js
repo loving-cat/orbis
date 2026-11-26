@@ -55,6 +55,14 @@ export function createTaskRun({
   budget = null,
   autonomous = null,
   autonomyReason = '',
+  /**
+   * 强制质检：即使目标里没有 expert 验收条件，也要跑一次独立复核。
+   *
+   * 为什么需要这个开关：让负责人“随手写一条 expert 条件只为触发评审”
+   * 等于用一个假条件绕过验收体系；而负责任务本来已有真实验收条件，
+   * 不该为了质检再拆一条。所以给它一个语义正确的开关。
+   */
+  criticRequired = false,
 } = {}) {
   if (!isId(id)) return reject(REJECT.badField, 'id', '任务 ID 形如 tr_xxx');
   if (!isId(requestId)) return reject(REJECT.badField, 'requestId', 'requestId 必须是稳定标识');
@@ -143,6 +151,8 @@ export function createTaskRun({
       //   true 时任务不因「等确认」停下，验收不过自己重试。
       autonomous: autonomous === true,
       autonomyReason: String(autonomyReason ?? '').slice(0, 200),
+      // 独立复核开关（见 task-critic.js 的 shouldRunCritic）
+      criticRequired: criticRequired === true,
     },
     // ---- 预算
     budget: budgetOut.budget,

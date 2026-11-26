@@ -78,7 +78,16 @@ export function planNextAction(taskRun, {
   }
 
   // 5) 验收中
-  if (taskRun.state === STATE.verifying) return { kind: NEXT.verify, why: '验收当前成果' };
+  //
+  //   ★ 评审员故障后会把 `retryAt` 排到 30 秒后。验收态以前直接走 verify，
+  //     于是父任务/子任务交付等任何一次 `notify` 都能穿透退避，反复去撞
+  //     （实测就是“评审模型 429 时一分钟内连撞十几次”）。这里先看退避。
+  if (taskRun.state === STATE.verifying) {
+    if (Number.isFinite(taskRun.retryAt) && now < taskRun.retryAt) {
+      return { kind: NEXT.wait, why: '等待独立复核重试到期' };
+    }
+    return { kind: NEXT.verify, why: '验收当前成果' };
+  }
 
   // 6) 在途执行
   //
