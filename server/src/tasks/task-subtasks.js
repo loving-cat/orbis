@@ -14,9 +14,19 @@
  * 派工时可以声明这份活要碰哪些文件。它**不进**业务身份指纹 ——
  * 同一份活重派时补一句文件清单不该变成另一条任务；复用同一条时把新声明的
  * 并进去即可。它的唯一用途是给调度器做互斥判定（见 task-supervisor）。
+ *
+ * ## 依赖（dependsOn）与把关关（checkpointBeforeRun）
+ *
+ * 和文件占用一样**不进**业务身份指纹：补一条依赖不等于换了一份活。
+ * 但依赖的合法性在落盘前就 fail-closed 核完：
+ *   · 只能依赖同一父任务、同一目标版本下真实存在的子任务（跨父/不存在 → 拒）；
+ *   · 不允许自依赖，也不允许形成任何长度的环（`detectDependencyCycle`）；
+ * 理由：依赖写错的代价是“下游永远不跑”或“拿了半份前置产物开干”，
+ * 而这两种在界面上都只能看到“任务卡住了”，排查成本极高。
  */
 import { createTaskRun } from './task-run-factory.js';
 import { fileClaimList } from './task-file-claims.js';
+import { normalizeDependsOn, detectDependencyCycle } from './task-dag.js';
 
 /** 稳定序列化：对象键排序，数组保持顺序。 */
 function stableJson(value) {
@@ -75,6 +85,19 @@ export async function createChildTask({
   priority = 0,
   /** 这份活要碰的文件（可空）。只用于调度互斥，不参与业务身份指纹。 */
   files = [],
+  /**
+   * 前置子任务（可空）：这些子任务**都已验收完成**之前，这份活不会被启动。
+   *
+   * 支持三种写法（都过同一套规范化）：
+   *   · 真实子任务 id（`tr_x_c1_ab12cd34`）；
+   *   · 计划步骤号（`2`，配合 `stepIds` 翻成真实子任务）；
+   *   · 混着写。
+   */
+  dependsOn = [],
+  /** 前置完成后要不要先唤醒负责人把关再放行（默认不要）。 */
+  checkpointBeforeRun = false,
+  /** 计划步骤号 → 真实子任务 id（负责人只记得住“第 2 条”）。 */
+  stepIds = null,
 }) {
   if (!parentTaskRun) return { ok: false, code: 'no_parent', text: '缺少父任务' };
   if (!goal || typeof goal !== 'object') return { ok: false, code: 'no_goal', text: '缺少子任务目标' };
@@ -89,6 +112,29 @@ export async function createChildTask({
   const claims = fileClaimList(files);
   const childId = parentId + '_c' + parentRevision + '_' + code;
   const requestId = parentId + '_r' + parentRevision + '_c' + code;
+
+  // ★ 依赖必须在落盘前核完（fail-closed）：环与越界依赖一旦写进去，
+  //   下游就永远不会跑，而界面上只会看到“排队中”。
+  const siblings = childrenOf(taskRuns, parentTaskRun).filter((run) => run.id !== childId);
+  const deps = normalizeDependsOn(dependsOn, siblings.map((run) => run.id), {
+    stepIds,
+    selfId: childId,
+  });
+  if (deps.rejected.length) {
+    const why = deps.rejected
+      .map((item) => (item.reason === 'self'
+        ? `子任务不能依赖自己（${String(item.raw)}）`
+        : `依赖 ${String(item.raw)} 不是这个任务下已存在的子任务`))
+      .join('；');
+    return { ok: false, code: 'bad_depends_on', text: why };
+  }
+  const cycle = detectDependencyCycle([
+    ...siblings.map((run) => ({ id: run.id, dependsOn: run.dependsOn ?? [] })),
+    { id: childId, dependsOn: deps.ids },
+  ]);
+  if (!cycle.ok) {
+    return { ok: false, code: 'dependency_cycle', text: '依赖成环：' + cycle.cycle.join(' → ') };
+  }
 
   const built = createTaskRun({
     id: childId,
@@ -122,6 +168,11 @@ export async function createChildTask({
       dispatchPriority: Number.isFinite(Number(priority)) ? Number(priority) : 0,
       // 这份活声明的文件占用：调度器据此把撞车的活排开（同一时刻只跑一份）。
       fileClaims: claims.files,
+      // ★ 受控 DAG：前置没完成就不启动。checkpoint 是“完成后先由负责人点头”。
+      dependsOn: deps.ids,
+      checkpointBeforeRun: checkpointBeforeRun === true,
+      checkpointApprovedAt: null,
+      checkpointApprovedBy: null,
     }),
     at: clock(),
   });
@@ -135,6 +186,10 @@ export async function createChildTask({
         return { ok: false, code: 'dispatch_conflict', text: '同一派工身份的内容不一致，拒绝复用' };
       }
       await mergeClaims(existing?.id, claims.files, taskRuns, clock);
+      const linkedA = await mergeChildLinks(taskRuns, existing?.id, {
+        dependsOn: deps.ids, checkpointBeforeRun, siblings, clock,
+      });
+      if (!linkedA.ok) return linkedA;
       return { ok: true, child: existing, reused: true };
     }
     return { ok: false, code: accepted.code ?? 'accept_failed', text: accepted.text };
@@ -147,12 +202,55 @@ export async function createChildTask({
       return { ok: false, code: 'dispatch_conflict', text: '同一派工身份的内容不一致，拒绝复用' };
     }
     await mergeClaims(child?.id, claims.files, taskRuns, clock);
+    const linkedB = await mergeChildLinks(taskRuns, child?.id, {
+      dependsOn: deps.ids, checkpointBeforeRun, siblings, clock,
+    });
+    if (!linkedB.ok) return linkedB;
     return { ok: true, child, reused: true };
   }
   await taskRuns.mutate(child.id, {
     mutate: (cur) => (cur ? { ...cur, parentRevision, dispatchFingerprint: fingerprint, updatedAt: clock() } : null),
   });
   return { ok: true, child, reused: false };
+}
+
+/**
+ * 把新声明的依赖并进已有子任务（复用同一条活时用）。
+ *
+ * 并集而不是覆盖：同一份活重派时可能只补一句「还有这条依赖」，
+ * 把旧的清掉会让先前的等待丢失 —— 下游会抢跑。
+ *
+ * 依赖并集同样要过环检测：两份重派各自只合法，合起来可能就成环了。
+ */
+async function mergeChildLinks(taskRuns, childId, {
+  dependsOn = [], checkpointBeforeRun = false, siblings = [], clock = () => Date.now(),
+} = {}) {
+  if (!childId) return { ok: true };
+  const others = siblings.filter((run) => run.id !== childId).map((run) => run.id);
+  const out = await taskRuns.mutate(childId, {
+    mutate: (cur) => {
+      if (!cur) return null;
+      const mergedDeps = normalizeDependsOn([...(cur.dependsOn ?? []), ...dependsOn], others, { selfId: childId });
+      const cycle = detectDependencyCycle([
+        ...siblings.filter((run) => run.id !== childId)
+          .map((run) => ({ id: run.id, dependsOn: run.dependsOn ?? [] })),
+        { id: childId, dependsOn: mergedDeps.ids },
+      ]);
+      if (!cycle.ok) {
+        return { __reject: { ok: false, code: 'dependency_cycle', text: '依赖成环：' + cycle.cycle.join(' → ') } };
+      }
+      const gate = checkpointBeforeRun === true || cur.checkpointBeforeRun === true;
+      const sameDeps = mergedDeps.ids.join('|') === (cur.dependsOn ?? []).join('|');
+      if (sameDeps && gate === (cur.checkpointBeforeRun === true)) return null;
+      return {
+        ...cur, dependsOn: mergedDeps.ids, checkpointBeforeRun: gate, updatedAt: clock(),
+      };
+    },
+  });
+  if (out?.ok === false) {
+    return { ok: false, code: out.code ?? 'merge_failed', text: out.text ?? '子任务依赖没写进去' };
+  }
+  return { ok: true };
 }
 
 /**

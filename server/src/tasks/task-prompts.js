@@ -3,7 +3,18 @@
  *
  * 负责人分三个阶段：规划派活、验收补派、最终交付。提示词只说阶段职责、
  * 目标与已有成果，不泄露内部实现细节；交付摘要用确定性文本，不调用模型。
+ *
+ * ## 两块必需件的注入点
+ *
+ * 受控 DAG 与共享黑板的价值全在「自动出现在提示词里」：
+ *   · 成员开工时能看到**前置的交付**（上游产物路径 + 摘要）与**全组黑板**；
+ *   · 负责人每一轮都能看到黑板与**待放行的 checkpoint** 清单。
+ * 不注入的话，前置产物与全组约束等于不存在，成员会把同一件事重做一遍。
+ * 两份注入都走纯函数（`collectUpstreamContext` / `renderBlackboard`），
+ * 且只在该出现的时候出现（没有前置 / 黑板空就一个字都不加）。
  */
+import { collectUpstreamContext, pendingCheckpointKids } from './task-dag.js';
+import { renderBlackboard } from './task-blackboard.js';
 export const LEAD_PHASE = Object.freeze({
   plan: 'plan',
   verify: 'verify',
@@ -17,9 +28,14 @@ export const LEAD_PHASE = Object.freeze({
  * @param {string} p.phase 见 LEAD_PHASE
  * @param {object} p.taskRun
  * @param {string} [p.extra]
+ * @param {Array<object>} [p.children] 同父同版本的子任务（算待放行的 checkpoint 用）
+ * @param {object} [p.blackboard] 根任务共享黑板（不传就读 `taskRun.blackboard`）
+ * @param {Function} [p.nameOf] botId → 名字
  * @returns {string}
  */
-export function buildLeadPrompt({ phase, taskRun, extra = '' } = {}) {
+export function buildLeadPrompt({
+  phase, taskRun, extra = '', children = [], blackboard = null, nameOf = null,
+} = {}) {
   const goal = taskRun?.goal ?? {};
   // 私聊 direct：主控亲自干，没有部门、没有成员可派
   const solo = taskRun?.owner?.roomKind === 'dm';
@@ -51,6 +67,32 @@ export function buildLeadPrompt({ phase, taskRun, extra = '' } = {}) {
           .join('\n')
         + '\n换一个成员、把活拆小一点重新派，或者你自己上手（自己做的要说一句「这件我直接做了，因为…」）。'
         + '不要原样再派给同一个人。',
+    );
+  }
+
+  // ★ 共享黑板：全组共用的事实与约束。每轮都读一遍，按它对齐 ——
+  //   否则同一件事会被不同人按不同口径做一遍。
+  const board = renderBlackboard(blackboard ?? taskRun?.blackboard ?? null);
+  if (board) {
+    lines.push(board);
+    lines.push('上面是全组共用的事实与约束，按它对齐；有新的决定/约束用 task_blackboard 记下来（自动给所有人看）。');
+  }
+
+  // ★ 待放行的 checkpoint：它们停着等这一声「可以开始了」。
+  //   不主动列出来的话，负责人只看到「还缺」或「推进中」，不会想到是自己没放行。
+  const checkpoints = pendingCheckpointKids(children);
+  if (checkpoints.length) {
+    const detail = checkpoints.map((k) => {
+      const title = String(k?.goal?.requirement ?? '').slice(0, 80);
+      const upstream = collectUpstreamContext(k, children, { maxChars: 400, nameOf });
+      return `- ${title}（子任务 ${k.id}，设了「完成后先由你放行」，正在等你）`
+        + (upstream ? '\n  ' + upstream.split('\n').join('\n  ') : '');
+    }).join('\n');
+    lines.push(
+      '这些分工的前置已经都交付了，但设了「完成后先由你放行」，现在停着等你把关：\n'
+        + detail
+        + '\n审一下前置产物够不够：够就调用 approve_subtask_checkpoint 放行（放行后它会立刻自动开跑）；'
+        + '不够就改派或取消这份分工。不要放着不管。',
     );
   }
 
@@ -136,12 +178,23 @@ export function continuationNote(taskRun, { autonomous = false } = {}) {
 /**
  * 成员执行提示词：只拿被派的那份工作，不越权改目标。
  *
+ * 额外自动注入两块短上下文（都只在有内容时注入）：
+ *   · `upstreamContext`：前置子任务已经交了的东西（产物路径 + 摘要）——
+ *     不说的话成员会把上游刚做完的活再做一遍；
+ *   · `blackboard`：根任务共享的决定/约束/事实 —— 不说的话同一件事多人多口径。
+ *
  * @param {object} p
  * @param {object} p.childTaskRun
  * @param {object} [p.parentTaskRun]
+ * @param {boolean} [p.autonomous]
+ * @param {Array<object>} [p.siblings] 同父同版本的子任务（取前置交付用）
+ * @param {object} [p.blackboard] 根任务共享黑板（不传就读 `parentTaskRun.blackboard`）
+ * @param {Function} [p.nameOf] botId → 名字
  * @returns {string}
  */
-export function buildMemberPrompt({ childTaskRun, parentTaskRun, autonomous = false } = {}) {
+export function buildMemberPrompt({
+  childTaskRun, parentTaskRun, autonomous = false, siblings = [], blackboard = null, nameOf = null,
+} = {}) {
   const goal = childTaskRun?.goal ?? {};
   const lines = [
     `你被分配的子任务：${goal.requirement ?? ''}`,
@@ -151,6 +204,12 @@ export function buildMemberPrompt({ childTaskRun, parentTaskRun, autonomous = fa
   if (parentTaskRun?.goal?.requirement) {
     lines.push(`所属目标：${parentTaskRun.goal.requirement}`);
   }
+  // ★ 前置交付：ONLY 已完成的那几个（还在跑的不算）。
+  const upstream = collectUpstreamContext(childTaskRun, siblings, { nameOf });
+  if (upstream) lines.push(upstream);
+  // ★ 全组黑板：约束/决定/事实/别人交了什么。
+  const board = renderBlackboard(blackboard ?? parentTaskRun?.blackboard ?? null);
+  if (board) lines.push(board);
   lines.push('做完把结果交回给负责人；不要改上级目标。');
   if (autonomous) lines.push(AUTONOMY_RULE);
   return lines.join('\n');

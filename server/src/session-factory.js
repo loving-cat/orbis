@@ -33,8 +33,9 @@ import { probeSandbox } from './sandbox.js';
 import { buildChiefTools, buildCommonTools } from './tools.js';
 import { buildIntakeTools, intakeEnabled } from './coordination/intake-tool.js';
 import { buildReportTool } from './tasks/task-report-tool.js';
-import { buildMemberTaskTool } from './tasks/task-member-tool.js';
+import { buildMemberTaskTool, buildCheckpointApproveTool } from './tasks/task-member-tool.js';
 import { buildPlanTool } from './tasks/task-plan-tool.js';
+import { buildBlackboardTool } from './tasks/task-blackboard-tool.js';
 import { buildGitTools } from './git-tools.js';
 import { buildExpertReviewTool } from './tasks/task-expert-tool.js';
 import { buildTaskInsightTools } from './coordination/task-insight-tool.js';
@@ -202,7 +203,15 @@ export function createSessionBuilder({
       ? [
         buildPlanTool({ runner, store, roomId, botId }),
         buildMemberTaskTool({ runner, store, roomId, botId }),
+        // ★ 放行 checkpoint：只有本部门负责人能调（工具内部再核一次真实角色）
+        buildCheckpointApproveTool({ runner, store, roomId, botId }),
       ]
+      : [];
+    // ★ 共享黑板：**负责人与成员都要能用** ——
+    //   约束/决定往往是无意中发现的（"这列日期是 UTC"），只给负责人等于丢一半。
+    //   写入的根任务由受管上下文决定，成员跨任务写不进去。
+    const blackboardTools = wantsReportTool
+      ? [buildBlackboardTool({ runner, store, roomId, botId })]
       : [];
     // 验收能力与派工能力分开：单成员部门仍可有真实负责人做专业验收，只是不能派工。
     const expertTools = wantsReportTool && isRoomLead(room, botId)
@@ -242,6 +251,7 @@ export function createSessionBuilder({
           ...commonTools,
           ...reportTools,
           ...memberTools,
+          ...blackboardTools,
           ...expertTools,
           ...gitTools,
           ...intakeTools,

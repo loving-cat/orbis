@@ -22,6 +22,7 @@ import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { readManagedSubmission, SUBMISSION } from '../coordination/task-context.js';
 import { fileClaimList } from './task-file-claims.js';
+import { detectDependencyCycle, normalizeDependsOn } from './task-dag.js';
 
 const ok = (text, details = {}) => ({ content: [{ type: 'text', text }], details });
 const error = (text) => ({ content: [{ type: 'text', text }], isError: true });
@@ -33,7 +34,25 @@ const MAX_STEPS = 12;
 const MAX_STEP_CHARS = 300;
 
 /**
+ * 一条 step 的依赖步骤号（已洗成数字）。
+ *
+ * 只允许指向“已经出现的更早条目”：写在后面的依赖要么是笔误，要么就是环。
+ * 洗不掉的原始值记到 `dependsOnRejected`，由 `normalizePlan` 统一报错 ——
+ * 默默丢掉一条依赖等于偷瞄改计划，下游会提前开跑。
+ */
+function depsOfStep(raw, taken) {
+  const known = [];
+  for (let i = 1; i <= taken; i += 1) known.push(String(i));
+  const out = normalizeDependsOn(raw?.dependsOn, known);
+  return { ids: out.ids.map((n) => Number(n)), rejected: out.rejected };
+}
+
+/**
  * 把负责人给的分工整理成可存的结构。
+ *
+ * 每条可以带依赖（前置**步骤序号**，如 `[1, 2]`）与把关位（`checkpoint`）：
+ *   · 依赖只允许指向本计划里已经出现的更早条目（向后依赖会成环）；
+ *   · 整份计划落盘前跑一次环检测，有环就整份拒收（fail-closed）。
  *
  * @param {Array<object>} steps
  * @param {Array<object>} members 部门成员（用于解析 assignee）
@@ -60,6 +79,7 @@ export function normalizePlan(steps, members = []) {
     const hit = byId.get(who) ?? byName.get(who) ?? null;
     const botId = hit ? String(hit.id) : null;
     const displayName = String(hit?.name ?? '').trim() || who || '未指定';
+    const deps = depsOfStep(raw, out.length);
     out.push({
       task,
       memberName: displayName,
@@ -67,17 +87,51 @@ export function normalizePlan(steps, members = []) {
       deliverable: String(raw?.deliverable ?? '').trim().slice(0, MAX_STEP_CHARS),
       // 这条分工要动哪些文件。派活时带上它，搅车的活才会排队。
       files: fileClaimList(raw?.files).files,
+      // ★ 受控 DAG：前置步骤号 + 要不要先由负责人把关。
+      //   步骤号只认“本计划里已出现的更早条目”，否则就是环或笔误。
+      dependsOn: deps.ids,
+      dependsOnRejected: deps.rejected,
+      checkpoint: raw?.checkpoint === true,
     });
   }
   if (!out.length) return { ok: false, text: '没有可用的分工条目（每条要有 task）。' };
+  const badDeps = [];
+  out.forEach((step, index) => {
+    for (const bad of step.dependsOnRejected ?? []) {
+      badDeps.push(`第 ${index + 1} 条的依赖 ${String(bad.raw)} 不是前面已有的步骤号`);
+    }
+  });
+  if (badDeps.length) return { ok: false, text: badDeps.join('；') + '（只能依赖排在它前面的条目）' };
+  for (const step of out) delete step.dependsOnRejected;
+  // 整份计划一次环检测：单条合法、合起来成环的情形（A→C, B→A…）只能在这里拦。
+  const cycle = detectDependencyCycle(out.map((step, index) => ({
+    id: String(index + 1),
+    dependsOn: (step.dependsOn ?? []).map((n) => String(n)),
+  })));
+  if (!cycle.ok) {
+    return { ok: false, text: '这份计划的依赖成环：' + cycle.cycle.join(' → ') + '（只能依赖排在它前面的条目）' };
+  }
   return { ok: true, steps: out };
 }
 
-/** 把计划渲染成给模型/用户看的一段文本。 */
+/** 把计划渲染成给模型/用户看的一段文本。
+ *
+ * 依赖与把关位必须看得见：负责人之后靠这段对齐，用户也靠它判断
+ * “为什么第 3 条还没开始”。
+ */
 export function renderPlan(steps) {
   if (!Array.isArray(steps) || !steps.length) return '';
   return steps
-    .map((s, i) => (i + 1) + '. ' + s.memberName + '：' + s.task + (s.deliverable ? '（交付：' + s.deliverable + '）' : ''))
+    .map((s, i) => {
+      const deps = (s.dependsOn ?? []).filter((n) => n !== i + 1);
+      const note = [
+        deps.length ? '等第 ' + deps.join('、') + ' 条完成' : '',
+        s.checkpoint === true ? '完成后先叫你把关' : '',
+      ].filter(Boolean).join('；');
+      return (i + 1) + '. ' + s.memberName + '：' + s.task
+        + (s.deliverable ? '（交付：' + s.deliverable + '）' : '')
+        + (note ? '［' + note + '］' : '');
+    })
     .join('\n');
 }
 
@@ -136,6 +190,16 @@ export function buildPlanTool({ runner, store, roomId, botId }) {
             Type.Array(Type.String(), {
               description:
                 '这条分工要改的文件/目录（仓库内相对路径）。填了就能把撞车的活排开；不确定就留空。',
+            }),
+          ),
+          dependsOn: Type.Optional(
+            Type.Array(Type.Number(), {
+              description: '前置步骤序号（如 [1, 2]）：它们都交付后这条才能开始。只能指向排在它前面的条目。',
+            }),
+          ),
+          checkpoint: Type.Optional(
+            Type.Boolean({
+              description: '前置都完成后，先把你（负责人）叫起来审一下再放行这一条（默认直接开跑）。',
             }),
           ),
         }),

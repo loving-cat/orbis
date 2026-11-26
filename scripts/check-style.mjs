@@ -54,6 +54,10 @@ const PURE_MODULES = [
   'department-preview.js',
   // 用户数据目录规则：只做平台路径计算，不建目录（migrate 命令与 config 共用）
   'user-dirs.js',
+  // 受控 DAG 判定：依赖规范化 / 环检测 / 四种依赖状态 / 上游上下文压缩
+  'tasks/task-dag.js',
+  // 根任务共享黑板：有界裁剪 / 幂等去重 / 字数硬控 / 交付产物条目
+  'tasks/task-blackboard.js',
 ];
 
 const TEST_OVERRIDES = new Map([
@@ -62,6 +66,10 @@ const TEST_OVERRIDES = new Map([
   ['chat-redact.js', 'jarvis-mode.mjs'],
   // 复盘提示词/解析的回归测试在 lesson-reflect.mjs（同一个文件覆盖 build + parse）
   ['lesson-reflect-prompt.js', 'lesson-reflect.mjs'],
+  // DAG 与黑板两份纯逻辑共用同一个回归文件：它们在同一条链路上（依赖→交付→黑板），
+  // 拆成两个文件反而要重建两次同一套账本夹具。
+  ['tasks/task-dag.js', 'long-task-dag-blackboard.mjs'],
+  ['tasks/task-blackboard.js', 'long-task-dag-blackboard.mjs'],
 ]);
 
 const FORBIDDEN_IMPORT =
