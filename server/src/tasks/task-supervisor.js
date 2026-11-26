@@ -37,7 +37,7 @@ import {
 import { tokenCountOf } from './task-budget.js';
 import { effectivePerBotLimit, planWorkerSlot } from './task-worker-pool.js';
 import {
-  DEFAULT_WORKTREE_MODE, resolveWorktreeMode, shouldUseWorktree, worktreesBypassFileClaims,
+  DEFAULT_WORKTREE_MODE, resolveWorktreeMode, shouldUseWorktree,
 } from './task-worktree-policy.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
 
@@ -529,7 +529,7 @@ export function createTaskSupervisor({
     if (files.length) {
       for (const entry of claimedFiles) {
         if (!claimsOverlap(files, entry.files)) continue;
-        if (worktreesBypassFileClaims(kid, entry.kid)) continue;
+        if (canBypassClaimsForWorktree(kid, entry.kid)) continue;
         return false;
       }
     }
@@ -1581,7 +1581,8 @@ export function createTaskSupervisor({
   }
 
   /** 执行一步：先持久（失败即止）→ 预算 → 执行 → 结算。 */
-  async function doLeadStep(taskRun, action) {
+  async function doLeadStep(initialTaskRun, action) {
+    let taskRun = initialTaskRun;
     const attemptId = nextAttemptId(taskRun);
     const botId = taskRun.owner?.leadBotId ?? null;
     const isChild = Boolean(taskRun.parentTaskId);
@@ -1610,6 +1611,11 @@ export function createTaskSupervisor({
         await block(taskRun.id, 'Worktree 准备失败：' + String(prepared.text ?? prepared.code ?? '未知原因').slice(0, 200));
         return { status: 'blocked', why: 'worktree_prepare_failed' };
       }
+      // ★ 必须换成**落盘后**的最新快照：`prepareWorktree` 把 worktree 写进了账本，
+      //   手里这份旧快照还没有它 —— 不刷新的话，成员第 1 轮拿到的提示词里
+      //   就不会有 `worktreePromptNote`（"你正在独立 worktree 里开发"），
+      //   而 `workDir` 也会是 null（在主仓里改，直接污染主工作区）。
+      taskRun = read(taskRun.id) ?? taskRun;
     }
 
     /**
@@ -1948,8 +1954,23 @@ export function createTaskSupervisor({
     // ★ C4：双方都在各自独立的 worktree 里时，磁盘是真分开的 ——
     //   同文件不再互相阻塞，冲突留到合并阶段由仓库锁 + git 确定性处理。
     const other = read(blocking.taskRunId ?? blocking.holderId ?? blocking.id ?? '') ?? null;
-    if (other && worktreesBypassFileClaims(taskRun, other)) return null;
+    if (other && canBypassClaimsForWorktree(taskRun, other)) return null;
     return blocking;
+  }
+
+  /**
+   * 这两个子任务之间的文件互斥能不能放宽。
+   *
+   * ★ 必须先受 `worktreeActive` 守卫：`ORBIS_TASK_WORKTREE=off` 或宿主没注入
+   *   `worktreeManager` 时，`useWorktree` 只是一个标记 —— 两边其实都在主工作区里
+   *   改同一批文件，放宽就是"两个人同时写同一个文件"。
+   * 另外双方都要么已经有活跃的 worktree（`status === 'active'`），要么这一次
+   * 确实会开（`wantsWorktree`）—— 后者让 `auto` 模式在首轮（prepare 之前）也能并发。
+   */
+  function canBypassClaimsForWorktree(kidA, kidB) {
+    if (!worktreeActive) return false;
+    const isolated = (kid) => kid?.worktree?.status === 'active' || wantsWorktree(kid);
+    return isolated(kidA) && isolated(kidB);
   }
 
   /**

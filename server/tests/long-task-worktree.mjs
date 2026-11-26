@@ -46,7 +46,9 @@ const { createWorktreeManager } = await import(src('tasks/task-worktree.js'));
 const { buildMemberPrompt } = await import(src('tasks/task-prompts.js'));
 const { verifyTaskRun } = await import(src('tasks/task-verification.js'));
 const { createSessionBuilder } = await import(src('session-factory.js'));
+const { sessionLaneKey } = await import(src('runner/session-lanes.js'));
 
+const isWindows = process.platform === 'win32';
 const results = [];
 async function test(name, fn) {
   try {
@@ -594,6 +596,187 @@ await test('14. ★ session-factory 传 workDir：cwd/沙箱都指向 worktree�
   assert.equal(real(cwd), real(workDir), `cwd 应指向 worktree，实际 ${cwd}`);
   assert.equal(store.sessionFileFor(dm.id, bot.id), null, '不得写 store sessionFile');
   void shellWorkDir;
+});
+
+await test('16. ★ 首轮成员提示词就带 worktree 说明（快照必须刷新）', async () => {
+  const rootId = await makeRoot();
+  const kid = await addKid(rootId, { botId: memberA.id, requirement: '写 src/prompt-note.js' });
+  const prompts = [];
+  const sup = makeSupervisor({
+    executeMember: async (args) => {
+      prompts.push({ prompt: String(args?.prompt ?? ''), workDir: args?.workDir ?? null });
+      write(path.join(args.workDir ?? repoDir, 'src/prompt-note.js'), 'export const p = 1;\n');
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: ['src/prompt-note.js'] };
+    },
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [kid], (rs) => [STATE.completed, STATE.blocked, STATE.cancelled].includes(rs[0].state));
+  sup.dispose();
+  assert.equal(runs[0].state, STATE.completed, `应交付，实际 ${runs[0].state}`);
+  assert.ok(prompts.length >= 1, '成员应至少跑一轮');
+  const first = prompts[0];
+  const wt = taskRuns.read(kid).taskRun.worktree;
+  assert.match(first.prompt, /独立的 Git worktree/, '第 1 轮就要看到 worktree 说明（旧实现读到的是 prepare 之前的旧快照）');
+  assert.match(first.prompt, new RegExp(String(wt.worktreePath).replace(/\\/g, '\\\\')), '提示词里要有真实 worktree 路径');
+  assert.match(first.prompt, new RegExp(String(wt.branch).replace(/\//g, '\\/')), '提示词里要有分支名');
+  assert.equal(first.workDir, wt.worktreePath, 'workDir 也要是落盘后的值');
+});
+
+await test('17. ★ worktreeActive=false 时不放宽 fileClaims（显式 useWorktree 也照旧串行）', async () => {
+  const rootId = await makeRoot();
+  const kids = [
+    await addKid(rootId, { botId: memberA.id, files: ['src/contended.js'], requirement: '改 contended（A）' }),
+    await addKid(rootId, { botId: memberB.id, files: ['src/contended.js'], requirement: '改 contended（B）' }),
+  ];
+  let inflight = 0;
+  let max = 0;
+  // ★ 不注入 worktreeManager = 关闭隔离：useWorktree 只是标记，两边都在主工作区改同一文件
+  const sup = createTaskSupervisor({
+    taskRuns,
+    maxSteps: 10,
+    maxStallRounds: 5,
+    execute: async () => ({ ok: true, stop: 'returned' }),
+    executeMember: async (args) => {
+      inflight += 1;
+      max = Math.max(max, inflight);
+      await sleep(90);
+      write(path.join(repoDir, 'src/contended.js'), `export const who = '${args.taskRun.id}';\n`);
+      inflight -= 1;
+      return { ok: true, stop: 'returned', appliedCompletion: true };
+    },
+    maxPerBot: 3,
+    worktreeManager: null,
+    criticMode: 'off',
+    verify: async () => ({ passed: true, reason: '机械通过' }),
+    access: { stat: async (ref) => ({ exists: Boolean(ref) }), readText: async () => ({ ok: false }), resolveRef: (r) => r },
+    clock: () => Date.now(),
+    log: () => {},
+    botNameOf: (id) => store.getBot(id)?.name ?? '',
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, kids, (rs) => rs.every((r) => [STATE.completed, STATE.blocked, STATE.cancelled].includes(r.state)));
+  sup.dispose();
+  for (const run of runs) assert.notEqual(run.state, STATE.blocked, `不应受阻：${run.flags?.blockedReason ?? ''}`);
+  assert.equal(max, 1, `关闭 worktree 时同一文件绝不能并发（实测 ${max}）`);
+});
+
+await test('18. ★ prepareWorktree 复用保留原 baseHead/createdAt + 半残留恢复 + flags.worktreeRepo', async () => {
+  const run = fakeTaskRun('tr_wt_resume');
+  const first = await manager.prepareWorktree({ taskRun: run });
+  assert.equal(first.ok, true, first.text ?? '');
+  const baseHead = first.worktree.baseHead;
+  const createdAt = first.worktree.createdAt;
+  assert.ok(baseHead && createdAt);
+
+  // 兄弟任务把主仓 HEAD 推进一步
+  write(path.join(repoDir, 'sibling.txt'), 'sibling\n');
+  git(repoDir, ['add', '-A']);
+  git(repoDir, ['commit', '-q', '-m', 'sibling advance']);
+  const newerHead = git(repoDir, ['rev-parse', 'HEAD']).out.trim();
+  assert.notEqual(newerHead, baseHead);
+
+  // 再次 prepare（幂等复用）→ 原 baseHead / createdAt 必须保留
+  const stored = { ...run, worktree: first.worktree };
+  const again = await manager.prepareWorktree({ taskRun: stored });
+  assert.equal(again.ok, true);
+  assert.equal(again.reused, true);
+  assert.equal(again.worktree.baseHead, baseHead, '复用时不能把 baseHead 换成主仓新 HEAD');
+  assert.equal(again.worktree.createdAt, createdAt, '复用时保留最初创建时间');
+
+  // 半残留 1：删掉目录但保留分支 → 应挂回已有分支（不能再 -b）
+  const branch = again.worktree.branch;
+  const wtPath = again.worktree.worktreePath;
+  git(repoDir, ['worktree', 'remove', '--force', wtPath]);
+  assert.equal(fs.existsSync(wtPath), false);
+  assert.equal(git(repoDir, ['rev-parse', '--verify', `refs/heads/${branch}`]).ok, true, '分支应还在');
+  const reattach = await manager.prepareWorktree({ taskRun: { ...stored, worktree: again.worktree } });
+  assert.equal(reattach.ok, true, `挂回分支应成功：${reattach.text ?? reattach.code ?? ''}`);
+  assert.equal(fs.existsSync(path.join(wtPath, '.git')), true, isWindows ? '目录应重新挂接' : 'worktree 应重新挂接');
+
+  // 半残留 2：目录还在但分支被删 → 补回分支引用（不返回虚假 ok）
+  git(repoDir, ['worktree', 'remove', '--force', wtPath]);
+  git(repoDir, ['branch', '-D', branch]);
+  fs.mkdirSync(wtPath, { recursive: true });
+  write(path.join(wtPath, 'half.txt'), 'half\n');
+  const restored = await manager.prepareWorktree({ taskRun: { ...stored, worktree: again.worktree } });
+  assert.equal(restored.ok, true, `补回分支应成功：${restored.text ?? restored.code ?? ''}`);
+  assert.equal(git(repoDir, ['rev-parse', '--verify', `refs/heads/${branch}`]).ok, true, '分支应被补回');
+
+  // 只传 flags.worktreeRepo → 能解析到子仓库
+  const subRepo = makeRepo(path.join(repoDir, 'sub-repo'));
+  const viaFlags = await manager.prepareWorktree({
+    taskRun: { id: 'tr_wt_viaflags', parentTaskId: 'p1', flags: { worktreeRepo: 'sub-repo' }, goal: { requirement: 'x' } },
+  });
+  assert.equal(viaFlags.ok, true, viaFlags.text ?? '');
+  assert.equal(fs.realpathSync.native(viaFlags.worktree.repoDir), fs.realpathSync.native(subRepo), '应解析到 flags.worktreeRepo');
+});
+
+await test('19. ★ 只传 workDir 不传 cloneId：主会话不受影响，临时泳道用完即弃', async () => {
+  const { executeTurn } = await import(src('runner/turn-executor.js'));
+  const bot = store.createBot({ name: '主会话守卫', role: 'main' });
+  const dm = store.ensureDm(bot.id);
+  const workDir = path.join(workspace, '.orbis-worktrees', 'tr_lane_only');
+  fs.mkdirSync(workDir, { recursive: true });
+  const mainKey = `${dm.id}:${bot.id}`;
+  const mainSession = { id: 'main-session', busy: false, session: { model: { provider: 'cloud', id: 'x' } } };
+  const disposed = [];
+  let builtKey = null;
+  const runner = {
+    config: store.config ?? { workspace, dataDir: path.join(fixture, 'data'), runTimeoutMs: 60_000 },
+    store,
+    bus: { emit: () => {} },
+    model: { provider: 'cloud', id: 'x' },
+    modelLabel: () => 'cloud/x',
+    sessions: new Map([[mainKey, mainSession]]),
+    reportScopes: new Map(),
+    managedInflight: new Map(),
+    dispatching: new Set(),
+    aborting: new Set(),
+    store_: null,
+    ensureSession: async (roomId, botId, opts = {}) => {
+      // 与 pi-runner 同样的键规则（这是被验证的部分）
+      builtKey = sessionLaneKey({ roomId, botId, cloneId: opts.cloneId, modelOverride: opts.modelOverride });
+      const entry = {
+        session: {
+          model: { provider: 'cloud', id: 'x' },
+          subscribe: () => () => {},
+          prompt: async () => {},
+          dispose: async () => { disposed.push(builtKey); },
+        },
+        bot: store.getBot(botId),
+        laneKey: builtKey,
+        managedContext: null,
+        unsubscribe: null,
+      };
+      // 真的登记进池子，`releaseTurnLane` 才有东西可清（与生产一致）
+      runner.sessions.set(builtKey, entry);
+      return entry;
+    },
+  };
+  runner.flushProviderUpdates = () => {};
+  runner.providerUpdates = { withLease: (fn) => fn(null), flush: () => [], has: () => false };
+  runner.providerForBot = () => 'cloud';
+  runner.groupLimits = () => ({ turnMaxMs: 60_000 });
+  runner.registerTurn = () => {};
+  runner.unregisterTurn = () => {};
+  runner.modelForBot = () => ({ provider: 'cloud', id: 'x' });
+  runner.currentTaskContext = () => null;
+  runner.candidateDepartmentIds = () => [];
+  runner.activateReportScope = (key, c) => { runner.reportScopes.set(key, c); return true; };
+  runner.releaseReportScope = (key, c) => { if (runner.reportScopes.get(key) === c) runner.reportScopes.delete(key); };
+  runner.modelGroups = { list: () => [], get: () => null };
+  runner.resolveModel = () => null;
+
+  await executeTurn(runner, dm.id, bot.id, '写一段代码', { workDir, persist: false }).catch(() => null);
+  // 主会话必须完好无损（没被替换、没被 dispose）
+  assert.equal(runner.sessions.get(mainKey), mainSession, '主会话对象必须原样保留');
+  assert.equal(runner.sessions.has(mainKey), true);
+  // 临时泳道：用 worktree 任务 id 兜底成 cloneId，结束后被清掉并 dispose
+  const laneKey = `${dm.id}:${bot.id}#clone_`;
+  const leftover = [...runner.sessions.keys()].filter((k) => k.startsWith(laneKey));
+  assert.deepEqual(leftover, [], `临时泳道应已释放，实测 ${JSON.stringify([...runner.sessions.keys()])}`);
+  assert.ok(builtKey && builtKey.includes('#clone_'), `应走独立泳道，实际 ${builtKey}`);
+  assert.equal(disposed.length, 1, '临时泳道必须 dispose');
 });
 
 await test('15. 行预算：pi-runner ≤ 850、turn-executor ≤ 1350', () => {

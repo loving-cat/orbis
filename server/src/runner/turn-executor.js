@@ -236,9 +236,16 @@ async function runWithLease(
 
   let entry;
   let collectedArtifacts = [];
+  /**
+   * ★ 只要带了 `workDir`（worktree），就**必须**有自己的泳道：
+   *   否则会命中 `sessions.get(roomId:botId)` 的主持久化会话 —— 成员的编码活
+   *   就跑进用户日常聊天的那条会话里，而且主会话不会被释放。
+   *   调用方只传 workDir 不传 cloneId 是合法的（防御式兜底）。
+   */
+  const effectiveCloneId = cloneId || (workDir ? (managed.context?.taskRunId || taskRunId) : null);
   try {
-    entry = await runner.ensureSession(roomId, botId, (modelOverride || cloneId || workDir)
-      ? { modelOverride, cloneId, workDir, persist: false }
+    entry = await runner.ensureSession(roomId, botId, (modelOverride || effectiveCloneId || workDir)
+      ? { modelOverride, cloneId: effectiveCloneId, workDir, persist: false }
       : {});
   } catch (err) {
     if (err?.code === 'SESSION_BUSY') {
@@ -263,7 +270,7 @@ async function runWithLease(
   }
 
   // ★ 泳道键：主会话 / #fb / #clone_<id> / #clone_<id>#fb —— 分身 A/B 的报告互不覆盖
-  const scopeKey = sessionLaneKey({ roomId, botId, cloneId, modelOverride });
+  const scopeKey = sessionLaneKey({ roomId, botId, cloneId: effectiveCloneId, modelOverride });
   const scopeReady = runner.activateReportScope(scopeKey, reports);
   if (!scopeReady) {
     log('报告通道未能激活，本轮不接受阶段报告：', scopeKey);
@@ -271,7 +278,7 @@ async function runWithLease(
   const managedCancelTask = managed.kind === 'managed' ? (managed.context?.taskRunId ?? null) : null;
   if (managedCancelTask) {
     runner.managedInflight.set(managedCancelTask, {
-      key: scopeKey, botId, roomId, cloneId,
+      key: scopeKey, botId, roomId, cloneId: effectiveCloneId,
       session: entry?.session ?? null, attemptId: managed.context?.attemptId ?? null,
     });
   }
@@ -1171,7 +1178,9 @@ async function runWithLease(
   } finally {
     // 定时器回调可能还挂着：标记结束，回调里一律不再动会话（不再 steer / abort）
     runFinished = true; idle.stop();
-    if (cloneId || modelOverride) await releaseTurnLane(runner, { roomId, botId, cloneId, modelOverride });
+    if (effectiveCloneId || modelOverride) {
+      await releaseTurnLane(runner, { roomId, botId, cloneId: effectiveCloneId, modelOverride });
+    }
     runner.releaseReportScope(scopeKey, reports);
     if (entry) entry.managedContext = null;
     if (timeoutHandle) clearTimeout(timeoutHandle);

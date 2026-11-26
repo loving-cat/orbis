@@ -179,7 +179,13 @@ export function createWorktreeManager({
     if (!gitFile.ok) return { ok: false, code: 'no_git', text: gitFile.error };
     if (!taskRun?.id) return { ok: false, code: 'bad_task', text: '缺少任务 id' };
     if (!taskRun.parentTaskId) return { ok: false, code: 'root_task', text: '根任务/负责人不开 worktree（在主工作区协调）' };
-    const repoPick = resolveRepoDir(worktreeRepo ?? taskRun.worktree?.repoDirRel ?? taskRun.worktreeRepo);
+    // ★ 目标仓库优先级：显式参数 → 已落盘的 worktree → **flags.worktreeRepo** → 顶层字段
+    const repoPick = resolveRepoDir(
+      worktreeRepo
+      ?? taskRun.worktree?.repoDirRel
+      ?? taskRun.flags?.worktreeRepo
+      ?? taskRun.worktreeRepo,
+    );
     if (!repoPick.ok) return repoPick;
     const inspected = inspectRepo(repoPick.dir);
     if (!inspected.ok) return inspected;
@@ -201,38 +207,60 @@ export function createWorktreeManager({
         text: '这个仓库还没有任何提交（HEAD 不存在），建不了 worktree。先在主仓做一次提交，再重试。',
       };
     }
-    const baseHead = String(head.stdout ?? '').trim();
+    const headNow = String(head.stdout ?? '').trim();
     const excluded = ensureExclude(layout.commonDir);
     if (!excluded.ok) return { ok: false, code: 'exclude_failed', text: excluded.text };
 
     const branch = worktreeBranchOf(taskRun.id);
+    const prev = taskRun.worktree ?? null;
     const locked = await withLock(layout.commonDir, taskRun.id, () => {
-      // 幂等复用：目录 + 分支都在（返工轮 / 时间片续段）→ 直接接着用
       const branchExists = git(layout.root, ['rev-parse', '--verify', `refs/heads/${branch}`]).ok;
       const dirExists = fs.existsSync(path.join(worktreePath, '.git'));
-      if (dirExists && branchExists) return { ok: true, reused: true, branch, worktreePath, baseHead, layout };
-      // 目录在但没挂接好：先 prune 再重建（成员改动可能还在，先备份意识：不 rm）
-      if (dirExists && !branchExists) return { ok: true, reused: true, branch, worktreePath, baseHead, layout };
-      if (!dirExists) {
+      // 1) 目录 + 分支都在：直接复用（返工轮 / 时间片续段），绝不清空半成品
+      if (dirExists && branchExists) return { ok: true, reused: true };
+      // 2) 目录在、分支没了（被人删了 / 上次只挂了一半）：在树里补回分支引用
+      if (dirExists && !branchExists) {
+        const checkout = git(worktreePath, ['checkout', '-B', branch]);
+        if (!checkout.ok) {
+          return { ok: false, code: 'branch_restore_failed', text: checkout.error ?? `补回分支 ${branch} 失败` };
+        }
+        return { ok: true, reused: true, restoredBranch: true };
+      }
+      // 3) 分支在、目录没了（被 prune / 手工删掉）：挂回**已有分支**，不能再带 `-b`
+      if (!dirExists && branchExists) {
         git(layout.root, ['worktree', 'prune']);
         fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-        const add = git(layout.root, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
-        if (!add.ok) return { ok: false, code: 'worktree_add_failed', text: add.error ?? 'git worktree add 失败' };
-        return { ok: true, reused: false, branch, worktreePath, baseHead, layout };
+        const attach = git(layout.root, ['worktree', 'add', worktreePath, branch]);
+        if (!attach.ok) {
+          return { ok: false, code: 'worktree_attach_failed', text: attach.error ?? `挂回分支 ${branch} 失败` };
+        }
+        return { ok: true, reused: true, reattached: true };
       }
-      return { ok: true, reused: false, branch, worktreePath, baseHead, layout };
+      // 4) 全新的活：从当前 HEAD 开新分支
+      git(layout.root, ['worktree', 'prune']);
+      fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+      const add = git(layout.root, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
+      if (!add.ok) return { ok: false, code: 'worktree_add_failed', text: add.error ?? 'git worktree add 失败' };
+      return { ok: true, reused: false };
     });
     if (!locked.ok) return { ok: false, code: locked.code, text: locked.text };
     const out = locked.value;
+    // ★ 复用时保留**最初**的 baseHead / createdAt：主仓 HEAD 可能已经被兄弟任务
+    //   推进过，用新 HEAD 覆盖会让「本次改动相对哪个基线」失真（甚至把别人的
+    //   提交算成自己的改动）。
+    const keepBase = out.reused === true && prev?.baseHead ? prev.baseHead : null;
     const worktree = {
+      ...(prev ?? {}),
       repoDir: layout.root,
       repoDirRel: path.relative(root, layout.root) || '.',
       commonDir: layout.commonDir,
-      worktreePath: out.worktreePath,
-      branch: out.branch,
-      baseHead: out.baseHead ?? baseHead,
+      worktreePath,
+      branch,
+      baseHead: keepBase ?? prev?.baseHead ?? headNow,
       status: 'active',
-      createdAt: clock(),
+      createdAt: prev?.createdAt ?? clock(),
+      ...(out.restoredBranch ? { restoredBranchAt: clock() } : {}),
+      ...(out.reattached ? { reattachedAt: clock() } : {}),
     };
     if (taskRuns) {
       await taskRuns.mutate(taskRun.id, {
@@ -302,48 +330,92 @@ export function createWorktreeManager({
       });
     };
 
-    // 1) 先把 worktree 里的改动收口成提交
-    const status = git(note.worktreePath, ['status', '--porcelain']);
-    if (!status.ok) {
-      return { ok: false, status: 'error', code: 'status_failed', text: status.error ?? '读 worktree 状态失败' };
-    }
-    // ★ commit 与 merge **都**需要提交身份（CI 上常常没配全局 user.name）：
-    //   只在 commit 上兜底、merge 时不兜底，会得到「Committer identity unknown」
-    //   → 被当成冲突 → 白白 abort 一次。所以两份共用一个 identity。
-    const identity = hasIdentity(note.worktreePath)
-      ? []
-      : ['-c', 'user.name=Orbis', '-c', 'user.email=orbis@local'];
-    if (String(status.stdout ?? '').trim()) {
-      const add = git(note.worktreePath, ['add', '-A']);
-      if (!add.ok) return { ok: false, status: 'error', code: 'add_failed', text: add.error ?? 'git add 失败' };
-      const msg = `orbis(task): ${String(shortTitle || taskRun?.goal?.requirement || taskRun.id).slice(0, 120)}`;
-      const commit = git(note.worktreePath, [...identity, 'commit', '-m', msg]);
-      if (!commit.ok) {
-        // hook 失败 / 身份缺失都如实报错，绝不 --no-verify 糊过去
-        return { ok: false, status: 'error', code: 'commit_failed', text: commit.error ?? '提交 worktree 改动失败' };
+    /**
+     * ★ 整个收口流程（收编改动 → 判净提交 → 主仓脏检查 → merge → 清理）
+     *   **必须在同一把仓库写锁里**，不能各段各拿一次锁：
+     *   · 两个子任务同时收口时，后到者若在锁外做 `git status`，会把对方正在进行的
+     *     合并看成「主仓脏」→ 误判成 `preserved_dirty_main`（假失败）；
+     *   · 各段各拿锁还会并发写 commonDir（refs/index），那是"下次才炸"的损坏；
+     *   · 锁内读到的 before/after HEAD 才是同一把锁下的真实前后状态（无 TOCTOU）。
+     *   `persist` 落盘放在锁外：它不碰 git，锁外做还能缩短持锁时间。
+     */
+    const locked = await withLock(layout.commonDir, taskRun.id, () => {
+      // 1) 先把 worktree 里的改动收口成提交
+      const status = git(note.worktreePath, ['status', '--porcelain']);
+      if (!status.ok) {
+        return { ok: false, status: 'error', code: 'status_failed', text: status.error ?? '读 worktree 状态失败' };
       }
-    }
+      // ★ commit 与 merge **都**需要提交身份（CI 上常常没配全局 user.name）：
+      //   只在 commit 上兜底、merge 时不兜底，会得到「Committer identity unknown」
+      //   → 被当成冲突 → 白白 abort 一次。所以两份共用一个 identity。
+      const identity = hasIdentity(note.worktreePath)
+        ? []
+        : ['-c', 'user.name=Orbis', '-c', 'user.email=orbis@local'];
+      if (String(status.stdout ?? '').trim()) {
+        const add = git(note.worktreePath, ['add', '-A']);
+        if (!add.ok) return { ok: false, status: 'error', code: 'add_failed', text: add.error ?? 'git add 失败' };
+        const msg = `orbis(task): ${String(shortTitle || taskRun?.goal?.requirement || taskRun.id).slice(0, 120)}`;
+        const commit = git(note.worktreePath, [...identity, 'commit', '-m', msg]);
+        if (!commit.ok) {
+          // hook 失败 / 身份缺失都如实报错，绝不 --no-verify 糊过去
+          return { ok: false, status: 'error', code: 'commit_failed', text: commit.error ?? '提交 worktree 改动失败' };
+        }
+      }
 
-    // 2) 有没有净提交：没有就是没改代码
-    const counts = commitCount(layout.root, note.baseHead, note.branch);
-    if (!counts.ok) return { ok: false, status: 'error', code: 'revlist_failed', text: counts.text };
-    if (counts.count === 0) {
-      const locked = await withLock(layout.commonDir, taskRun.id, () => {
+      // 2) 有没有净提交：没有就是没改代码
+      const counts = commitCount(layout.root, note.baseHead, note.branch);
+      if (!counts.ok) return { ok: false, status: 'error', code: 'revlist_failed', text: counts.text };
+      if (counts.count === 0) {
         removeWorktree(layout, note.worktreePath, { force: true });
         git(layout.root, ['branch', '-d', note.branch]);
-        return { ok: true };
-      });
+        return { ok: true, status: 'noop' };
+      }
+
+      // 3) 主仓脏检查（fail-closed #1）：绝不 merge 覆盖用户未提交的代码
+      const main = isDirty(layout.root);
+      if (!main.ok) return { ok: false, status: 'error', code: 'status_failed', text: main.text };
+      if (main.dirty) return { ok: false, status: 'preserved_dirty_main', code: 'dirty_main' };
+
+      // 4) 干净合入
+      const before = String(git(layout.root, ['rev-parse', 'HEAD']).stdout ?? '').trim();
+      const merge = git(layout.root, [...identity, 'merge', '--no-ff', '--no-edit', note.branch]);
+      if (!merge.ok) {
+        // ★ 冲突清单必须在 abort **之前**取：`merge --abort` 会清掉未合并索引，
+        //   之后再问 `--diff-filter=U` 只会得到空列表（等于把冲突原因丢了）。
+        const conflicts = String(git(layout.root, ['diff', '--name-only', '--diff-filter=U']).stdout ?? '')
+          .split('\n').map((line) => line.trim()).filter(Boolean);
+        // fail-closed #2：冲突立刻回滚，主工作树必须恢复 100% 干净
+        git(layout.root, ['merge', '--abort']);
+        return {
+          ok: false, status: 'conflict', code: 'merge_conflict',
+          conflictFiles: conflicts, text: merge.error ?? 'git merge 失败',
+        };
+      }
+      const after = String(git(layout.root, ['rev-parse', 'HEAD']).stdout ?? '').trim();
+      if (!after || after === before) {
+        return { ok: false, status: 'merge_failed', code: 'head_not_advanced', text: '合并后 HEAD 没有前进，拒绝当作成功' };
+      }
+      // 合入成功：清 worktree + 安全删分支（只用 -d）
+      removeWorktree(layout, note.worktreePath, { force: false });
+      git(layout.root, ['branch', '-d', note.branch]);
+      const files = changedFiles(layout.root, note.baseHead, after);
+      return { ok: true, status: 'merged', mergedHead: after, files };
+    });
+
+    // 锁外只做落盘与措辞
+    if (!locked.ok) {
+      await persist({ status: 'merge_retry', lastError: locked.text });
+      return { ok: false, status: 'merge_retry', code: locked.code, text: locked.text, branch: note.branch };
+    }
+    const out = locked.value;
+    if (out.status === 'noop') {
       await persist({ status: 'noop', cleanedAt: clock() });
       return {
         ok: true, status: 'noop', branch: note.branch, worktreePath: note.worktreePath,
-        text: locked.ok ? '没有代码改动，已清理 worktree' : '没有代码改动',
+        text: '没有代码改动，已清理 worktree',
       };
     }
-
-    // 3) 主仓脏检查（fail-closed #1）：绝不 merge 覆盖用户未提交的代码
-    const main = isDirty(layout.root);
-    if (!main.ok) return { ok: false, status: 'error', code: 'status_failed', text: main.text };
-    if (main.dirty) {
+    if (out.status === 'preserved_dirty_main') {
       await persist({ status: 'preserved_dirty_main', preservedAt: clock(), branch: note.branch });
       return {
         ok: false, status: 'preserved_dirty_main', code: 'dirty_main',
@@ -351,56 +423,31 @@ export function createWorktreeManager({
         text: `主仓库有未提交改动，不敢合并（会覆盖你正在写的东西）。改动已完整保留在分支 ${note.branch}。`,
       };
     }
-
-    // 4) 干净合入
-    const locked = await withLock(layout.commonDir, taskRun.id, () => {
-      const before = String(git(layout.root, ['rev-parse', 'HEAD']).stdout ?? '').trim();
-      const merge = git(layout.root, [...identity, 'merge', '--no-ff', '--no-edit', note.branch]);
-      if (!merge.ok) {
-        // ★ 冲突清单必须在 abort **之前**取：`merge --abort` 会清掉未合并索引，
-        //   之后再问 `--diff-filter=U` 只会得到空列表（等于把冲突原因丢了）。
-        const conflicts = String(git(layout.root, ['diff', '--name-only', '--diff-filter=U']).stdout ?? '')
-          .split('\n').map((s) => s.trim()).filter(Boolean);
-        // fail-closed #2：冲突立刻回滚，主工作树必须恢复 100% 干净
-        git(layout.root, ['merge', '--abort']);
-        return { conflict: true, text: merge.error ?? 'git merge 失败', conflictFiles: conflicts };
-      }
-      const after = String(git(layout.root, ['rev-parse', 'HEAD']).stdout ?? '').trim();
-      if (!after || after === before) {
-        return { conflict: false, advanced: false, text: '合并后 HEAD 没有前进，拒绝当作成功' };
-      }
-      // 合入成功：清 worktree + 安全删分支（只用 -d）
-      removeWorktree(layout, note.worktreePath, { force: false });
-      git(layout.root, ['branch', '-d', note.branch]);
-      return { conflict: false, advanced: true, mergedHead: after };
-    });
-    if (!locked.ok) {
-      await persist({ status: 'merge_retry', lastError: locked.text });
-      return { ok: false, status: 'merge_retry', code: locked.code, text: locked.text, branch: note.branch };
-    }
-    const out = locked.value;
-    if (out.conflict) {
+    if (out.status === 'conflict') {
       await persist({
         status: 'conflict', conflictFiles: out.conflictFiles ?? [], conflictAt: clock(), branch: note.branch,
       });
       return {
-        ok: false, status: 'conflict', code: 'merge_conflict',
+        ok: false, status: 'conflict', code: out.code ?? 'merge_conflict',
         branch: note.branch, worktreePath: note.worktreePath,
         conflictFiles: out.conflictFiles ?? [],
         text: String(out.text ?? '').slice(0, 400),
       };
     }
-    if (!out.advanced) {
-      await persist({ status: 'merge_failed', lastError: out.text });
-      return { ok: false, status: 'merge_failed', code: 'head_not_advanced', text: out.text, branch: note.branch };
+    if (out.ok !== true) {
+      await persist({ status: 'merge_failed', lastError: out.text ?? out.code ?? '' });
+      return {
+        ok: false, status: out.status ?? 'error', code: out.code ?? 'merge_failed',
+        text: out.text ?? '合入失败', branch: note.branch,
+      };
     }
-    const files = changedFiles(layout.root, note.baseHead, out.mergedHead);
+    const files = out.files ?? [];
     await persist({ status: 'merged', mergedHead: out.mergedHead, mergedAt: clock(), filesChanged: files });
-    log('worktree 已合入', taskRun.id, note.branch, out.mergedHead.slice(0, 8), files.length + ' files');
+    log('worktree 已合入', taskRun.id, note.branch, String(out.mergedHead).slice(0, 8), files.length + ' files');
     return {
       ok: true, status: 'merged', branch: note.branch, worktreePath: note.worktreePath,
       mergedHead: out.mergedHead, files,
-      text: `已合入主仓：${out.mergedHead.slice(0, 8)}（${files.length} 个文件）`,
+      text: `已合入主仓：${String(out.mergedHead).slice(0, 8)}（${files.length} 个文件）`,
     };
   }
 
