@@ -21,7 +21,8 @@ import {
 } from './task-controls.js';
 import { childrenOf } from './task-subtasks.js';
 import {
-  DEP_STATUS, dependencyStatus, pendingCheckpointKids, readyDownstreamOf, upstreamFailedIds,
+  DEP_STATUS, dependencyStatus, isWaitingOnlyOnCheckpoints, pendingCheckpointKids,
+  readyDownstreamOf, upstreamFailedIds,
 } from './task-dag.js';
 import { appendEntry, artifactEntryOf } from './task-blackboard.js';
 import { approveCheckpoint as approveCheckpointIn, approveCheckpointsOf as approveCheckpointsOfIn } from './task-checkpoint.js';
@@ -911,10 +912,12 @@ export function createTaskSupervisor({
     //   这里用"本轮前后 progressSignature 是否变化"判定：连续 N 轮没变化
     //   就明确停下并说明原因，而不是无限重跑。
     const stallLimit = Math.max(1, Number(maxStallRounds) || 2);
-    // ★ 本轮唤醒里是否已经把「全部子任务在等 checkpoint」这件事交给负责人把关过。
-    //   一次唤醒只交一次：否则负责人不做任何事时，循环会在 maxSteps 内
-    //   把同一份清单反复丢给他。
+    //   ★ 本轮唤醒里是否已经把「全部子任务都在等 checkpoint」交给负责人把关过。
+    //     一次唤醒只交一次：否则负责人不做任何事时，循环会在 maxSteps 内
+    //     把同一份清单反复丢给他。
     let checkpointPassed = false;
+    // ★ 收口处主动回到顶部（让 checkpointOnly 接手）也只做一次，防死循环。
+    let checkpointSkipped = false;
     for (let step = 0; step < maxSteps; step += 1) {
       const taskRun = read(taskRunId);
       if (!taskRun) return { status: 'missing' };
@@ -923,6 +926,15 @@ export function createTaskSupervisor({
 
       // 本人暂停：直接等待，不遍历/推进任何子任务
       if (PAUSED.has(taskRun.state)) return { status: 'wait', why: '任务暂停' };
+
+      // ★ 依赖入口守卫：任何直接 `runTask(kid.id)` 的路径都不能绕过选批判定。
+      //
+      //   调度器的 `canRun` 已挡一次，但还会有别的入口（测试、面板上的
+      //   “继续这一份”、以后新增的重试按钮）直接按 id 推进某个子任务 ——
+      //   漏一条就是下游抢跑，或 checkpoint 形同虚设。这里在唯一的口子上再核。
+      if (taskRun.parentTaskId && depsNotReady(taskRun)) {
+        return { status: 'wait', why: '等待前置子任务或负责人放行' };
+      }
 
       const ancestor = ancestorBlocked(taskRun);
       if (ancestor.blocked) {
@@ -963,9 +975,12 @@ export function createTaskSupervisor({
       //
       //   ★ 判据要拿**全部**子任务（含已完成的）：依赖状态必须能在同父全集里
       //     解析出前置，只拿未终态列表会把“前置已完成”误判成“上游不见了”。
+      //   ★ 也不能只比数量：三级流水线 A → B[checkpoint] → C 里，A 完成后
+      //     未终态是 [B(等放行), C(等 B)]，数量永远不相等 —— 旧判据在这里
+      //     恒为 false，父任务于是永久停在排队中（审计 P1-1）。
       const checkpointOnly = liveKids.length > 0
         && !checkpointPassed
-        && pendingCheckpointKids(kids).length === liveKids.length;
+        && isWaitingOnlyOnCheckpoints(kids);
       if (checkpointOnly) {
         checkpointPassed = true;
         log('子任务都在等负责人放行 checkpoint，本轮交给负责人把关', taskRunId, liveKids.length);
@@ -1061,6 +1076,18 @@ export function createTaskSupervisor({
               why: '子任务在等上游恢复（可恢复阻塞）',
               child: resumable.id,
             };
+          }
+          // ★ 全部子任务只剩「等负责人放行」这一件事 → 不能 return wait。
+          //
+          //   本轮开头那道 `checkpointOnly` 看的是**进批之前**的状态，
+          //   批里的活收口之后才浮出来的审批位（例如某个前置刚好的 B）
+          //   会走到这里：直接 return 就让父任务停在排队中，
+          //   负责人永远不会被叫醒，B 和它下游的 C 一起死锁（审计 P1-1）。
+          //   不返回，回到循环顶部 —— 那里会用同一个判据把这轮交给负责人。
+          if (!checkpointPassed && !checkpointSkipped && isWaitingOnlyOnCheckpoints(allKidsNow)) {
+            checkpointSkipped = true;
+            log('子任务只剩等放行，回到循环顶部交给负责人把关', taskRunId);
+            continue;
           }
           // ★ 全部子任务都停住了（永久受阻 / 被上游拖死 / 被取消）→ 交回负责人或如实阻塞。
           //   旧码只算 `state === blocked`：一个成员永久受阻、它的下游还停在 queued 时
@@ -1898,7 +1925,16 @@ export function createTaskSupervisor({
     // ★ 交付事实自动落根任务的共享黑板（纯 mutate，0 次模型调用）。
     //   后来的人开工时会直接读到“前一个人交了什么东西、在哪里”，
     //   不必靠负责人在群里转述（转述要再烧一次模型，而且会走样）。
-    await writeBlackboardArtifact(taskRun);
+    //
+    //   ★ 必须传**刚落盘的**快照：`taskRun` 是进 deliver 之前的旧记录，
+    //     它的 delivery 还是空的 —— 直接传它会让自动产物条只剩 requirement，
+    //     真正的交付摘要与产物路径全丢（审计 P1-2）。
+    //     读不到时退回手工拼一份内容相同的快照，不能让黑板静默降级。
+    const delivered = read(taskRun.id) ?? {
+      ...taskRun,
+      delivery: { summary, at: clock(), revision: taskRun.revision },
+    };
+    await writeBlackboardArtifact(delivered);
     // 共用交回事件：先按真实证据解除父的依赖门槛，再唤醒父任务
     await releaseParentDependency(taskRun);
     notifyParent(taskRun);

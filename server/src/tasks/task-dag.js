@@ -234,6 +234,41 @@ export function pendingCheckpointKids(siblings) {
 }
 
 /**
+ * 所有未结束的子任务是不是「都只在等负责人放行」。
+ *
+ * ## 为什么不能只比数量
+ *
+ * 三级流水线 A → B（checkpoint）→ C[dependOn B] 里，A 完成后
+ * 未终态子任务是 [B, C]：B 在等放行、C 在等 B。
+ * 旧判据 `pendingCheckpointKids().length === liveKids.length` 是 1 === 2，
+ * 永远不成立 → 父任务落进 `return wait`，负责人永远不会被叫醒，
+ * B 与它的下游 C 一起永久死锁。
+ *
+ * ## 判据（必须同时成立）
+ *
+ *   · 至少有一个子任务在等放行（否则没什么可审的）；
+ *   · 每一个活子任务都处在 checkpoint 或 waiting（下游等上游算 waiting）；
+ *   · 没有任何「现在就能跑 / 正在跑 / 正在验收 / 可恢复阻塞」的——
+ *     那种情况该继续推进，不该拿审批去打扰负责人。
+ *
+ * 换句话说：**全队的共同阻塞点就是那句放行**。
+ *
+ * @param {Array<object>} siblings 同父同版本的全部子任务（含已完成的）
+ * @returns {boolean}
+ */
+export function isWaitingOnlyOnCheckpoints(siblings) {
+  const list = Array.isArray(siblings) ? siblings : [];
+  const live = list.filter((kid) => !isTerminal(kid?.state));
+  if (!live.length) return false;
+  const pending = live.filter((kid) => dependencyStatus(kid, list) === DEP_STATUS.checkpoint);
+  if (!pending.length) return false;
+  return live.every((kid) => {
+    const status = dependencyStatus(kid, list);
+    return status === DEP_STATUS.checkpoint || status === DEP_STATUS.waiting;
+  });
+}
+
+/**
  * 因某个刚完成的子任务而变得可跑的下游（自动接力的候选集）。
  *
  * 只算「依赖里含它」且此刻 `ready` 的：还在等别的兄弟、或等着负责人放行的，

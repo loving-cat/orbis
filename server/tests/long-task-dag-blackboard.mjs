@@ -618,6 +618,116 @@ await test('18. 放行工具：非负责人 / 非本任务子任务一律拒绝'
   assert.match(out.content[0].text, /负责人|受管任务|失效/);
 });
 
+await test('19. ★ 三级流水线中段 checkpoint 不死锁：A → B[checkpoint] → C，A 完成后交回负责人审批 B', async () => {
+  const rootId = await makeRoot({ requirement: '三级流水线' });
+  const a = await addKid(rootId, { botId: members[0].id, requirement: '第一级：取数' });
+  const b = await addKid(rootId, {
+    botId: members[1].id, dependsOn: [a], checkpointBeforeRun: true, requirement: '第二级：按取数建模（要把关）',
+  });
+  const c = await addKid(rootId, { botId: members[2].id, dependsOn: [b], requirement: '第三级：按模型出报告' });
+
+  // 旧判据（pendingCheckpointKids().length === liveKids.length）在 A 完成后是 1 === 2，
+  // 恒不成立 → 父任务停在「排队中」，负责人永远不被叫醒。
+  const rec = recorder();
+  const sup = makeSupervisor({
+    execute: async () => ({ ok: true, stop: 'returned' }),
+    executeMember: async (args) => {
+      await sleep(30);
+      return memberOk(args.taskRun.id)();
+    },
+    rec,
+  });
+  sup.notify(rootId);
+  await waitFor(sup, [a], (rs) => rs[0].state === STATE.completed);
+  // A 完成之后才是死锁现场：未终态是 [B(等放行), C(等 B)]
+  const siblings = [taskRuns.read(a).taskRun, taskRuns.read(b).taskRun, taskRuns.read(c).taskRun];
+  assert.equal(DAG.pendingCheckpointKids(siblings).length, 1, '只有 B 在等放行');
+  assert.equal(
+    DAG.pendingCheckpointKids(siblings).length === siblings.filter((k) => ![STATE.completed, STATE.cancelled].includes(k.state)).length,
+    false,
+    '旧判据确实不成立（1 !== 2，这正是中段 checkpoint 死锁的原因）',
+  );
+  assert.equal(DAG.isWaitingOnlyOnCheckpoints(siblings), true, 'B 在等放行、C 在等 B → 全队只卡在那句放行');
+  // 给父任务几轮机会：如果没死锁，它应该来叫负责人
+  await sleep(150);
+  await sup.idle();
+
+  assert.ok(rec.leads.length >= 1, 'A 完成后必须唤醒负责人审批 B（旧码在这里永久死等，一轮都不叫）');
+  const leadPrompt = rec.leads.map((l) => l.prompt).join('\n---\n');
+  assert.match(leadPrompt, /按取数建模/, '提示词里要列出待审批的 B');
+  assert.equal(rec.starts.has(b), false, 'B 在放行前不能跑');
+  assert.equal(rec.starts.has(c), false, 'C 在 B 跑完前不能跑');
+
+  // 放行 B → B 自动跑完 → C 自动接力（零额外审批）
+  const approved = await sup.approveCheckpointsOf(rootId, { botId: chief.id });
+  assert.equal(approved.ok, true, '放行应成功：' + approved.text);
+  assert.deepEqual(approved.approved, [b]);
+  const runs = await waitFor(sup, [b, c], (rs) => rs.every((r) => r.state === STATE.completed), { timeoutMs: 8000 });
+  sup.dispose();
+  assert.equal(runs[0].state, STATE.completed, `B 应跑完，实际 ${runs[0].state}`);
+  assert.equal(runs[1].state, STATE.completed, `C 应自动接力跑完，实际 ${runs[1].state}`);
+  assert.ok(rec.starts.get(c) >= rec.ends.get(b), 'C 必须等 B 收口后才启动');
+});
+
+await test('20. ★ 黑板自动条含真实 delivery.summary（不只 requirement）', async () => {
+  const rootId = await makeRoot({ requirement: '黑板交付摘要' });
+  const a = await addKid(rootId, { botId: members[0].id, requirement: '只要写一段说明' });
+  const sup = makeSupervisor({
+    execute: async () => ({ ok: true, stop: 'returned' }),
+    executeMember: async (args) => ({ ok: true, stop: 'returned', appliedCompletion: true, artifacts: ['out/' + args.taskRun.id + '.md'] }),
+  });
+  sup.notify(rootId);
+  await waitFor(sup, [a], (rs) => rs[0].state === STATE.completed);
+  await sleep(60);
+  sup.dispose();
+
+  const board = taskRuns.read(rootId).taskRun.blackboard;
+  const entry = (board?.entries ?? []).find((e) => e.kind === 'artifact' && e.taskRunId === a);
+  assert.ok(entry, '子任务交付应自动落一条产物条目');
+  assert.match(entry.text, /只要写一段说明/, 'requirement 要在');
+  // 旧码传的是进 deliver 之前的旧快照（delivery 还空），这里只能看到 requirement
+  assert.match(entry.text, /交付物：/, '必须带上 delivery.summary 里的交付物行（审计 P1-2）');
+  assert.match(entry.text, new RegExp(`out/${a}\\.md`), '产物路径要在');
+  assert.match(entry.ref, /out\//, 'ref 应指向首个产物');
+});
+
+await test('21. ★ 直接 runTask(kid.id) 不绕过依赖/checkpoint 闸门', async () => {
+  const rootId = await makeRoot({ requirement: '入口守卫' });
+  const a = await addKid(rootId, { botId: members[0].id, requirement: '还在排队的上游' });
+  const waiting = await addKid(rootId, { botId: members[1].id, dependsOn: [a], requirement: '等上游的下游' });
+  const rec = recorder();
+  const sup = makeSupervisor({
+    execute: async () => ({ ok: true, stop: 'returned' }),
+    executeMember: async (args) => memberOk(args.taskRun.id)(),
+    rec,
+  });
+
+  // (1) waiting：前置还没完成
+  assert.equal(DAG.dependencyStatus(taskRuns.read(waiting).taskRun, [
+    taskRuns.read(a).taskRun, taskRuns.read(waiting).taskRun,
+  ]), 'waiting');
+  const out1 = await sup.runTask(waiting);
+  assert.equal(out1.status, 'wait', `直接推进 wait 子任务应返回 wait，实际 ${out1.status}`);
+  assert.equal(rec.starts.has(waiting), false, 'waiting 的子任务绝不能被执行器跑到');
+
+  // (2) checkpoint：前置已完成但还没放行
+  const root2 = await makeRoot({ requirement: '入口守卫-checkpoint' });
+  const a2 = await addKid(root2, { botId: members[0].id, requirement: '先干完的上游' });
+  const gated = await addKid(root2, {
+    botId: members[1].id, dependsOn: [a2], checkpointBeforeRun: true, requirement: '等放行的下游',
+  });
+  sup.notify(root2);
+  await waitFor(sup, [a2], (rs) => rs[0].state === STATE.completed);
+  await sleep(120);
+  await sup.idle();
+  assert.equal(rec.starts.has(gated), false, '有前置完成也不能绕过放行');
+  const before = rec.starts.size;
+  const out2 = await sup.runTask(gated);
+  assert.equal(out2.status, 'wait', `直接推进 checkpoint 子任务应返回 wait，实际 ${out2.status}`);
+  assert.equal(rec.starts.size, before, 'checkpoint 子任务被直接推进时不得触发执行器');
+  sup.dispose();
+});
+
 // ---------------------------------------------------------------------------
 
 const passed = results.filter((r) => r.ok).length;
