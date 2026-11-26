@@ -201,6 +201,8 @@ const TESTS = [
   'long-task-guardrails',
   // 受控子任务 DAG（dependsOn + checkpoint）与根任务共享黑板（2.0 集群 C1）
   'long-task-dag-blackboard',
+  // 独立评审 / 质检回路（2.0 集群 C2）
+  'long-task-critic',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',

@@ -96,6 +96,13 @@ export async function createChildTask({
   dependsOn = [],
   /** 前置完成后要不要先唤醒负责人把关再放行（默认不要）。 */
   checkpointBeforeRun = false,
+  /**
+   * 强制独立复核（默认跟随父任务）。
+   *
+   * `true` = 这份活即使没有 expert 验收条件也要被 Critic 审一次；
+   * `undefined` / `false` = 按档位与目标条件自动决定。
+   */
+  criticRequired = undefined,
   /** 计划步骤号 → 真实子任务 id（负责人只记得住“第 2 条”）。 */
   stepIds = null,
 }) {
@@ -150,6 +157,10 @@ export async function createChildTask({
     // （推进器判定时以根任务为准，这里只是让子任务自己的记录也说得清）
     autonomous: parentTaskRun.flags?.autonomous === true,
     autonomyReason: parentTaskRun.flags?.autonomyReason ?? '',
+    // ★ 质检开关：子任务显式指定优先，否则跟父任务走（“这件事要质检”应该传导下去）
+    criticRequired: criticRequired === undefined
+      ? parentTaskRun.flags?.criticRequired === true
+      : criticRequired === true,
   });
   if (!built.ok) return { ok: false, code: 'bad_child', text: built.text };
 

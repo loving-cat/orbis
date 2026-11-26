@@ -27,6 +27,8 @@ import { resolveAutonomy } from './task-autonomy.js';
 import { admissionBudget } from '../coordination/task-admission.js';
 import { newId } from '../util.js';
 import { resumeAdmission } from '../coordination/task-admission.js';
+import { createCriticReviewer } from './task-critic-runner.js';
+import { CRITIC_MODE, resolveCriticMode } from './task-critic.js';
 
 /**
  * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
@@ -449,6 +451,9 @@ export function createTaskRuntime({
    * 部门里有 6 个人就是 6 路并行：每个成员会话独立，
    * 人越多越该同时干，固定上限只会让人干等。
    */
+  /** 独立评审档位：装配时定下来，与 supervisor 内判定用同一个值。 */
+  const criticMode = resolveCriticMode(process.env);
+
   const concurrencyOf = () => {
     try {
       const runs = taskRuns.listAll?.();
@@ -495,6 +500,19 @@ export function createTaskRuntime({
     onChanged: notifyTaskChanged,
     execute: (ctx) => runOne({ ...ctx, phase: 'lead' }),
     executeMember: (ctx) => runOne({ ...ctx, phase: 'member' }),
+    /**
+     * ★ 独立评审（Critic）装配。
+     *
+     * `ORBIS_CRITIC_REVIEW=off` 时**不注入**：没注入就没有这个能力，行为与现网
+     * 完全一致（这也是测试零回归的边界）。否则注入真实执行器，档位（auto/all）
+     * 由 supervisor 自己按同一个环境变量判定。
+     */
+    criticReview: criticMode === CRITIC_MODE.off
+      ? null
+      : createCriticReviewer({
+          runner, store: runner.store, routeOf, clock, log,
+        }),
+    criticMode,
     abortInflight: async ({ taskRunId }) => {
       // 任务级取消：终止本任务及其有效子树的在途执行，不动同房间其他目标
       const ids = [taskRunId];

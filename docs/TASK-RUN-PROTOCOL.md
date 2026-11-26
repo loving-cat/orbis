@@ -25,6 +25,29 @@
 - 预算也能用 token 维度：`ORBIS_TASK_MAX_TOKENS`（部门 `maxTokens` 只收紧不放大）→ 根上按 `attempt.usage` 的 `inputTokens + outputTokens` 跨整棵树原子幂等累计；用尽进 `paused_budget`，扩额（`extraTokens`）后可继续。**超额不算坏数据**——跨过上限的那次执行只能结算后才知道。
 - 并发也由宿主给：同一个根默认**最多 4 份受管执行同时在跑**（`ORBIS_TASK_CONCURRENCY`，1..16；部门预算里的 `concurrencyLimit` 只收紧不放大），部门里各成员的会话本来就独立。真正硬的两条不变量是**同 Bot 互斥**（一个成员只有一个会话）与**同 tick 文件互斥**（声明了同一个文件的活不同时在途）；上游熔断时并发自动降回 1。名额满只是排队，不判死。
 
+## 受控子任务 DAG 与共享黑板（2.0 集群 C1）
+
+- 派活可带 `dependsOn`（前置**子任务 id** 或计划**步骤号**）：**全部前置验收完成**之前不启动；落盘前跑环检测，自环/任意长度环/跨父依赖一律拒收（fail-closed）。
+- 依赖状态只有四种：`ready` / `waiting` / `checkpoint`（前置都完成、等负责人放行）/ `upstream_failed`（前置已永久受阻或被取消 —— 下游绝不启动）。
+- 自动接力：子任务交付（机械验收通过）后，因它变 `ready` 的下游立即被唤醒 —— **零次负责人模型调用**。
+- 防死等：`upstream_failed` 与「受阻」等价参与父任务收口，自主模式交回负责人、非自主模式如实阻塞并说清是谁的失败。
+- 共享黑板挂在根任务 `blackboard` 上：最多 24 条（先淘汰最旧的非约束）、单条 ≤240 字、渲染 ≤1200 字；交付事实自动落一条 `artifact`，负责人/成员可用 `task_blackboard` 写 `decision`/`constraint`/`fact`。写入目标只取受管上下文的根任务，调用方无法指定（防跨任务串写）。
+
+## 独立评审 / 质检回路（2.0 集群 C2）
+
+- 档位：`ORBIS_CRITIC_REVIEW` = `off` | `auto`（默认）| `all`。
+  - `auto`：机械验收全过后，只要「有未评审的 `expert` 条件」或「任务 `criticRequired: true`」就审一次；
+  - `all`：所有通过机械验收的任务都审；
+  - `off`：完全关闭（也不注入执行器）。
+- **零浪费**：机械验收没过（`unmet` / `blocked` 非空）时**绝不调用**评审员，先让执行者修确定性错误。
+- 评审会话：全新 `SessionManager.inMemory`（不落盘、不复用执行者历史）+ 只读工具白名单 `read/ls/find/grep`（无写、无 shell、无 MCP、无宿主自定义工具）+ 策略层 `dangerous: 'deny'`；`finally` 里 `dispose()`。选模优先换一个健康且不同的模型（`ORBIS_CRITIC_MODEL` 可指定），**本地/内网执行者绝不被换到公有云**，没有替代时退回同款模型但仍是干净会话。
+- 结论 fail-closed：只接受 `{verdict, summary, defects}`；`passed` 必须带结论依据且 `defects` 为空；`failed` 必须至少 1 条可执行缺陷；解析不了 = `parse_error`，绝不自动放行。
+- 绑定与去重：每次评审绑定 `(revision, 最新已结算 attemptId, 产物指纹)`；同一产出不重复审；**上一轮的 `failed` 记录不会挡住返工后的新一轮评审**（`expertReviews` 里的 `critic_review` 按尝试过滤，负责人的人工判断仍对整个版本有效）。
+- 有界返工：`MAX_CRITIC_REWORKS = 2`；未达标就走标准 `verification_finished(passed: false, unmet: defects)` 自动返工，返工提示词带完整缺陷清单；连续 2 轮不过 → `block`，子任务走既有 `handBackBlockedChildren` 把真实缺陷交给负责人。
+- 评审员自身故障（超时 / 429 / 抛错 / 输出无法解析）**不算业务缺陷**：不扣返工额度、不伪造通过，30 秒后重试；连续 3 次跑不起来才阻塞等人工。
+- 预算与竞态：评审前查根 `remainingTokensOf`（用尽走 `paused_budget`，不偷跑）；返回的 `usage` 计入根 `budget.usedTokens`；`await` 回来后重读任务，取消/暂停/改版则丢弃结论（写事务里再核一次 revision）。
+
+
 ## 回执读结果原则
 
 只有 ENOENT 才是「不存在」。有效 JSON 但缺 receipt、身份/请求不符、未知版本/阶段、字段损坏 → 一律 corrupt：调用方如实失败，不当新请求，不重跑理解。running 超过租约且无对应 TaskRun → 允许同 requestId 重试；已有 TaskRun 事实 → 重建 accepted。

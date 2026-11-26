@@ -15,11 +15,29 @@
  */
 import { collectUpstreamContext, pendingCheckpointKids } from './task-dag.js';
 import { renderBlackboard } from './task-blackboard.js';
+import { renderCriticFeedback } from './task-critic.js';
 export const LEAD_PHASE = Object.freeze({
   plan: 'plan',
   verify: 'verify',
   deliver: 'deliver',
 });
+
+/**
+ * 返工清单（独立复核未通过时注入）。
+ *
+ * ★ 只注入**属于当前版本**的那一份：改版后旧缺陷不再适用，
+ *   继续贴旧清单会让执行者去修已经不存在的问题。
+ *
+ * @param {object|null} taskRun
+ * @param {{maxChars?:number}} [opts]
+ * @returns {string}
+ */
+export function criticFeedbackBlock(taskRun, { maxChars = 1200 } = {}) {
+  const feedback = taskRun?.criticFeedback ?? null;
+  if (!feedback || !Array.isArray(feedback.defects) || !feedback.defects.length) return '';
+  if (Number(feedback.revision) !== Number(taskRun?.revision)) return '';
+  return renderCriticFeedback(feedback, { maxChars });
+}
 
 /**
  * 负责人阶段提示词。
@@ -133,6 +151,9 @@ export function buildLeadPrompt({
   if (taskRun?.flags?.autonomous === true) {
     lines.push(AUTONOMY_RULE);
   }
+  // ★ 独立复核未通过：负责人也要看得到（它要决定是补派、拆小，还是自己上）。
+  const rework = criticFeedbackBlock(taskRun);
+  if (rework) lines.push(rework);
   if (extra) lines.push(extra);
   return lines.join('\n');
 }
@@ -210,6 +231,15 @@ export function buildMemberPrompt({
   // ★ 全组黑板：约束/决定/事实/别人交了什么。
   const board = renderBlackboard(blackboard ?? parentTaskRun?.blackboard ?? null);
   if (board) lines.push(board);
+  // ★ 还缺什么（机械验收未通过的条目）：不写的话执行者只能从上一轮的
+  //   对话里自己猜哪里不对，于是改错地方、反复交同一份东西。
+  const unmet = [...(childTaskRun?.progress?.unmet ?? [])].slice(0, 6);
+  if (unmet.length) {
+    lines.push('上一轮还差这些（逐条修掉再交）：\n' + unmet.map((u, i) => `${i + 1}. ${String(u).slice(0, 200)}`).join('\n'));
+  }
+  // ★ 独立复核未通过：把缺陷清单原文贴进来，下一轮才能精准修而不是重做。
+  const rework = criticFeedbackBlock(childTaskRun);
+  if (rework) lines.push(rework);
   lines.push('做完把结果交回给负责人；不要改上级目标。');
   if (autonomous) lines.push(AUTONOMY_RULE);
   return lines.join('\n');

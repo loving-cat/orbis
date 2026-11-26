@@ -64,6 +64,13 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
             + '适合“下一步依赖上一步的结论与口径”的活。不填默认直接开跑。',
         }),
       ),
+      criticRequired: Type.Optional(
+        Type.Boolean({
+          description:
+            '这份活要不要让独立复核员审一次（机械验收通过后仍可能被退回）。'
+            + '适合“内容对不对比文件在不在更重要”的活（报告、分析、口径、文案）。不填默认跟随目标条件。',
+        }),
+      ),
       deliverables: Type.Optional(Type.Array(Type.String(), { description: '交付物清单' })),
       verification: Type.Array(
         Type.Object({
@@ -141,6 +148,8 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
         files: params.files ?? [],
         dependsOn: params.dependsOn ?? [],
         checkpointBeforeRun: params.checkpointBeforeRun === true,
+        // 不填就是 undefined（跟随父任务），不能写成 false —— 那会把父任务的要求吞掉
+        criticRequired: typeof params.criticRequired === 'boolean' ? params.criticRequired : undefined,
         // 计划步骤号 → 真实子任务 id（负责人手里只有“第 2 条”这种写法）
         stepIds: planStepIds(taskRuns, parent),
       });

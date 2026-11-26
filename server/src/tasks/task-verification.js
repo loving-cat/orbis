@@ -342,13 +342,26 @@ export async function checkMechanical(condition, ctx) {
 
   if (kind === VERIFY_KIND.expert) {
     const review = [...(ctx?.expertReviews ?? [])].reverse().find((r) => r.conditionId === condition.id && r.revision === ctx?.revision && r.taskRunId === ctx?.taskRunId);
+    // 「谁说的」要说清楚：负责人的人工判断与独立复核的证据力不一样，
+    // 用户看到“负责人专业判断”而实际是机器审的，就无法判断该不该自己看一眼。
+    const who = review?.source === 'critic_review'
+      ? '独立复核' + (review?.reviewerModel ? '（' + String(review.reviewerModel).slice(0, 40) + '）' : '')
+      : '负责人专业判断';
     if (review && review.verdict === VERDICT.passed) {
-      return { verdict: VERDICT.passed, detail: '负责人专业判断：通过（' + String(review.note ?? '').slice(0, 120) + '）', source: 'lead_review' };
+      return {
+        verdict: VERDICT.passed,
+        detail: who + '：通过（' + String(review.note ?? '').slice(0, 120) + '）',
+        source: review?.source === 'critic_review' ? 'critic_review' : 'lead_review',
+      };
     }
     if (review && review.verdict === VERDICT.failed) {
-      return { verdict: VERDICT.failed, detail: '负责人专业判断：不通过（' + String(review.note ?? '').slice(0, 120) + '）', source: 'lead_review' };
+      return {
+        verdict: VERDICT.failed,
+        detail: who + '：不通过（' + String(review.note ?? '').slice(0, 120) + '）',
+        source: review?.source === 'critic_review' ? 'critic_review' : 'lead_review',
+      };
     }
-    return { verdict: VERDICT.needsReview, detail: '需要专业判断：当前没有同任务/同版本/同条件的负责人判断记录' };
+    return { verdict: VERDICT.needsReview, detail: '需要专业判断：当前没有同任务/同版本/同条件的判断记录' };
   }
   if (!isMechanical(kind)) {
     return {
@@ -640,6 +653,43 @@ function parseDeclaredFormat(text, format) {
 // ---------------------------------------------------------------------------
 
 /**
+ * 只取可适用于本次验收的专业判断记录。
+ *
+ * ## 为什么要按尝试过滤 `critic_review`
+ *
+ * 独立复核的记录绑在某一次产出上。上一轮判 `failed` 之后执行者返工，
+ * 新一轮是**新产出**：若还拿旧 `failed` 当结论，专家条件会永远不通过，
+ * 返工也就没有意义了（执行者无论怎么改都过不了）。
+ *
+ * 所以：
+ *   · 显式指定 attemptId 时：只看那一次尝试的记录；
+ *   · 不指定时：`critic_review` 只认**最新已结算尝试**的记录，
+ *     而负责人的人工判断（`lead_review` / 旧记录）继续适用于整个版本 ——
+ *     人对目标本身下的结论不该因为一次重试就作废。
+ */
+function scopedExpertReviews(taskRun, { revision, attemptId }) {
+  const list = Array.isArray(taskRun?.expertReviews) ? taskRun.expertReviews : [];
+  const latest = latestSettledAttemptId(taskRun);
+  return list.filter((r) => {
+    if (!r || r.taskRunId !== taskRun?.id || r.revision !== revision) return false;
+    if (attemptId !== null && attemptId !== undefined) return r.attemptId === attemptId;
+    if (r.source === 'critic_review' && latest && r.attemptId) {
+      return String(r.attemptId) === String(latest);
+    }
+    return true;
+  });
+}
+
+/** 最近一次已结算尝试的 id（拿不到就是 null）。 */
+function latestSettledAttemptId(taskRun) {
+  const ledger = Array.isArray(taskRun?.attempts) ? taskRun.attempts : [];
+  for (let i = ledger.length - 1; i >= 0; i -= 1) {
+    if (ledger[i]?.state === 'settled') return ledger[i].attemptId ?? null;
+  }
+  return null;
+}
+
+/**
  * 对一个 TaskRun 跑一遍验收。
  *
  * @param {object} taskRun
@@ -656,7 +706,7 @@ export async function verifyTaskRun(taskRun, { access, attemptId = null, taskRun
   const trusted = collectTrustedEvidence(taskRun, { taskRuns, attemptId, resolveRef: typeof access?.resolveRef === 'function' ? (ref) => access.resolveRef(ref) : null });
   const ledger = trusted.ledger;
   const allowedRefs = trusted.refs;
-  const expertReviews = (taskRun?.expertReviews ?? []).filter((r) => r && r.taskRunId === taskRun?.id && r.revision === revision && (attemptId === null || attemptId === undefined || r.attemptId === attemptId));
+  const expertReviews = scopedExpertReviews(taskRun, { revision, attemptId });
 
   const verdicts = [];
   const unmet = [];

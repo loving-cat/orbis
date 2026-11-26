@@ -148,7 +148,21 @@ export function createSessionBuilder({
 
   return async function buildSession(roomId, botId, opts = {}) {
     const isTalkLane = opts.talkLane === true;
-    const wantsReportTool = !isTalkLane && opts.reportTool === true;
+    /**
+     * 独立评审（Critic）通道。
+     *
+     * 与全双工旁路 Talk 用同一套隔离思路，但更严：
+     *   · 纯内存会话（`SessionManager.inMemory`）：不落盘、不碰执行者的 JSONL；
+     *   · 只给四个只读查阅工具（read/ls/find/grep）：没有写、没有 shell、没有 git 写、
+     *     没有 MCP、没有宿主 customTools；
+     *   · 策略层 `dangerous: 'deny'` 兜底（与 Talk 一样过 policy-hook）。
+     * 为什仇不能复用执行者的会话：只要历史里有它自己写的产物与自我解释，
+     * “独立评审”就退化成“复述执行者的话”。
+     */
+    const isCriticLane = opts.criticLane === true;
+    /** 两条隔离通道共用的“只读 + 纯内存”开关。 */
+    const isolatedLane = isTalkLane || isCriticLane;
+    const wantsReportTool = !isolatedLane && opts.reportTool === true;
     const stored = store.getBot(botId);
     if (!stored) throw new Error(`找不到 bot ${botId}`);
 
@@ -171,7 +185,7 @@ export function createSessionBuilder({
     // ★ 内存模式（T2.3）：store 说了不落盘，会话文件也不能偷偷开一个。
     //   否则“传内存 store 时零磁盘写入”只在 mock 的 SessionManager 下成立 ——
     //   真实运行时会先 create 出 `sessions/<room>-<bot>.json`，再写 transcript。
-    const inMemorySession = isTalkLane || store.memory === true || !persistSession;
+    const inMemorySession = isolatedLane || store.memory === true || !persistSession;
     const savedFile = inMemorySession ? null : store.sessionFileFor(roomId, botId);
     // 旁路 Talk / 内存模式会话强制纯内存隔离，绝不与后台 Work 并发读写同一磁盘会话文件
     const sessionManager = inMemorySession
@@ -186,7 +200,7 @@ export function createSessionBuilder({
     const room = store.getRoom(roomId);
     const isDeptLead = isDelegatingLead(room, bot);
     const policy = store.policy();
-    const effectivePolicy = isTalkLane ? { ...policy, dangerous: 'deny' } : policy;
+    const effectivePolicy = isolatedLane ? { ...policy, dangerous: 'deny' } : policy;
     const roleKey = roleConfigurationKey(room, bot);
     // isMain 决定要不要给 ask_user（主控不给 —— 它直接跟用户对话，不弹卡片）
     const commonTools = buildCommonTools({ runner, roomId, botId, isMain: isChief, store, config, bus });
@@ -225,14 +239,14 @@ export function createSessionBuilder({
     //
     //   能力边界在 git-ops.js 的白名单里（只有 status/diff/log/show/branches/add/commit），
     //   push/merge/reset/clean 在那张表里根本没有。
-    const gitTools = !isTalkLane && (isChief || isDeptLead)
+    const gitTools = !isolatedLane && (isChief || isDeptLead)
       ? buildGitTools({ runner, store, roomId, botId, config })
       : [];
 
     // ★ 接单与任务进度工具：结合宿主实例开关决定是否注册（SDK 轻量模式默认关）。
     const intakeOn = Boolean(runner?.taskIntakeEnabled ?? intakeEnabled());
     const intakeTools =
-      !isTalkLane && isChief && intakeOn
+      !isolatedLane && isChief && intakeOn
         ? buildIntakeTools({
             runner, store, roomId, botId, health,
             requestScopeOf: () => runner.currentRequestScope?.(roomId, botId) ?? null,
@@ -240,12 +254,12 @@ export function createSessionBuilder({
         : [];
 
     // 自然进度/改版：主控在本轮理解里读任务权威状态或沿原任务升版。
-    const insightTools = !isTalkLane && isChief && intakeOn
+    const insightTools = !isolatedLane && isChief && intakeOn
       ? buildTaskInsightTools({ runner, store, roomId, botId })
       : [];
 
     const modelGroups = runner?.modelGroups ?? null;
-    const roleCustomTools = isTalkLane
+    const roleCustomTools = isolatedLane
       ? []
       : customToolsForRole([
           ...commonTools,
@@ -278,12 +292,12 @@ export function createSessionBuilder({
     const hostToolNames = isReadonlyPolicy(effectivePolicy)
       ? extraToolNames.filter((name) => readonlyToolAllowed(name))
       : extraToolNames;
-    const baseTools = isTalkLane
+    const baseTools = isolatedLane
       ? rawBaseTools.filter((t) => ['read', 'ls', 'find', 'grep'].includes(t))
       : [...rawBaseTools, ...hostToolNames.filter((name) => !rawBaseTools.includes(name))];
 
-    // 旁路 Talk 不起沙箱 shell 工具，避免任何命令执行开销
-    const shellTools = isTalkLane
+    // 隔离通道不起沙箱 shell 工具，避免任何命令执行开销
+    const shellTools = isolatedLane
       ? []
       : buildSandboxedShellTools({
           bot,
@@ -307,13 +321,13 @@ export function createSessionBuilder({
       // 部门规矩跟着会话走：工具集和提示都是建会话时定的，规矩变了会作废重建
       policy: effectivePolicy,
       // MCP 清单只给主控：它要知道有哪些能力可以派给成员。
-      mcpLines: !isTalkLane && isChief
+      mcpLines: !isolatedLane && isChief
         ? [mcpSectionForPrompt({ store }), capabilityGuideForPrompt(store.mcpLibrary())]
             .filter(Boolean)
             .join('\n\n')
         : '',
 
-      modelLines: !isTalkLane && isChief ? modelCatalogSection(menuEntries(modelGroups ?? undefined), health) : '',
+      modelLines: !isolatedLane && isChief ? modelCatalogSection(menuEntries(modelGroups ?? undefined), health) : '',
     });
 
     const talkAppendPrompt = isTalkLane
@@ -322,6 +336,22 @@ export function createSessionBuilder({
         '请直接结合实时工作台快照与上下文，用 1～4 句自然口吻快速回答用户问题或确认已记下补充要求；' +
         '禁止在当前旁路里声称执行了写文件、跑命令或改任务状态，也不要生硬复述快照格式。'
       : baseAppendPrompt;
+
+    /**
+     * 独立评审（Critic）的附加规则。
+     *
+     * ★ 这里必须把「不许信自述、必须自己读文件」写死：评审员的上下文里
+     *   本来就只有任务目标与产物路径，但它仍然可能根据经验“推测”文件内容。
+     *   同时告知它只有只读工具 —— 它就不会把力气花在“想写个脚本验证”上。
+     */
+    const criticAppendPrompt = isCriticLane
+      ? `${baseAppendPrompt}\n\n## 独立评审（Critic）通道规则\n` +
+        '你是一个**只读**的独立评审员，不参与执行，也不能修改任何东西。' +
+        '你只有 read / ls / find / grep 四个工具：要看结论就亲自打开产物，' +
+        '不要根据路径名、执行者的自述或自己的想象猜测内容。' +
+        '评审只看两件事：任务目标与验收条件是否真的达到，以及全组黑板上约束/决定有没有被违反。' +
+        '结论必须按要求的 JSON 对象输出，不得附加解释文字。'
+      : talkAppendPrompt;
 
     /**
      * 资源加载器的全套默认参数（老代码就是直接内联传的）。
@@ -341,14 +371,14 @@ export function createSessionBuilder({
           bot,
           grantGate: runner.grantGate ?? null,
           mode: execMode,
-          talkLane: isTalkLane,
+          talkLane: isolatedLane,
           config,
           store,
           bus,
           managedContextOf: () => runner.currentTaskContext?.(roomId, bot.id) ?? null,
           onBlocked: (approval, info) => runner.notePolicyBlocked?.(roomId, bot.id, approval, info),
         }),
-        ...(isTalkLane ? [] : [createMcpExtension({ botId, roomId, store })]),
+        ...(isolatedLane ? [] : [createMcpExtension({ botId, roomId, store })]),
       ],
       extensionsOverride: (base) => {
         const needles = (readBrandEnv(process.env, 'DISABLED_EXTENSIONS') ?? 'context-mode')
@@ -364,9 +394,9 @@ export function createSessionBuilder({
           }),
         };
       },
-      appendSystemPrompt: talkAppendPrompt,
+      appendSystemPrompt: criticAppendPrompt,
       ...resourceOptions,
-      ...(isTalkLane || isDeptLead || isReadonlyPolicy(effectivePolicy)
+      ...(isolatedLane || isDeptLead || isReadonlyPolicy(effectivePolicy)
         ? { noExtensions: true, noMcp: true }
         : {}),
     };
@@ -408,11 +438,11 @@ export function createSessionBuilder({
 
     applyCompactionBudget(session, bot);
 
-    if (!isTalkLane && session.sessionFile && session.sessionFile !== savedFile) {
+    if (!isolatedLane && session.sessionFile && session.sessionFile !== savedFile) {
       store.setSessionFile(roomId, botId, session.sessionFile);
     }
     log(
-      `${isTalkLane ? '[talk] ' : ''}会话就绪 ${roomId} · ${bot.emoji ?? ''}${bot.name} → ` +
+      `${isCriticLane ? '[critic] ' : isTalkLane ? '[talk] ' : ''}会话就绪 ${roomId} · ${bot.emoji ?? ''}${bot.name} → ` +
         `${path.basename(session.sessionFile ?? '(内存)')}`,
     );
     return {
