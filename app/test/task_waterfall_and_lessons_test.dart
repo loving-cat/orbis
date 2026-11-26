@@ -258,6 +258,41 @@ void main() {
       expect(span.left + span.width, lessThanOrEqualTo(1.0001), reason: '右边界不能溢出');
       expect(span.width, greaterThan(0));
     });
+
+    test('waitSpanOf 只在有真实排队等待段时返回区间，且未开跑条不画执行段', () {
+      const waterfall = TaskRunWaterfall(durationMs: 10000);
+      final waitedAndRan = TaskRunWaterfallItem.fromJson({
+        'id': 'k1', 'botId': 'b1', 'botName': '', 'state': 'completed', 'stateText': '已完成',
+        'phase': 'done', 'queuedOffsetMs': 1000, 'offsetMs': 6000, 'durationMs': 4000,
+      });
+      final wait = waterfall.waitSpanOf(waitedAndRan);
+      expect(wait, isNotNull);
+      expect(wait!.left, closeTo(0.1, 0.001));
+      expect(wait.width, closeTo(0.5, 0.001));
+      expect(waitedAndRan.started, isTrue);
+
+      final neverStarted = TaskRunWaterfallItem.fromJson({
+        'id': 'k2', 'botId': 'b2', 'botName': '', 'state': 'queued', 'stateText': '准备中',
+        'phase': 'active', 'queuedOffsetMs': 2000, 'offsetMs': null, 'durationMs': null,
+      });
+      final waitPending = waterfall.waitSpanOf(neverStarted);
+      expect(waitPending, isNotNull);
+      expect(waitPending!.left, closeTo(0.2, 0.001));
+      expect(waitPending.width, closeTo(0.8, 0.001), reason: '没开跑的等待条等到时间轴末端');
+      expect(neverStarted.started, isFalse);
+
+      final instant = TaskRunWaterfallItem.fromJson({
+        'id': 'k3', 'botId': 'b3', 'botName': '', 'state': 'completed', 'stateText': '已完成',
+        'phase': 'done', 'queuedOffsetMs': 1000, 'offsetMs': 1050, 'durationMs': 500,
+      });
+      expect(waterfall.waitSpanOf(instant), isNull, reason: '等待不到 1% 不画');
+
+      final missingQueue = TaskRunWaterfallItem.fromJson({
+        'id': 'k4', 'botId': 'b4', 'botName': '', 'state': 'completed', 'stateText': '已完成',
+        'phase': 'done', 'offsetMs': 1000, 'durationMs': 500,
+      });
+      expect(waterfall.waitSpanOf(missingQueue), isNull);
+    });
   });
 
   group('TaskWaterfallSection', () {
@@ -304,7 +339,7 @@ void main() {
       expect(find.text('甲'), findsWidgets);
       expect(find.text('分身'), findsOneWidget);
       expect(find.text('strong'), findsOneWidget);
-      expect(find.text('复核✓'), findsOneWidget);
+      expect(find.text('复核✓ 返工1轮'), findsOneWidget);
       expect(find.textContaining('已合入'), findsWidgets);
       expect(find.text('冲突'), findsOneWidget);
       // 没有单价 → 不显示价格
@@ -343,6 +378,54 @@ void main() {
       expect(find.textContaining('执行瀑布流'), findsNothing);
       final box = tester.getSize(find.byType(TaskWaterfallSection));
       expect(box.height, 0);
+    });
+
+    testWidgets('未开跑仅画等待段；Critic 0/2 轮、计划挂起与等主仓可合入徽章正确', (tester) async {
+      final custom = TaskRun.fromJson({
+        ...detailJson(),
+        'waterfall': {
+          'originAt': 1000,
+          'endAt': 11000,
+          'durationMs': 10000,
+          'total': 4,
+          'truncated': 0,
+          'items': [
+            {
+              'id': 'w1', 'title': '排队未开跑', 'botId': 'b1', 'botName': '甲',
+              'state': 'queued', 'stateText': '准备中', 'phase': 'active',
+              'queuedOffsetMs': 0, 'offsetMs': null, 'durationMs': null,
+              'waitingCheckpoint': true, 'waitingPlanSteps': [1],
+            },
+            {
+              'id': 'w2', 'title': '等后开跑零返工', 'botId': 'b1', 'botName': '甲',
+              'state': 'completed', 'stateText': '已完成', 'phase': 'done',
+              'queuedOffsetMs': 0, 'offsetMs': 3000, 'durationMs': 5000,
+              'critic': {'verdict': 'passed', 'rounds': 0, 'maxRounds': 2, 'defects': []},
+            },
+            {
+              'id': 'w3', 'title': '返工两轮后通过', 'botId': 'b2', 'botName': '乙',
+              'state': 'completed', 'stateText': '已完成', 'phase': 'done',
+              'offsetMs': 2000, 'durationMs': 4000,
+              'critic': {'verdict': 'passed', 'rounds': 2, 'maxRounds': 2, 'defects': []},
+            },
+            {
+              'id': 'w4', 'title': '等主仓可合入', 'botId': 'b2', 'botName': '乙',
+              'state': 'blocked', 'stateText': '受阻', 'phase': 'needs_user',
+              'offsetMs': 1000, 'durationMs': 2000,
+              'worktree': {'status': 'preserved_dirty_main', 'branch': 'orbis/task/w4'},
+            },
+          ],
+        },
+      });
+      await pump(tester, custom);
+      // w1(queued) + w2(waited 3s) 画等待段；w2, w3, w4 画执行段（w1 不画执行段）
+      expect(find.byKey(const ValueKey('waterfall-wait')), findsNWidgets(2));
+      expect(find.byKey(const ValueKey('waterfall-run')), findsNWidgets(3));
+      expect(find.text('复核✓'), findsOneWidget);
+      expect(find.text('复核✓ 返工2轮'), findsOneWidget);
+      expect(find.text('等派第1条'), findsOneWidget);
+      expect(find.text('等把关'), findsNothing, reason: '被计划挂起时标等派第N条，不重复显示等把关');
+      expect(find.text('等主仓可合入'), findsOneWidget);
     });
   });
 

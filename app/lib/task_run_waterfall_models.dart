@@ -92,14 +92,17 @@ class TaskRunWaterfallItem {
     required this.state,
     required this.stateText,
     required this.phase,
+    this.queuedAt,
     this.startedAt,
     this.endedAt,
     this.durationMs,
+    this.queuedOffsetMs,
     this.offsetMs,
     this.dependsOn = const [],
     this.waitingOn = const [],
     this.waitingCheckpoint = false,
     this.checkpointApproved = false,
+    this.waitingPlanSteps = const [],
     this.cloned = false,
     this.cloneId,
     this.tier,
@@ -119,16 +122,32 @@ class TaskRunWaterfallItem {
   final String state;
   final String stateText;
   final String phase;
+
+  /// 建档（开始排队）的时刻。排队到开跑之间那段是「等」，不是在干活。
+  final int? queuedAt;
+
+  /// 第一次真正派出去执行的时刻；还没开跑为 null。
   final int? startedAt;
   final int? endedAt;
+
+  /// 从开跑到结束（没结束的算到服务端的此刻）；没开跑为 null。
   final int? durationMs;
 
-  /// 相对整棵树起点的偏移（服务端算好，客户端画条用）。
+  /// 排队起点相对整棵树起点的偏移。
+  final int? queuedOffsetMs;
+
+  /// 开跑时刻相对整棵树起点的偏移（服务端算好，客户端画条用）；没开跑为 null。
   final int? offsetMs;
   final List<String> dependsOn;
   final List<String> waitingOn;
   final bool waitingCheckpoint;
   final bool checkpointApproved;
+
+  /// 被计划挂起：在等计划里还没派出去的第 N 条（此时「等把关」不是在等审产物）。
+  final List<int> waitingPlanSteps;
+
+  /// 真的开跑过（有执行条可画）。
+  bool get started => offsetMs != null;
 
   /// 这一路是不是临时分身（C3）。
   final bool cloned;
@@ -169,14 +188,20 @@ class TaskRunWaterfallItem {
       state: _asString(json['state'], 'unknown'),
       stateText: _asString(json['stateText'], '未知'),
       phase: _asString(json['phase'], 'active'),
+      queuedAt: json['queuedAt'] == null ? null : _asInt(json['queuedAt']),
       startedAt: json['startedAt'] == null ? null : _asInt(json['startedAt']),
       endedAt: json['endedAt'] == null ? null : _asInt(json['endedAt']),
       durationMs: json['durationMs'] == null ? null : _asInt(json['durationMs']),
+      queuedOffsetMs: json['queuedOffsetMs'] == null ? null : _asInt(json['queuedOffsetMs']),
       offsetMs: json['offsetMs'] == null ? null : _asInt(json['offsetMs']),
       dependsOn: _asStringList(json['dependsOn']),
       waitingOn: _asStringList(json['waitingOn']),
       waitingCheckpoint: json['waitingCheckpoint'] == true,
       checkpointApproved: json['checkpointApproved'] == true,
+      waitingPlanSteps: ((json['waitingPlanSteps'] as List?) ?? const [])
+          .map((x) => _asInt(x))
+          .where((n) => n > 0)
+          .toList(growable: false),
       cloned: dispatch['cloned'] == true,
       cloneId: dispatch['cloneId'] == null ? null : _asString(dispatch['cloneId']),
       tier: dispatch['tier'] == null ? null : _asString(dispatch['tier']),
@@ -365,7 +390,23 @@ class TaskRunWaterfall {
 
   bool get isEmpty => items.isEmpty;
 
+  /// 排队等待那一段在整棵树里的相对区间（建档 → 开跑；没开跑的等到时间轴末端）。
+  ///
+  /// 没有建档时间、或者建完马上就开跑（等待段不到 1%）时返回 null —— 不画。
+  ({double left, double width})? waitSpanOf(TaskRunWaterfallItem item) {
+    final span = durationMs;
+    final queued = item.queuedOffsetMs;
+    if (span == null || span <= 0 || queued == null) return null;
+    final end = (item.offsetMs ?? span).toDouble();
+    final left = (queued / span).clamp(0.0, 1.0).toDouble();
+    final right = (end / span).clamp(0.0, 1.0).toDouble();
+    if (right - left < 0.01) return null;
+    return (left: left, width: right - left);
+  }
+
   /// 某条在整棵树里的相对区间（0..1，已做边界保护：除零、越界、负宽）。
+  ///
+  /// 只对开跑过的条有意义（[TaskRunWaterfallItem.started]）；没开跑的条只画 [waitSpanOf]。
   ({double left, double width}) spanOf(TaskRunWaterfallItem item) {
     const minWidth = 0.02;
     final span = durationMs;

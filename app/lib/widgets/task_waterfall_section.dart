@@ -336,6 +336,7 @@ class _WaterfallList extends StatelessWidget {
           _WaterfallRow(
             item: item,
             span: waterfall.spanOf(item),
+            waitSpan: waterfall.waitSpanOf(item),
             name: resolveTaskBotName(state, botId: item.botId, name: item.botName),
             expanded: expanded.contains(item.id),
             onToggle: () => onToggle(item.id),
@@ -350,6 +351,7 @@ class _WaterfallRow extends StatelessWidget {
   const _WaterfallRow({
     required this.item,
     required this.span,
+    this.waitSpan,
     required this.name,
     required this.expanded,
     required this.onToggle,
@@ -358,6 +360,9 @@ class _WaterfallRow extends StatelessWidget {
 
   final TaskRunWaterfallItem item;
   final ({double left, double width}) span;
+
+  /// 排队等待那一段（建档 → 开跑）；没有或太短为 null。
+  final ({double left, double width})? waitSpan;
   final String name;
   final bool expanded;
   final VoidCallback onToggle;
@@ -432,10 +437,13 @@ class _WaterfallRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 甘特条：左偏移 + 宽度都来自服务端算好的相对值（已 clamp）
+                // 甘特条：左偏移 + 宽度都来自服务端算好的相对值（已 clamp）。
+                // 淡色段 = 排队等待（等前置 / 名额 / 把关），实色段 = 真正在干活；
+                // 没开跑过的只有淡色段 —— 不能在最左边画一截「假执行」。
                 LayoutBuilder(
                   builder: (context, constraints) {
                     final width = constraints.maxWidth * span.width;
+                    final wait = waitSpan;
                     return Stack(
                       children: [
                         Container(
@@ -445,17 +453,32 @@ class _WaterfallRow extends StatelessWidget {
                             borderRadius: BorderRadius.circular(3),
                           ),
                         ),
-                        Positioned(
-                          left: constraints.maxWidth * span.left,
-                          child: Container(
-                            height: 6,
-                            width: width < 3 ? 3 : width,
-                            decoration: BoxDecoration(
-                              color: _stateColor,
-                              borderRadius: BorderRadius.circular(3),
+                        if (wait != null)
+                          Positioned(
+                            key: const ValueKey('waterfall-wait'),
+                            left: constraints.maxWidth * wait.left,
+                            child: Container(
+                              height: 6,
+                              width: constraints.maxWidth * wait.width,
+                              decoration: BoxDecoration(
+                                color: _stateColor.withValues(alpha: 0.22),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
                             ),
                           ),
-                        ),
+                        if (item.started)
+                          Positioned(
+                            key: const ValueKey('waterfall-run'),
+                            left: constraints.maxWidth * span.left,
+                            child: Container(
+                              height: 6,
+                              width: width < 3 ? 3 : width,
+                              decoration: BoxDecoration(
+                                color: _stateColor,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                          ),
                       ],
                     );
                   },
@@ -471,11 +494,17 @@ class _WaterfallRow extends StatelessWidget {
                     if (item.critic != null)
                       item.critic!.failed
                           ? _badge('复核×${item.critic!.rounds}', PB.danger)
-                          : (item.critic!.passed ? _badge('复核✓', PB.success) : _badge('复核', PB.textTertiary)),
+                          : (item.critic!.passed
+                              ? _badge(item.critic!.rounds > 0 ? '复核✓ 返工${item.critic!.rounds}轮' : '复核✓', PB.success)
+                              : _badge('复核', PB.textTertiary)),
                     if (item.worktree != null) _worktreeBadge(item.worktree!),
                     if (item.waitingOn.isNotEmpty)
                       _badge('等前置 ${item.waitingOn.length}', PB.textTertiary),
-                    if (item.waitingCheckpoint) _badge('等把关', PB.warn),
+                    // 被计划挂起时「等把关」其实是在等还没派出去的条目：说清楚，免得用户直接点放行
+                    if (item.waitingPlanSteps.isNotEmpty)
+                      _badge('等派第${item.waitingPlanSteps.join('、')}条', PB.warn)
+                    else if (item.waitingCheckpoint)
+                      _badge('等把关', PB.warn),
                   ],
                 ),
                 if (expanded && item.hasDetails) ...[
@@ -505,7 +534,8 @@ class _WaterfallRow extends StatelessWidget {
       return _badge('已合入${worktree.filesCount > 0 ? ' ${worktree.filesCount} 文件' : ''}', PB.success);
     }
     if (worktree.conflicted) return _badge('冲突', PB.danger);
-    if (worktree.preservedDirtyMain) return _badge('主仓脏保留', PB.warn);
+    // 主仓此刻不能安全合入（未提交改动 / 分离头指针 / 切到了别的分支…）：分支已保留，到点自动重试
+    if (worktree.preservedDirtyMain) return _badge('等主仓可合入', PB.warn);
     if (worktree.status == 'noop') return _badge('无改动', PB.textTertiary);
     return _badge('隔离中', PB.accent);
   }
