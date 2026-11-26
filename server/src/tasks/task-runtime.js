@@ -631,6 +631,18 @@ export function createTaskRuntime({
     onAttemptFinished({ taskRunId }) {
       supervisor.notify(taskRunId);
     },
+    /**
+     * 放行一个等把关的子任务（C5：App 瀑布流里的「放行」按钮）。
+     *
+     * `by: 'user'` 记成用户本人放行（与负责人在会话里调用同一条链路）。
+     */
+    approveCheckpoint(childTaskRunId, opts = {}) {
+      const isUser = opts?.by === 'user';
+      return supervisor.approveCheckpoint(childTaskRunId, {
+        botId: opts?.botId ?? (isUser ? 'user' : null),
+        reason: opts?.reason ?? (isUser ? '用户在 App 里放行' : ''),
+      });
+    },
     /** 审批决定：回到原任务。 */
     onApprovalDecided({ taskRunId, approvalId, decision, revision, attemptId = null }) {
       // 只看真实决定；不明确就拒绝，不猜成批准

@@ -33,6 +33,17 @@
 - 防死等：`upstream_failed` 与「受阻」等价参与父任务收口，自主模式交回负责人、非自主模式如实阻塞并说清是谁的失败。
 - 共享黑板挂在根任务 `blackboard` 上：最多 24 条（先淘汰最旧的非约束）、单条 ≤240 字、渲染 ≤1200 字；交付事实自动落一条 `artifact`，负责人/成员可用 `task_blackboard` 写 `decision`/`constraint`/`fact`。写入目标只取受管上下文的根任务，调用方无法指定（防跨任务串写）。
 
+## 集群全景与候选经验（2.0 集群 C5）
+
+- **服务端投影（向后兼容）**：
+  - `GET /api/task-runs`（列表）保持轻量：`budget` 补全 token 维度（`maxTokens`/`usedTokens`/`extraTokens`/`remainingTokens`）+ 一个只有几个标量的 `telemetrySummary`；
+  - `GET /api/task-runs/:id`（单条详情）额外投影 `waterfall`（时间线 `originAt`/`endAt`/`items`/`truncated`）、`telemetry`（`totalTokens`/`byBot`/`byModel`/`counts`/`budget`）与 `blackboard`（精选 10 条）；
+  - **Token 口径不双计**：`totalTokens` 优先用根 `budget.usedTokens`（整棵树权威累计），缺失时才退化为子树已结算尝试求和，并用 `totalTokensSource` 标明来源；
+  - **不编造价格**：没有单价时 `costUsd` / `estimatedCostUsd` 一律 `null`（服务端不内置价目表，由宿主注入 `costOf`）。
+- **控制通道**：`POST /api/task-runs/:id/control` 的 `extend` 支持同时或单独传 `extraRuns` / `extraTokens`；新增 `approve_checkpoint`（`childTaskRunId`），记成用户放行（`checkpointApprovedBy = 'user'`）并走与负责人相同的放行链路。
+- **候选经验通知**：复盘生成新 `candidate` 时广播轻量 `{ t: 'lessons.changed', roomId, count }`（不带正文），客户端收到后自行 `loadLessons()`；启用仍受 `lessons.js` 的「无证据不可启用」fail-closed 校验。
+- **客户端**：详情弹窗打开即异步 `fetchDetail` 拉完整快照；轻量列表/WS 推送合并时**保留已有明细**（不会把瀑布流冲成 null）；侧栏顶部常驻候选经验卡（0 条时 0 像素，无证据禁用采纳）。
+
 ## 并发编码的 Git Worktree 隔离（2.0 集群 C4）
 
 - **何时启用**：`ORBIS_TASK_WORKTREE` = `off` | `explicit`（默认）| `auto`。只有**子任务**可开（负责人/主控永远在主工作区协调）；`explicit` 只在 `assign_member_task` / `createChildTask` / `createTaskRun` 显式给了 `useWorktree: true` 或 `worktreeRepo` 时建，`auto` 额外按「声明了仓库内文件 / 目标是改代码」判定。

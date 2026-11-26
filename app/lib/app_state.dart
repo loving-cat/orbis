@@ -3030,6 +3030,13 @@ class AppState extends ChangeNotifier {
         applySummaries(ev['items'] as List?);
         break;
 
+      case 'lessons.changed':
+        // ★ C5：服务端复盘出新候选时发的**轻量通知**（只带 roomId/count，
+        //   不带正文）。这里触发一次后台刷新即可 —— 用户不用切到设置页
+        //   才能看到「一键采纳卡」。
+        unawaited(loadLessons());
+        break;
+
       case 'lessons.updated':
         // 复盘是在服务端后台跑的：不接这个事件，界面就要等用户切标签页
         // 才能看到新候选（更糟的是操作一条已经被删的经验 →“经验不存在”）。

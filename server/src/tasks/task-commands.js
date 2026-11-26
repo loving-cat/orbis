@@ -15,7 +15,7 @@ import { writeJsonAtomic } from '../util.js';
 
 export const COMMAND_ID = /^[A-Za-z0-9_-]{6,128}$/;
 // autonomy：任务卡上的「自主推进」开关，decision = 'on' | 'off'
-export const CONTROL_TYPES = new Set(['pause', 'resume', 'cancel', 'input', 'approval', 'revision', 'unblock', 'extend', 'autonomy']);
+export const CONTROL_TYPES = new Set(['pause', 'resume', 'cancel', 'input', 'approval', 'revision', 'unblock', 'extend', 'autonomy', 'approve_checkpoint']);
 
 function createCommandStore(dir) {
   const fileOf = (key) => path.join(dir, key + '.json');
@@ -229,6 +229,17 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
             extraRuns: body?.extraRuns ?? null,
             extraTokens: body?.extraTokens ?? null,
           });
+        } else if (type === 'approve_checkpoint') {
+          // ★ C5：用户在瀑布流里看到某个子任务「等把关」时一键放行。
+          //   身份是用户（`by: 'user'`），与负责人在会话里调用同一条放行链路。
+          const childId = String(body?.childTaskRunId ?? '').trim();
+          if (!childId) return fail(400, 'BAD_CHILD_TASK', '放行需要指定子任务（childTaskRunId）');
+          const child = findRun(childId);
+          if (!child) return fail(404, 'CHILD_TASK_NOT_FOUND', '子任务不存在');
+          if (child.parentTaskId !== taskRunId) return fail(409, 'NOT_CHILD_OF_TASK', '这个子任务不属于该任务');
+          result = typeof runtime.approveCheckpoint === 'function'
+            ? await runtime.approveCheckpoint(childId, { by: 'user' })
+            : { ok: false, code: 'unknown_control_type', text: '这个服务端不支持放行把关位' };
         } else if (type === 'autonomy') {
           result = typeof runtime.onSetAutonomy === 'function'
             ? await runtime.onSetAutonomy({ taskRunId, autonomous: body?.decision === 'on' })
@@ -251,6 +262,8 @@ export function createTaskCommands({ store, runner, taskRuns = null, commandDir 
                     ? (result?.ok === true && !after?.flags?.blockedAt)
                     : type === 'extend'
                       ? result?.ok === true
+                      : type === 'approve_checkpoint'
+                        ? result?.ok === true
                       : !(after?.openGates ?? []).some((g) => g.kind === 'approval' && g.ref === String(body?.ref ?? ''));
         if (!(effectApplied || result?.applied === true)) {
           commands.write({ ...pendingRecord, stage: 'failed', error: String(result?.code ?? 'EFFECT_NOT_APPLIED') });

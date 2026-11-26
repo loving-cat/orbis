@@ -1,6 +1,8 @@
 /// TaskRun 详情页：状态、预算、缺项与任务级控制。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -9,6 +11,7 @@ import '../task_bot_name.dart';
 import '../task_run_models.dart';
 import '../theme.dart';
 import 'task_run_card.dart';
+import 'task_waterfall_section.dart';
 
 /// 任务详情改成**屏幕中央的悬浮面板**。
 ///
@@ -17,6 +20,10 @@ import 'task_run_card.dart';
 /// 底部安全区截断。这里改成居中的对话框卡片 —— 固定最大宽度、可滚动、
 /// 点空白或 Esc 关闭，和桌面其他浮层保持一致。
 Future<void> showTaskRunSheet(BuildContext context, AppState state, TaskRun task) {
+  // ★ C5：打开就异步拉一次详情（含 waterfall / telemetry / blackboard）。
+  //   不 await：瀑布流是"补充信息"，不该让弹窗等一个网络往返。
+  //   拉回来写回缓存后，弹窗里的 ListenableBuilder 会自己刷新。
+  unawaited(state.taskRuns.fetchDetail(task.id).catchError((Object _) => null));
   return showDialog<void>(
     context: context,
     barrierColor: Colors.black.withValues(alpha: 0.42),
@@ -47,7 +54,8 @@ class TaskRunSheet extends StatelessWidget {
       insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 680),
+        // C5：瀑布流 + 遥测需要更宽的画布（仍旧随窗口自适应）
+        constraints: const BoxConstraints(maxWidth: 720, maxHeight: 740),
         child: ListenableBuilder(
           listenable: state.taskRuns,
           builder: (context, _) {
@@ -160,6 +168,17 @@ class _TaskRunSheetBody extends StatelessWidget {
               style: TextStyle(fontSize: 12, color: PB.textTertiary),
             ),
         ],
+        // ★ C5：集群全景（Token/费用仪表盘 + 子任务瀑布流 + 共享黑板）。
+        //   数据来自单条详情接口；没拉到明细时组件自己返回 0 像素。
+        const SizedBox(height: 10),
+        TaskWaterfallSection(
+          task: task,
+          onApproveCheckpoint: (childTaskRunId) => onRun(
+            context,
+            (t) => state.taskRuns.approveCheckpoint(t, childTaskRunId),
+            task,
+          ),
+        ),
         if (task.scope.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text('范围：${task.scope}', style: TextStyle(fontSize: 12, color: PB.textSecondary)),
@@ -238,10 +257,7 @@ class _TaskRunSheetBody extends StatelessWidget {
                 child: const Text('解除阻塞'),
               ),
             // 只有用户显式设了上限、且真用完了，才提供追加。默认不限额时不会有这个按钮。
-            if (task.phase == 'needs_user' &&
-                (task.state == 'paused_budget' ||
-                    (task.budget.maxRuns != null &&
-                        (task.budget.remaining ?? 0) <= 0)))
+            if (_canExtend(task))
               FilledButton(
                 onPressed: () => _openExtend(context, task),
                 child: const Text('追加额度'),
@@ -264,44 +280,82 @@ class _TaskRunSheetBody extends StatelessWidget {
     );
   }
 
-  /// 追加额度：用户输入要加多少次，走同一条幂等命令通道。
+  /// 现在能不能追加额度（次数用尽、token 用尽、或停在预算暂停）。
+  static bool _canExtend(TaskRun task) {
+    if (!task.isActive && task.state != 'paused_budget') return false;
+    if (task.state == 'paused_budget') return true;
+    if (task.budget.runsExhausted) return true;
+    if (task.budget.tokensExhausted) return true;
+    return false;
+  }
+
+  /// 追加额度：次数与 Token 两个维度都能加，走同一条幂等命令通道。
+  ///
+  /// ★ 默认值按**实际超额的维度**给：token 用尽就预填 token，次数用尽就预填次数。
+  ///   以前只支持次数，token 用尽时用户点开只能干瞪眼。
   Future<void> _openExtend(BuildContext context, TaskRun task) async {
-    final controller = TextEditingController(text: '5');
-    final value = await showDialog<int>(
+    final tokensExhausted = task.budget.tokensExhausted;
+    final runsExhausted = task.budget.runsExhausted || task.state == 'paused_budget' && !tokensExhausted;
+    final runsController = TextEditingController(text: runsExhausted ? '5' : '');
+    final tokensController = TextEditingController(text: tokensExhausted ? '50000' : '');
+    final result = await showDialog<({int? runs, int? tokens})>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('追加额度'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '当前已执行 ${task.budget.usedRuns ?? 0} 次，上限 ${task.budget.maxRuns ?? '不限'}。',
-              style: TextStyle(fontSize: 12, color: PB.textTertiary),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: '增加多少次执行'),
-            ),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '已执行 ${task.budget.usedRuns ?? 0} 次，上限 ${task.budget.maxRuns ?? '不限'}；'
+                '已用 ${task.budget.usedTokens ?? 0} tokens，'
+                '${task.budget.hasTokenLimit ? '上限 ${task.budget.maxTokens}（剩余 ${task.budget.remainingTokens ?? 0}）' : '未设上限'}。',
+                style: TextStyle(fontSize: 12, color: PB.textTertiary),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: runsController,
+                autofocus: !tokensExhausted,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '增加多少次执行（可留空）'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: tokensController,
+                autofocus: tokensExhausted,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '增加多少 Token（可留空）'),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           FilledButton(
-            onPressed: () => Navigator.pop(context, int.tryParse(controller.text.trim())),
+            onPressed: () => Navigator.pop(context, (
+              runs: int.tryParse(runsController.text.trim()),
+              tokens: int.tryParse(tokensController.text.trim()),
+            )),
             child: const Text('追加'),
           ),
         ],
       ),
     );
-    if (value == null || value <= 0) return;
+    if (result == null) return;
+    final runs = (result.runs ?? 0) > 0 ? result.runs : null;
+    final tokens = (result.tokens ?? 0) > 0 ? result.tokens : null;
+    if (runs == null && tokens == null) return;
     if (!context.mounted) return;
     await onRun(
       context,
-      (t) => state.taskRuns.control(t, type: 'extend', extraRuns: value, reason: '用户追加额度'),
+      (t) => state.taskRuns.control(
+        t,
+        type: 'extend',
+        extraRuns: runs,
+        extraTokens: tokens,
+        reason: '用户追加额度',
+      ),
       task,
     );
   }

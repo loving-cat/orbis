@@ -5,6 +5,11 @@
 /// 各司其职，不能用其中一个替代另一个。
 library;
 
+// C5 全景明细模型（详情接口才下发）：本文件要用，同时原样 re-export 给外部。
+import 'task_run_waterfall_models.dart';
+
+export 'task_run_waterfall_models.dart';
+
 int _asInt(Object? v, [int fallback = 0]) {
   if (v is int) return v;
   if (v is num) return v.toInt();
@@ -93,12 +98,22 @@ class TaskRunBudget {
     this.usedRuns,
     this.extraRuns = 0,
     this.remaining,
+    this.maxTokens,
+    this.usedTokens,
+    this.extraTokens = 0,
+    this.remainingTokens,
   });
 
   final int? maxRuns;
   final int? usedRuns;
   final int extraRuns;
   final int? remaining;
+
+  /// Token 维度的额度（C5 起服务端才投影；老服务端为 null）。
+  final int? maxTokens;
+  final int? usedTokens;
+  final int extraTokens;
+  final int? remainingTokens;
 
   factory TaskRunBudget.fromJson(Map<String, dynamic>? json) {
     if (json == null) return const TaskRunBudget();
@@ -107,10 +122,23 @@ class TaskRunBudget {
       usedRuns: json['usedRuns'] == null ? null : _asInt(json['usedRuns']),
       extraRuns: _asInt(json['extraRuns']),
       remaining: json['remaining'] == null ? null : _asInt(json['remaining']),
+      maxTokens: json['maxTokens'] == null ? null : _asInt(json['maxTokens']),
+      usedTokens: json['usedTokens'] == null ? null : _asInt(json['usedTokens']),
+      extraTokens: _asInt(json['extraTokens']),
+      remainingTokens: json['remainingTokens'] == null ? null : _asInt(json['remainingTokens']),
     );
   }
 
   bool get unlimited => maxRuns == null;
+
+  /// 设了 token 上限吗（没设 = 不限，不是「剩 0」）。
+  bool get hasTokenLimit => maxTokens != null && maxTokens! > 0;
+
+  /// Token 用尽：只有真的设了上限才可能为真。
+  bool get tokensExhausted => hasTokenLimit && (remainingTokens ?? 0) <= 0;
+
+  /// 次数用尽（与 token 是两个独立闸门）。
+  bool get runsExhausted => maxRuns != null && (remaining ?? 0) <= 0;
 }
 
 class TaskRunWaiting {
@@ -176,6 +204,9 @@ class TaskRun {
     required this.result,
     required this.admissionStatus,
     required this.updatedAt,
+    this.waterfall,
+    this.telemetry,
+    this.blackboard = const [],
   });
 
   final String id;
@@ -227,6 +258,57 @@ class TaskRun {
   final String? admissionStatus;
   final int updatedAt;
 
+  /// C5 全景明细：**只有详情接口**（GET /api/task-runs/:id）才会带。
+  ///
+  /// 列表与 WS 增量都不带它，所以合并时**必须保留已有值**，
+  /// 否则下一次轻量推送就会把用户正看着的瀑布流冲成 null。
+  final TaskRunWaterfall? waterfall;
+  final TaskRunTelemetry? telemetry;
+  final List<TaskRunBlackboardEntry> blackboard;
+
+  /// 这份快照带完整明细吗（列表/WS 推送不带）。
+  bool get hasDetail => waterfall != null || telemetry != null;
+
+  /// 把已有明细挂到一份**轻量**快照上（合并时用）。
+  TaskRun withDetail({
+    TaskRunWaterfall? waterfall,
+    TaskRunTelemetry? telemetry,
+    List<TaskRunBlackboardEntry>? blackboard,
+  }) =>
+      TaskRun(
+        id: id,
+        roomId: roomId,
+        rootTaskId: rootTaskId,
+        parentTaskId: parentTaskId,
+        revision: revision,
+        sequence: sequence,
+        storeVersion: storeVersion,
+        state: state,
+        stateText: stateText,
+        title: title,
+        scope: scope,
+        deliverables: deliverables,
+        verificationCount: verificationCount,
+        unmet: unmet,
+        waiting: waiting,
+        blockedReason: blockedReason,
+        phase: phase,
+        childrenSummary: childrenSummary,
+        plan: plan,
+        leadBotId: leadBotId,
+        leadBotName: leadBotName,
+        autonomous: autonomous,
+        autonomyReason: autonomyReason,
+        legacyNote: legacyNote,
+        budget: budget,
+        result: result,
+        admissionStatus: admissionStatus,
+        updatedAt: updatedAt,
+        waterfall: waterfall ?? this.waterfall,
+        telemetry: telemetry ?? this.telemetry,
+        blackboard: blackboard ?? this.blackboard,
+      );
+
   factory TaskRun.fromJson(Map<String, dynamic> json) {
     final waiting = json['waiting'];
     return TaskRun(
@@ -274,6 +356,16 @@ class TaskRun {
           ? _asString((json['admission'] as Map)['status'])
           : null,
       updatedAt: _asInt(json['updatedAt']),
+      waterfall: json['waterfall'] is Map
+          ? TaskRunWaterfall.fromJson((json['waterfall'] as Map).cast<String, dynamic>())
+          : null,
+      telemetry: json['telemetry'] is Map
+          ? TaskRunTelemetry.fromJson((json['telemetry'] as Map).cast<String, dynamic>())
+          : null,
+      blackboard: ((json['blackboard'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((m) => TaskRunBlackboardEntry.fromJson(m.cast<String, dynamic>()))
+          .toList(growable: false),
     );
   }
 

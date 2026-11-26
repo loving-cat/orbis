@@ -68,7 +68,7 @@ export function createTaskRunRoutes({ store, runner, commandDir = null }) {
       return idx?.byId.get(rootId) ?? findRun(rootId);
     };
     const nameOf = (botId) => store.getBot?.(botId)?.name ?? '';
-    const snapshotOf = (run, idx = null) => {
+    const snapshotOf = (run, idx = null, { detail = false } = {}) => {
       let children = null;
       try {
         // 不传 idx 时（单条接口）仍是 1 次扫描，与原来相同
@@ -76,7 +76,13 @@ export function createTaskRunRoutes({ store, runner, commandDir = null }) {
         children = (i.kids.get(run.id) ?? [])
           .filter((r) => (r.parentRevision ?? r.revision) === run.revision);
       } catch { children = null; }
-      return projectTaskRun(run, { root: rootOf(run, idx), nameOf, children });
+      return projectTaskRun(run, {
+        root: rootOf(run, idx), nameOf, children,
+        // ★ C5：只有单条详情接口才投影 waterfall / telemetry / blackboard，
+        //   列表接口保持轻量（否则每次列表都要把整棵树算一遍）。
+        includeDetail: detail,
+        now: Date.now(),
+      });
     };
 
     // ---- 列表：活跃/历史/全部；根预算统一由 rootOf -> projectTaskRun 解析
@@ -170,7 +176,7 @@ export function createTaskRunRoutes({ store, runner, commandDir = null }) {
       const run = findRun(taskRunId);
       if (!run) return fail(res, 404, 'TASK_RUN_NOT_FOUND', '任务不存在');
       const since = Number(url.searchParams.get('since') ?? '0') || 0;
-      const snapshot = snapshotOf(run);
+      const snapshot = snapshotOf(run, null, { detail: true });
       const gap = since > 0 && Number(snapshot.storeVersion) - since > 1;
       return respond(send, res, 200, {
         taskRun: snapshot, authoritative: true,

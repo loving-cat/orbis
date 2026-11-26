@@ -66,6 +66,8 @@ const PURE_MODULES = [
   'tasks/task-model-tier.js',
   // Worktree 隔离纯策略：档位 / 落点与分支名 / 场景判定 / 文件互斥放宽
   'tasks/task-worktree-policy.js',
+  // 集群全景投影：时间线 / Token 与费用聚合 / C1–C4 徽章 / 黑板摘要
+  'tasks/task-waterfall.js',
 ];
 
 const TEST_OVERRIDES = new Map([
@@ -85,6 +87,8 @@ const TEST_OVERRIDES = new Map([
   ['tasks/task-model-tier.js', 'long-task-clone-tier.mjs'],
   // worktree 纯策略与真实 git 场景在同一个回归文件
   ['tasks/task-worktree-policy.js', 'long-task-worktree.mjs'],
+  // 全景投影与候选经验通知在同一个回归文件
+  ['tasks/task-waterfall.js', 'long-task-waterfall-lessons.mjs'],
 ]);
 
 const FORBIDDEN_IMPORT =

@@ -134,6 +134,7 @@
 | `tasks/task-model-tier.js` | 任务难度模型分档（纯逻辑）：`resolveTierMode`（`off`/`explicit`/`auto`）、`tierModelOverrides`、`inferTaskTier`（确定性启发式）、`selectTierModel`（六条硬边界：standard 零扰动 / lockModel / 本地不外泄 / 熔断跳过 / 档位打分 / 同模型不覆盖）、`resolveTaskTier` |
 | `runner/session-lanes.js` | 会话泳道键唯一真源：`sessionLaneKey`（`room:bot` / `#fb` / `#clone_<id>` / `#clone_<id>#fb`）、`parseLaneKey`、`baseBotIdOfKey`（房间级中止要剥离后缀）、`releaseLaneSession` / `releaseTurnLane`（用完即焚：摘池 + 退订 + dispose） |
 | `tasks/task-worktree-policy.js` | Worktree 隔离纯策略：`WORKTREE_MODE`/`resolveWorktreeMode`、`sanitizeWorktreeId`（白名单 + 去 `..`）、`worktreeBranchOf`（`orbis/task/<safeId>`）、`worktreeRelPathOf`（`.orbis-worktrees/<safeId>`）、`shouldUseWorktree`（子任务限定 + `explicit`/`auto`）、`worktreePromptNote`、`worktreesBypassFileClaims`（**仅双方都隔离**才放宽） |
+| `tasks/task-waterfall.js` | 集群全景投影（纯逻辑）：`buildTaskWaterfall`（时间轴 + 每个子任务一条含 C1 依赖/把关、C2 Critic、C3 分身/档位、C4 worktree、token/cost）+ `telemetry`（根预算优先不双计、`byBot`/`byModel`、`counts`）+ `projectBlackboard` + `telemetrySummaryOf`（列表用极小摘要） |
 | `tasks/task-worktree.js` | Worktree 生命周期（IO）：`createWorktreeManager` → `prepareWorktree`（幂等复用）/ `mergeWorktree`（脏主仓与冲突双 fail-closed）/ `cleanupWorktree`（只清 active）/ `pruneOrphanWorktrees`。全部走 `locateGit` + `resolveRepoLayout` + `repoTrustVerdict` + 安全参数、`spawnSync` 无 shell、`withRepoWriteLock` 串行化 |
 | `runner/stream-bubbles.js` | 气泡收尾与「换条」的落库逻辑（从 `turn-executor.js` 抽出、原样 re-export）：`settleRunningSteps` / `applyPendingReseat` |
 | `tasks/task-critic-runner.js` | 评审执行器：`createCriticReviewer` 调 `session-factory` 的 `criticLane` 跑一轮，订阅收集文本与 `usage`，超时 `abort`，`finally` 里 `dispose` + 退订；把「评审不通过」与「评审员自身故障」分开返回（`status: reviewed | error`） |
@@ -183,7 +184,10 @@
 | `tasks/task-commands.js` | 命令回执/阶段恢复/应用事实/作用域预检唯一入口；路由只翻译 HTTP |
 | `request_outbox.dart` | 请求完整信封持久化、原操作重传、服务归属与 ACK 阶段清理 |
 | `task_run_api.dart` / `task_run_controller.dart` | 任务 HTTP 协议与控制器：连接 epoch、快照/增量、幂等命令；协议见 `docs/TASK-RUN-PROTOCOL.md` |
-| `widgets/task_run_card.dart` / `widgets/task_run_sheet.dart` | 聊天入口状态卡与任务详情/任务级控制；只展示与回调 |
+| `widgets/task_run_card.dart` / `widgets/task_run_sheet.dart` | 聊天入口状态卡与任务详情/任务级控制；只展示与回调。C5 起详情弹窗打开即 `fetchDetail` 并嵌入瀑布流 |
+| `widgets/task_waterfall_section.dart` | 集群全景面板：Token/费用仪表盘（预算进度、按成员/模型消耗）+ 子任务瀑布流（甘特条、分身/档位/复核/worktree 徽章、「放行」）+ 共享黑板 |
+| `widgets/lesson_adoption_banner.dart` | 候选经验「一键采纳卡」：0 条时 0 像素；无证据禁用采纳；最多 2 条 + 「还有 N 条」 |
+| `task_run_waterfall_models.dart` | C5 明细模型（`TaskRunWaterfall` / `Item` / `Telemetry` / `Critic` / `Worktree` / `BlackboardEntry`）；经 `task_run_models.dart` re-export，外部 import 不变 |
 | `ws_frame.dart` | 共享 WS 帧解码：文本/合法 UTF-8 二进制 JSON，直连与 relay 共用 |
 | `api.dart` | HTTP 封装（含分片上传 `uploadChunked`） |
 | `update_info.dart` | 更新响应解析 + 要不要提示的规则（纯逻辑，有测试） |

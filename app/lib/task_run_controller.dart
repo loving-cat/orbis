@@ -200,6 +200,8 @@ class TaskRunController extends ChangeNotifier {
     String? commandId,
     int? expectedRevision,
     int? extraRuns,
+    int? extraTokens,
+    String? childTaskRunId,
   }) async {
     final client = _client;
     if (client == null) return null;
@@ -214,6 +216,8 @@ class TaskRunController extends ChangeNotifier {
       'reason': reason,
       'expectedRevision': expectedRevision ?? task.revision,
       if (extraRuns != null) 'extraRuns': extraRuns,
+      if (extraTokens != null) 'extraTokens': extraTokens,
+      if (childTaskRunId != null) 'childTaskRunId': childTaskRunId,
     };
     _pendingCommand = envelope;
     final epoch = _epoch;
@@ -221,7 +225,8 @@ class TaskRunController extends ChangeNotifier {
       final body = await client.control(
         task: task, type: type, commandId: effectiveId,
         expectedRevision: envelope['expectedRevision'] as int,
-        ref: ref, text: text, decision: decision, reason: reason, extraRuns: extraRuns,
+        ref: ref, text: text, decision: decision, reason: reason,
+        extraRuns: extraRuns, extraTokens: extraTokens, childTaskRunId: childTaskRunId,
       );
       if (epoch != _epoch) return null;
       if (body['ok'] == false || body['accepted'] == false) {
@@ -244,6 +249,27 @@ class TaskRunController extends ChangeNotifier {
     }
   }
 
+  /// 拉一次完整详情（含瀑布流 / 遥测 / 黑板）。
+  ///
+  /// ★ 为什么要单独一个入口：列表与 WS 增量都不带明细，只有单条详情接口带。
+  ///   写回时走和的合并规则（`applyDetail`），轻量推送不会把明细冲成 null。
+  Future<TaskRun?> fetchDetail(String taskRunId) async {
+    final client = _client;
+    if (client == null) return _merge.byId(taskRunId);
+    final epoch = _epoch;
+    final detail = await client.fetchDetail(taskRunId);
+    if (detail == null || epoch != _epoch) return _merge.byId(taskRunId);
+    _merge.applyDetail(detail);
+    notifyListeners();
+    return _merge.byId(taskRunId);
+  }
+
+  /// 一键放行某个等把关的子任务（C5：瀑布流里的「放行」）。
+  Future<TaskRun?> approveCheckpoint(TaskRun task, String childTaskRunId) async {
+    final parent = _merge.byId(task.parentTaskId ?? task.id) ?? task;
+    return control(parent, type: 'approve_checkpoint', childTaskRunId: childTaskRunId);
+  }
+
   /// 原操作未知结果重试：使用发出前保存的命令信封，不重新拼字段。
   Future<TaskRun?> retryLastControl() async {
     final envelope = _pendingCommand;
@@ -262,6 +288,8 @@ class TaskRunController extends ChangeNotifier {
       // ★ 必须带上：同一个 commandId 的内容指纹要和第一次完全一致，
       //   否则服务端按内容判指纹不符，重试会被拒（而且用户看不懂为什么）。
       extraRuns: envelope['extraRuns'] as int?,
+      extraTokens: envelope['extraTokens'] as int?,
+      childTaskRunId: envelope['childTaskRunId'] as String?,
     );
   }
 

@@ -169,6 +169,16 @@ export function createLessonReflector({ runner, logFn = log, config: scopedConfi
     }
 
     logFn?.(`【${room.name}】复盘完成：新增 ${added} 条候选经验（待用户启用）`);
+    // ★ C5：新候选落盘后广播一条轻量事件 —— 客户端不用切到设置页手动刷新
+    //   也能看到「有一键采纳卡」。只带房间与条数，不带经验正文（正文走接口）。
+    if (added > 0) {
+      try {
+        const bus = runner?.bus ?? null;
+        bus?.emit?.('event', { t: 'lessons.changed', roomId, count: added });
+      } catch (err) {
+        logFn?.(`广播候选经验失败：${err?.message ?? err}`);
+      }
+    }
     return { added, preferences: prefs };
   }
 

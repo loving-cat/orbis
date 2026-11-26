@@ -46,6 +46,17 @@ class TaskRunApi {
     return api.get('/api/task-runs/$id', query: since == null ? null : {'since': '$since'});
   }
 
+  /// 单任务完整快照（含 waterfall / telemetry / blackboard）。
+  ///
+  /// ★ 与 `snapshot()` 打同一个接口，但明确要求详情字段：列表与 WS 推送
+  ///   都不带这些，只有这里拿到才能把全景刷新出来。
+  Future<TaskRun?> fetchDetail(String id) async {
+    final body = await api.get('/api/task-runs/$id');
+    final raw = body['taskRun'];
+    if (raw is! Map) return null;
+    return TaskRun.fromJson(raw.cast<String, dynamic>());
+  }
+
   Future<Map<String, dynamic>> control({
     required TaskRun task,
     required String type,
@@ -56,6 +67,8 @@ class TaskRunApi {
     String? decision,
     String? reason,
     int? extraRuns,
+    int? extraTokens,
+    String? childTaskRunId,
   }) async {
     return api.post('/api/task-runs/${task.id}/control', {
       'type': type,
@@ -66,6 +79,8 @@ class TaskRunApi {
       if (decision != null) 'decision': decision,
       if (reason != null) 'reason': reason,
       if (extraRuns != null) 'extraRuns': extraRuns,
+      if (extraTokens != null) 'extraTokens': extraTokens,
+      if (childTaskRunId != null) 'childTaskRunId': childTaskRunId,
     });
   }
 }

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import 'lesson_adoption_banner.dart';
+
 import '../app_state.dart';
 import '../scope.dart';
 import '../task_bot_name.dart';
@@ -31,8 +33,23 @@ class RoomTaskPanel extends StatelessWidget {
     return ListenableBuilder(
       listenable: state.taskRuns,
       builder: (context, _) {
+        // ★ C5：候选经验卡常驻在这个侧栏顶部。
+        //   没有任务时就只渲染它（0 条候选时它自己是 0 像素，不会占位）。
+        final banner = LessonAdoptionBanner(roomId: roomId);
         final tasks = state.taskRuns.forRoom(roomId);
-        if (tasks.isEmpty) return const SizedBox.shrink();
+        if (tasks.isEmpty) return banner;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            banner,
+            _taskList(context, state, tasks),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _taskList(BuildContext context, AppState state, List<TaskRun> tasks) {
         return Padding(
           padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
           child: Column(
@@ -73,8 +90,6 @@ class RoomTaskPanel extends StatelessWidget {
             ],
           ),
         );
-      },
-    );
   }
 }
 

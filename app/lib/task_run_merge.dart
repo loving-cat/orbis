@@ -28,6 +28,36 @@ class TaskRunMerge {
 
   TaskRun? byId(String id) => _byId[id];
 
+  /// 写回一份**详情**快照（含瀑布流/遥测/黑板）。
+  ///
+  /// 详情接口的 storeVersion 与列表一致，所以不能只靠版本号判定"要不要收"：
+  /// 同版本也要收（否则用户点开详情永远刷不出瀑布流）。
+  void applyDetail(TaskRun detail) {
+    if (detail.id.isEmpty) return;
+    final current = _byId[detail.id];
+    _byId[detail.id] = current == null
+        ? detail
+        : detail.withDetail(
+            waterfall: detail.waterfall ?? current.waterfall,
+            telemetry: detail.telemetry ?? current.telemetry,
+            blackboard: detail.blackboard.isEmpty ? current.blackboard : detail.blackboard,
+          );
+    if (detail.storeVersion > _cursor) _cursor = detail.storeVersion;
+  }
+
+  /// 轻量快照（列表/WS）合并时**保留已有明细**。
+  ///
+  /// ★ 不这么做的话，用户正看着瀑布流时来一条 WS 增量，
+  ///   `waterfall` 就变成 null，面板当场空白。
+  TaskRun _keepDetail(TaskRun next, TaskRun? current) {
+    if (current == null || next.hasDetail || !current.hasDetail) return next;
+    return next.withDetail(
+      waterfall: current.waterfall,
+      telemetry: current.telemetry,
+      blackboard: current.blackboard,
+    );
+  }
+
   void clear() {
     _byId.clear();
     _cursor = 0;
@@ -42,7 +72,7 @@ class TaskRunMerge {
       if (next.id.isEmpty) continue;
       final current = _byId[next.id];
       if (current != null && next.storeVersion <= current.storeVersion) continue;
-      _byId[next.id] = next;
+      _byId[next.id] = _keepDetail(next, current);
       if (next.storeVersion > _cursor) _cursor = next.storeVersion;
       changed = true;
     }
@@ -71,7 +101,7 @@ class TaskRunMerge {
       }
     }
     final gap = current != null && next.storeVersion > current.storeVersion + 1;
-    _byId[next.id] = next;
+    _byId[next.id] = _keepDetail(next, current);
     if (next.storeVersion > _cursor) _cursor = next.storeVersion;
     return TaskRunMergeResult(changed: true, gap: gap);
   }
