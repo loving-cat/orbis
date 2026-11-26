@@ -32,7 +32,7 @@ const error = (text) => ({ content: [{ type: 'text', text }], isError: true });
  * @param {string} p.roomId
  * @param {string} p.botId
  */
-export function buildBlackboardTool({ runner, store, roomId, botId }) {
+export function buildBlackboardTool({ runner, store, roomId, botId, laneKey = null }) {
   const taskRuns = store.taskRuns;
   return defineTool({
     name: 'task_blackboard',
@@ -53,7 +53,7 @@ export function buildBlackboardTool({ runner, store, roomId, botId }) {
       ),
     }),
     execute: async (_toolCallId, params) => {
-      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId });
+      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId, laneKey });
       if (submission.kind === SUBMISSION.invalid) {
         return error(`现在不能写黑板：${submission.text}`);
       }

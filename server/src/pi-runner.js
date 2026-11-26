@@ -51,6 +51,7 @@ import { createBuildInput } from './prompt-input.js';
 import { departmentOf } from './group-prompt.js';
 import { intakeEnabled } from './coordination/intake-tool.js';
 import { sessionKey } from './runner/runner-utils.js';
+import { sessionLaneKey, baseBotIdOfKey } from './runner/session-lanes.js';
 import {
   MEMORY_WINDOW, TARGET_RECENT_TOKENS, TARGET_RECENT_TOKENS_LIGHT, COMPACT_PROMPT,
   planCompaction, maybeAutoSummarize, summarizeMemory, compactIfNeeded,
@@ -154,10 +155,9 @@ export class PiRunner {
   activateReportScope(key, collector) { return activateReportScope(this, key, collector); }
   releaseReportScope(key, collector) { return releaseReportScope(this, key, collector); }
   candidateDepartmentIds(roomId, botId) { return candidateDepartmentIds(this, roomId, botId); }
-  currentTaskContext(roomId, botId) { return currentTaskContext(this, roomId, botId); }
-  notePolicyBlocked(roomId, botId, approval, info = {}) { return notePolicyBlocked(this, roomId, botId, approval, info); }
-  collectReport(roomId, botId, input) { return collectReport(this, roomId, botId, input); }
-
+  currentTaskContext(roomId, botId, laneKey = null) { return currentTaskContext(this, roomId, botId, laneKey); }
+  notePolicyBlocked(roomId, botId, approval, info = {}, laneKey = null) { return notePolicyBlocked(this, roomId, botId, approval, info, laneKey); }
+  collectReport(roomId, botId, input, laneKey = null) { return collectReport(this, roomId, botId, input, laneKey); }
   // ---------------------------------------------------------------- 初始化与模型管理
 
   async init() {
@@ -375,14 +375,15 @@ export class PiRunner {
   async ensureSession(roomId, botId, opts = {}) {
     // ★ 临时模型用独立键、且**不复用**缓存：复用原键会直接返回旧模型那个会话，
     //   modelOverride 就成了假开关（说切了，请求还发往老模型）。
-    const key = opts.modelOverride ? `${sessionKey(roomId, botId)}#fb` : sessionKey(roomId, botId);
-    if (!opts.modelOverride) {
+    // 泳道键：主会话 / #fb（临时模型）/ #clone_<id> / #clone_<id>#fb 四种形态
+    const key = sessionLaneKey({ roomId, botId, cloneId: opts.cloneId, modelOverride: opts.modelOverride });
+    if (!opts.modelOverride && !opts.cloneId) {
       retireStaleSession(this.sessions, key);
       const existing = this.sessions.get(key);
       if (existing?.session) return reserveSession(existing);
       if (existing?.pending) {
         await existing.pending;
-        return this.ensureSession(roomId, botId);
+        return this.ensureSession(roomId, botId, opts);
       }
     }
 
@@ -409,7 +410,7 @@ export class PiRunner {
       entry.reloadPending = this.sessions.get(key)?.reloadPending ?? false;
       entry.lastUsed = Date.now();
       this.sessions.set(key, entry);
-      if (retireStaleSession(this.sessions, key)) return this.ensureSession(roomId, botId);
+      if (retireStaleSession(this.sessions, key)) return this.ensureSession(roomId, botId, opts);
       reserveSession(entry);
       this.#evictSessions();
       return entry;
@@ -565,7 +566,6 @@ export class PiRunner {
     if (this.dispatching?.has(key)) return true;
     return Boolean(this.sessions.get(key)?.busy);
   }
-
   isRoomBusy(roomId) {
     for (const [key, entry] of this.sessions) {
       if (!key.startsWith(`${roomId}:`)) continue;
@@ -762,7 +762,7 @@ export class PiRunner {
           aborted = true;
         }
       }
-      const botIds = live.map((x) => x.key.slice(roomId.length + 1));
+      const botIds = live.map((x) => baseBotIdOfKey(roomId, x.key));
       for (const msg of this.store.listMessages(roomId, { limit: 200 })) {
         if (msg.status !== 'streaming') continue;
         if (!botIds.includes(msg.authorId)) continue;

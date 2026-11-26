@@ -203,6 +203,8 @@ const TESTS = [
   'long-task-dag-blackboard',
   // 独立评审 / 质检回路（2.0 集群 C2）
   'long-task-critic',
+  // 同角色临时分身 + 任务难度模型分档（2.0 集群 C3）
+  'long-task-clone-tier',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',

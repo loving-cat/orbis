@@ -45,6 +45,7 @@ import {
   transcriptFor,
 } from '../group-prompt.js';
 import { RETRY_DELAY_MS, sessionKey } from './runner-utils.js';
+import { sessionLaneKey, baseBotIdOfKey } from './session-lanes.js';
 
 // 供外观层（`pi-runner.js` 的 abort / disposeAll）直接取消挂起的续派，不必再造入口
 export { cancelGroupRetries, cancelAllGroupRetries } from './group-retry.js';
@@ -64,7 +65,8 @@ export function interruptRoundForUser(runner, roomId) {
   for (const [key, entry] of runner.sessions) {
     if (!key.startsWith(`${roomId}:`)) continue;
     if (!entry.session || !entry.busy) continue;
-    const botId = key.slice(roomId.length + 1);
+    // ★ 分身/临时模型的键带 `#clone_…` / `#fb` 后缀：直接用会得到不存在的 authorId
+    const botId = baseBotIdOfKey(roomId, key);
     botIds.push(botId);
     if (entry.compactingOnly) {
       entry.turnController?.abort();
@@ -288,6 +290,8 @@ async function runManagedOnce(runner, {
   attachments = [],
   attachmentContext = null,
   kickoff = false,
+  cloneId = null,
+  modelOverride = null,
 } = {}) {
   const roomId = room.id;
   const bot = runner.store.getBot(botId);
@@ -308,7 +312,9 @@ async function runManagedOnce(runner, {
   const taskPrompt = typeof openerText === 'string' && openerText.trim() ? openerText.trim() : '';
   const composed = [taskPrompt, prompt].filter(Boolean).join('\n\n');
 
-  const key = sessionKey(roomId, botId);
+  // ★ 泳道键：分身走自己的会话与自己的 dispatching 槽位，
+  //   主会话的 busy/中止判定不受分身影响，分身之间也互不阻塞。
+  const key = sessionLaneKey({ roomId, botId, cloneId, modelOverride });
   const managedTaskRun = managedContext?.taskRunId ?? null;
   runner.dispatching.add(key);
   if (managedTaskRun) {
@@ -326,6 +332,8 @@ async function runManagedOnce(runner, {
       attachments,
       managedContext,
       human: !openerBotId,
+      cloneId,
+      modelOverride,
     });
     return res;
   } catch (err) {
@@ -357,6 +365,8 @@ export async function executeGroupRound(
     attachmentContext = null,
     managedContext = null,
     summary = null,
+    cloneId = null,
+    modelOverride = null,
   } = {},
 ) {
   const room = runner.store.getRoom(roomId);
@@ -401,6 +411,10 @@ export async function executeGroupRound(
       attachments,
       attachmentContext,
       kickoff,
+      // ★ 分身槽位与本次档位模型：一条内存会话同时承载「分身 + 分档」，
+      //   不额外多建一层会话（§2 的“天然合一”）。
+      cloneId,
+      modelOverride,
     });
   }
 

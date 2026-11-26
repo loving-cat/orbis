@@ -49,8 +49,15 @@ export function readManagedSubmission({ runner, taskRuns, roomId, botId,
    */
   expectedTaskRunId = null,
   expectedAttemptId = null,
+  /**
+   * 会话泳道键（分身 / 单轮临时模型）。
+   *
+   * ★ 不传就是主会话 —— 但分身必须传：同一个 Bot 两条泳道各有一份
+   *   `managedContext`，读错那条就会把 A 的报告写到 B 头上。
+   */
+  laneKey = null,
 } = {}) {
-  const raw = runner.currentTaskContext?.(roomId, botId) ?? null;
+  const raw = runner.currentTaskContext?.(roomId, botId, laneKey) ?? null;
   if (raw === null || raw === undefined) return { kind: SUBMISSION.legacy };
 
   // 调用方点名要哪条：对不上就是失效，不能"凑合着用当前这条"

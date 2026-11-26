@@ -103,6 +103,8 @@ export async function createChildTask({
    * `undefined` / `false` = 按档位与目标条件自动决定。
    */
   criticRequired = undefined,
+  /** 难度档位（fast/standard/strong）：不进业务身份指纹，复用时可更新。 */
+  modelTier = undefined,
   /** 计划步骤号 → 真实子任务 id（负责人只记得住“第 2 条”）。 */
   stepIds = null,
 }) {
@@ -161,6 +163,10 @@ export async function createChildTask({
     criticRequired: criticRequired === undefined
       ? parentTaskRun.flags?.criticRequired === true
       : criticRequired === true,
+    // 档位：显式优先，否则跟随父任务（“这件事要强模型”应该往下传导）
+    modelTier: modelTier === undefined
+      ? (parentTaskRun.flags?.modelTier ?? null)
+      : modelTier,
   });
   if (!built.ok) return { ok: false, code: 'bad_child', text: built.text };
 

@@ -33,6 +33,18 @@
 - 防死等：`upstream_failed` 与「受阻」等价参与父任务收口，自主模式交回负责人、非自主模式如实阻塞并说清是谁的失败。
 - 共享黑板挂在根任务 `blackboard` 上：最多 24 条（先淘汰最旧的非约束）、单条 ≤240 字、渲染 ≤1200 字；交付事实自动落一条 `artifact`，负责人/成员可用 `task_blackboard` 写 `decision`/`constraint`/`fact`。写入目标只取受管上下文的根任务，调用方无法指定（防跨任务串写）。
 
+## 同角色临时分身与模型分档（2.0 集群 C3）
+
+- **分身边界**：只有**子任务**（`parentTaskId` 非空）可以开临时分身；负责人（根任务）与私聊 solo 永远走主会话，保住协调记忆连续性。
+- **开关**：`ORBIS_WORKER_CLONE` = `on`（默认）| `off`；`ORBIS_MAX_CLONES_PER_BOT` 默认 2（单个成员最多 1 主 + 2 分身，硬封顶 6）。`off` 时槽位恒为 1，行为与加这个能力之前逐字节一致。
+- **实际并发还被压两次**：根 `budget.concurrencyLimit` / 部门并发预算，以及上游健康度（有熔断打开 → 自动退回串行）。
+- **两条硬不变量绝不放松**：① 文件占用互斥（`fileClaims` / `claimsOverlap`）—— 同一个 Bot 的两个分身撞文件照样排队；② 根并发上限与 DAG 依赖/checkpoint 闸门。
+- **主槽 vs 分身**：子任务且（同 Bot 已有在途 **或** 主会话被用户聊天占着）且还有配额 → 直接开分身（`cloneId = taskRunId`）立刻跑，不再傻等 15 秒；否则走主会话。
+- **泳道键（`runner/session-lanes.js`）**：`room:bot` / `room:bot#fb` / `room:bot#clone_<id>` / `room:bot#clone_<id>#fb`。分身会话 `persist: false`（纯内存、不写 `store.sessionFile`），`finally` 里 `dispose()` 用完即焚。**五处按 key 存的状态全部绑泳道键**：`runner.sessions`、报告收集器（`activateReportScope`）、`currentTaskContext`（policy-hook / 黑板）、`dispatching`、`managedInflight`；房间级中止从键里剥离 `#…` 还原真实 `botId`。
+- **模型分档**：`ORBIS_MODEL_TIER` = `off` | `explicit`（默认）| `auto`；`ORBIS_TIER_MODEL_FAST` / `ORBIS_TIER_MODEL_STRONG` 可指定档位模型。`assign_member_task` / `createChildTask` / `createTaskRun` 可传 `modelTier`（存 `flags.modelTier`，不进业务身份指纹，子任务默认继承父任务）。
+- **六条硬边界**：`standard`/无效 → 零扰动；`bot.lockModel === true` → 绝不覆盖；本地/内网执行者绝不外泄到公有云（含 `ORBIS_TIER_MODEL_*`）；熔断组跳过；按档位打分（fast 偏 flash/mini，strong 偏 opus/reason/large）；挑出的模型与当前相同 → 不覆盖。**绝不写 `bot.model`**，只对这一次执行生效（纯内存会话，跑完即弃）。
+- 实际生效的 `{ cloned, cloneId, tier, modelOverride, why }` 记在 `taskRun.lastDispatchMeta`，供可观测与面板展示。
+
 ## 独立评审 / 质检回路（2.0 集群 C2）
 
 - 档位：`ORBIS_CRITIC_REVIEW` = `off` | `auto`（默认）| `all`。

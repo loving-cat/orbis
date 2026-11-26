@@ -35,6 +35,7 @@ import {
   pendingExpertConditions, resolveCriticMode, shouldRunCritic,
 } from './task-critic.js';
 import { tokenCountOf } from './task-budget.js';
+import { effectivePerBotLimit, planWorkerSlot } from './task-worker-pool.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
 
 const PAUSED = new Set([STATE.paused_user, STATE.paused_budget]);
@@ -197,6 +198,15 @@ export function createTaskSupervisor({
    *   生产装配在 `createTaskRuntime` 里按 `ORBIS_CRITIC_REVIEW` 注入。
    */
   criticReview = null,
+  /**
+   * 同一个成员允许同时跑几个「槽位」（1 主 + N 临时分身）。
+   *
+   * ★ 默认 1 = 完全串行，与加这个能力之前的行为**逐字节一致**：
+   *   既有并行用例里「同 Bot 不并发」的断言因此零回归。
+   *   生产装配（`createTaskRuntime`）按 `ORBIS_WORKER_CLONE` /
+   *   `ORBIS_MAX_CLONES_PER_BOT` 算好再传进来。
+   */
+  maxPerBot = 1,
   criticMode = null,
   maxCriticReworks = null,
   access = null,
@@ -321,10 +331,59 @@ export function createTaskSupervisor({
   const inflight = new Map(); // taskRunId → 本次进程内正在执行的标识
   /** 正在推进的任务 → 那次推进的 Promise（防止同一任务被两条路径同时推进）。 */
   const advanceLocks = new Map();
-  /** 内联推进子任务时，正在被用掉的 Bot（保证同一个 Bot 不并发）。 */
-  const childBusyBots = new Set();
-  /** 调度器（launch）正在用掉的 Bot；内联选批时要避开它（另一半互斥）。 */
-  const schedulerBusyBots = new Set();
+  /**
+   * 「成员槽位」活跃表：`botId → Set<taskRunId>`。
+   *
+   * ★ 为什么不是 Set（上限 1）：C3 允许同一个成员开临时分身并行干互不相关的活，
+   *   于是「谁在用这个 Bot」必须能数清有几路、分别是哪几路。
+   *   按 taskRunId 增删天然幂等 —— 重复 add/delete 都不会把别人的名额顶掉
+   *   （计数器的实现在重复 delete 时会掉到负数，然后永久卡死）。
+   */
+  const childBusyBots = new Map();
+  const schedulerBusyBots = new Map();
+
+  /** 某成员当前被几路占着（按 botId）。 */
+  function laneCount(map, botId) {
+    return botId ? (map.get(botId)?.size ?? 0) : 0;
+  }
+
+  function laneAdd(map, botId, id) {
+    if (!botId || !id) return;
+    const set = map.get(botId) ?? new Set();
+    set.add(id);
+    map.set(botId, set);
+  }
+
+  function laneDelete(map, botId, id) {
+    const set = map.get(botId);
+    if (!set) return;
+    set.delete(id);
+    if (!set.size) map.delete(botId);
+  }
+
+  /** 这个成员已经占掉的槽位数（内联 + 调度器两条路径一起算）。 */
+  function botSlotsUsed(botId) {
+    return laneCount(childBusyBots, botId) + laneCount(schedulerBusyBots, botId);
+  }
+
+  /** 某一路是否已经登记在某个成员的槽位表里。 */
+  function laneHas(map, botId, id) {
+    return Boolean(botId && id && map.get(botId)?.has(id));
+  }
+
+  /**
+   * 这一次允许这个成员同时跑几路。
+   *
+   * 被三样东西同时压：配置的槽位上限、根并发预算、上游健康度
+   * （有熔断打开就退回串行，不放大失败）。
+   */
+  function perBotLimit() {
+    return effectivePerBotLimit({
+      maxPerBot,
+      upstreamHealth: degradeFactor(),
+      concurrencyCap: concurrencyBudget(),
+    });
+  }
   /**
    * 因为「根并发名额已满」而让出、正在等名额的子任务。
    *
@@ -427,9 +486,15 @@ export function createTaskSupervisor({
    *     `fileClaimBlocker` 看不见对方（它只算「正在持有」的），于是两份活会同时
    *     读写同一个文件 —— 这里在选批时就按声明路径错开，重登的留到下一波。
    */
-  function canBatchKid(kid, busyBots, claimedFiles) {
+  function canBatchKid(kid, claimedFiles, picked = null, perBotCap = null) {
     const botId = kid.owner?.leadBotId ?? null;
-    if (botId && (busyBots.has(botId) || childBusyBots.has(botId))) return false;
+    // ★ 成员槽位：主槽 + 分身槽按 `effectivePerBotLimit` 放行；
+    //   默认上限 1 时与旧的「同 Bot 互斥」完全等价。
+    if (botId) {
+      const already = picked?.get(botId) ?? 0;
+      if (botSlotsUsed(botId) + already >= (perBotCap ?? perBotLimit())) return false;
+    }
+    // ★ 文件互斥是硬不变量，开了分身也不放松：两个分身撞同一个文件照样排队
     const files = claimFilesOf(kid);
     if (files.length && claimsOverlap(files, [...claimedFiles])) return false;
     return true;
@@ -489,17 +554,21 @@ export function createTaskSupervisor({
     // ★ 从调度器正在用掉的 Bot 起步：`canRun()` 已经会避开 `childBusyBots`（内联在用），
     //   这里补齐反向那一半 —— 内联也要避开调度器正在跑的会话，否则两条路径各看各的，
     //   同一份活会被派给同一个 Bot 两次（同一个会话只有一个，第二个必然撞）。
-    const busyBots = new Set(schedulerBusyBots);
     const claimedFiles = new Set();
+    // 每次选批只算一次上限：`perBotLimit()` 会走 concurrencyBudget()（全表扫），
+    // 放进每 kid 的分支里就会把这条热路径拖回原来的样子。
+    const perBotCap = perBotLimit();
+    /** 本批里已给每个成员排了几路（用于同批内也守住槽位上限）。 */
+    const picked = new Map();
     const batch = [];
     const ordered = [...liveKids].sort((a, b) => priorityOf(a) - priorityOf(b));
     for (const kid of ordered) {
       if (batch.length >= limit) break;
       if (!kidRunnableNow(kid, allKids ?? liveKids)) continue;
-      if (!canBatchKid(kid, busyBots, claimedFiles)) continue;
+      if (!canBatchKid(kid, claimedFiles, picked, perBotCap)) continue;
       batch.push(kid);
       const botId = kid.owner?.leadBotId ?? null;
-      if (botId) busyBots.add(botId);
+      if (botId) picked.set(botId, (picked.get(botId) ?? 0) + 1);
       for (const file of claimFilesOf(kid)) claimedFiles.add(file);
     }
     return batch;
@@ -513,12 +582,15 @@ export function createTaskSupervisor({
    */
   async function runKidOnce(kid) {
     const kidBot = kid.owner?.leadBotId ?? null;
-    if (kidBot && childBusyBots.has(kidBot)) return { status: 'wait', why: '成员正在别的分工上干活' };
-    if (kidBot) childBusyBots.add(kidBot);
+    // 兜底：选批已经按槽位筛过，这里再核一次（别的路径可能刚好占满）
+    if (kidBot && botSlotsUsed(kidBot) >= perBotLimit()) {
+      return { status: 'wait', why: '成员分身槽位已满' };
+    }
+    laneAdd(childBusyBots, kidBot, kid.id);
     try {
       return await runTask(kid.id);
     } finally {
-      if (kidBot) childBusyBots.delete(kidBot);
+      laneDelete(childBusyBots, kidBot, kid.id);
     }
   }
 
@@ -558,7 +630,10 @@ export function createTaskSupervisor({
       .then(async () => {
         // 本轮正在跑的，按 Bot 登记：同一个 Bot 不并行。
         const active = new Map(); // taskRunId → Promise
-        const busyBots = new Set();
+        /** 本波已经排给每个成员几路（和全局槽位一起算，见 canRun）。 */
+        const busyBots = new Map();
+        /** 本 tick 的同成员槽位上限（每轮算一次，避免每个排队项都扫全表）。 */
+        let perBotCap = 1;
         // 被前置条件挡住、本轮起不来的任务（不留在队列里，避免活锁）
         const deferred = [];
 
@@ -577,11 +652,12 @@ export function createTaskSupervisor({
           //   否则任务被永久判为「有执行在途」，谁也不会再来结算。
           if (active.length && inflight.has(id)) return false;
           const botId = taskRun?.owner?.leadBotId ?? null;
-          if (botId && busyBots.has(botId)) return false;
-          // ★ 同一个 Bot 也不能跟「父任务内联推进」撞车：
-          //   内联那条路用的是 `childBusyBots`，调度器只看自己的 `busyBots` ——
-          //   两份各看各的，就会把同一份活派给同一个会话两次。
-          if (botId && childBusyBots.has(botId)) return false;
+          // ★ 成员槽位：本波已排 + 全局在跑（内联 + 调度器两条路）合起来必须 < 上限。
+          //   默认 `maxPerBot = 1` 时这就是原来的「同 Bot 不并行」，一行不变。
+          if (botId) {
+            const used = botSlotsUsed(botId) + (busyBots.get(botId) ?? 0);
+            if (used >= perBotCap) return false;
+          }
           // ★ 受控 DAG：依赖没就位的子任务一律不放行。
           //
           //   队列里可能还留着“依赖就位前”的事件（例如上一步收尾时的
@@ -602,7 +678,10 @@ export function createTaskSupervisor({
           const botId = taskRun?.owner?.leadBotId ?? null;
           queue.delete(id);
           running.add(id);
-          if (botId) { busyBots.add(botId); schedulerBusyBots.add(botId); }
+          if (botId) {
+            busyBots.set(botId, (busyBots.get(botId) ?? 0) + 1);
+            laneAdd(schedulerBusyBots, botId, id);
+          }
           const p = (async () => {
             let outcome = null;
             try {
@@ -623,7 +702,10 @@ export function createTaskSupervisor({
               } catch {}
             } finally {
               running.delete(id);
-              if (botId) { busyBots.delete(botId); schedulerBusyBots.delete(botId); }
+              if (botId) {
+                busyBots.set(botId, Math.max(0, (busyBots.get(botId) ?? 1) - 1));
+                laneDelete(schedulerBusyBots, botId, id);
+              }
               active.delete(id);
               // ★ 只有「真的收口了」才算名额空出来。
               //
@@ -649,6 +731,7 @@ export function createTaskSupervisor({
           //   只为数「部门里有几个人」。原来每个排队项都要扫两次。
           //   计算语义（含 degradeFactor）完全不变，只是采样频率降低。
           const budget = concurrencyBudget();
+          perBotCap = perBotLimit();
           // 本轮剩余名额用本地计数维护。
           // active.size 本身也会随 launch 同步加一，但显式 slots 让
           // 「本轮最多放行 budget - active.size 个」成为看得见的规则，
@@ -1453,9 +1536,33 @@ export function createTaskSupervisor({
       return { status: 'blocked', why: 'no_lead' };
     }
 
-    // ★ 会话还在忙：让出一轮再来，不登记本次尝试。
+    /**
+     * ★ C3 分身槽位决策：这一步走主会话还是临时分身。
+     *
+     * 判据（就两个）：主会话是不是被占着（用户正在聊 / 同一成员已有在途），
+     * 以及还有没有分身配额。**有配额就直接开分身立刻跑，不再傻等 15 秒** ——
+     * 旧行为是「同 Bot 上限 1 → 排队等 BUSY_RETRY_MS」，用户看到的是
+     * 「3 个人闲着，1 个人在干」。
+     *
+     * 两条硬不变量不受影响：文件互斥在选批时就挡掉了，DAG/预算闸门在
+     * `depsNotReady` 与 `planNextAction` 里，跟槽位无关。
+     */
+    const mainLaneBusy = executorBusy(botId, taskRun);
+    // ★ 计数要**排除自己**：内联推进时这一路已经登记在 childBusyBots 里，
+    //   不扣掉就会「3 路并发 → 每路都看到 3 → 都以为配额满了 → 全部挤主槽」。
+    const selfInLane = laneHas(childBusyBots, botId, taskRun.id)
+      || laneHas(schedulerBusyBots, botId, taskRun.id);
+    const slot = planWorkerSlot({
+      taskRun,
+      activeForBot: Math.max(0, botSlotsUsed(botId) - (selfInLane ? 1 : 0)),
+      mainLaneBusy,
+      limit: perBotLimit(),
+    });
+    const cloneId = slot.useClone ? slot.cloneId : null;
+
+    // ★ 会话还在忙且开不了分身：让出一轮再来，不登记本次尝试。
     //   登记了再失败会消耗额度并落一条 failed 尝试，任务直接被判阻塞。
-    if (executorBusy(botId, taskRun)) {
+    if (mainLaneBusy && !cloneId) {
       const dueAt = clock() + BUSY_RETRY_MS;
       // ★ 忙等待不算失败次数（与下面 failedStop 里的忙分支一致）。
       //   累加的话，上游退避期间 retry.count 已经是 10，撞一次「执行者还在忙」
@@ -1520,6 +1627,14 @@ export function createTaskSupervisor({
       });
     const prompt = resume ? basePrompt + '\n\n' + resume : basePrompt;
 
+    // ★ 可观测：这一步是主会话还是分身、走的哪一档模型（C5 面板要展示）
+    await patch(taskRun.id, {
+      lastDispatchMeta: {
+        at: clock(), phase: isChild ? 'member' : 'lead',
+        cloned: Boolean(cloneId), cloneId: cloneId ?? null, slotWhy: slot.why,
+      },
+    });
+
     inflight.set(taskRun.id, { attemptId, revision: taskRun.revision });
     let out;
     let rawResult = null;
@@ -1532,12 +1647,29 @@ export function createTaskSupervisor({
           rawResult = await stepExecutor({
             taskRun, action, attemptId, botId, revision: taskRun.revision,
             phase: isChild ? 'member' : LEAD_PHASE.plan, prompt,
+            // ★ 分身槽位传给执行层：它决定用哪条会话泳道（不影响业务身份）
+            cloneId,
           });
           return rawResult;
         },
       });
     } finally {
       inflight.delete(taskRun.id);
+    }
+
+    // ★ 执行层回填真实生效的档位/模型（分档在 runtime 里算，这里只记事实）。
+    if (rawResult?.dispatch) {
+      const prev = read(taskRun.id)?.lastDispatchMeta ?? {};
+      await patch(taskRun.id, {
+        lastDispatchMeta: {
+          ...prev,
+          tier: rawResult.dispatch.tier ?? prev.tier ?? null,
+          modelOverride: rawResult.dispatch.modelOverride ?? null,
+          cloned: rawResult.dispatch.cloned === true || prev.cloned === true,
+          cloneId: rawResult.dispatch.cloneId ?? prev.cloneId ?? null,
+          why: rawResult.dispatch.why ?? prev.why ?? '',
+        },
+      });
     }
 
     // ★ 把执行器的原始结果一起带下去：`runManagedAttempt` 的失败壳子只说明

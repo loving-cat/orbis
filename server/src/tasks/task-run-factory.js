@@ -63,6 +63,11 @@ export function createTaskRun({
    * 不该为了质检再拆一条。所以给它一个语义正确的开关。
    */
   criticRequired = false,
+  /**
+   * 任务难度档位（`fast` / `standard` / `strong`）。
+   * 存进 `flags.modelTier`：不进业务身份指纹（补一个档位不是另一份活）。
+   */
+  modelTier = null,
 } = {}) {
   if (!isId(id)) return reject(REJECT.badField, 'id', '任务 ID 形如 tr_xxx');
   if (!isId(requestId)) return reject(REJECT.badField, 'requestId', 'requestId 必须是稳定标识');
@@ -153,6 +158,8 @@ export function createTaskRun({
       autonomyReason: String(autonomyReason ?? '').slice(0, 200),
       // 独立复核开关（见 task-critic.js 的 shouldRunCritic）
       criticRequired: criticRequired === true,
+      // 难度档位（见 task-model-tier.js）：null = 跟随成员默认模型
+      modelTier: normalizeModelTier(modelTier),
     },
     // ---- 预算
     budget: budgetOut.budget,
@@ -175,6 +182,12 @@ export function createTaskRun({
  * 批次 01 只守输入契约：根任务可以设上限，子任务**不自己设**
  * （共享根额度由批次 02 的存储层实现）。
  */
+/** 档位值规范化（不合法一律 null = 不指定档位）。 */
+function normalizeModelTier(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return ['fast', 'standard', 'strong'].includes(text) ? text : null;
+}
+
 function normalizeBudget(budget, { isSubtask }) {
   if (budget === undefined || budget === null) return ok({ budget: null });
   if (typeof budget !== 'object' || Array.isArray(budget)) {
