@@ -27,8 +27,12 @@ import { resolveAutonomy } from './task-autonomy.js';
 import { admissionBudget } from '../coordination/task-admission.js';
 import { newId } from '../util.js';
 import { resumeAdmission } from '../coordination/task-admission.js';
-import { createCriticReviewer } from './task-critic-runner.js';
+import { createCriticReviewer, criticCandidatesOf, executorModelOf } from './task-critic-runner.js';
+import {
+  MODEL_TIER, TIER_MODE, resolveTierMode, resolveTaskTier, selectTierModel, tierModelOverrides,
+} from './task-model-tier.js';
 import { CRITIC_MODE, resolveCriticMode } from './task-critic.js';
+import { resolveCloneConfig } from './task-worker-pool.js';
 
 /**
  * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
@@ -156,24 +160,40 @@ export function createTaskRuntime({
   if (!runner) throw new Error('运行时需要 runner');
 
   /** 执行器：跑一次受管执行；负责人轮次额外把正文里的 @ 落成子任务。 */
-  const runOne = async ({ taskRun, attemptId, botId, revision, prompt, phase }) => {
+  const runOne = async ({ taskRun, attemptId, botId, revision, prompt, phase, cloneId = null }) => {
     const route = routeOf(taskRun);
     const managedContext = { taskRunId: taskRun.id, revision, attemptId, botId };
+    // ★ 本次难度分档（与分身天然合一：同一条 #clone_<id> 内存会话里执行）
+    const tierPlan = planTierModel({ taskRun, botId });
+    const modelOverride = tierPlan.modelOverride ?? null;
+    const dispatch = {
+      tier: tierPlan.tier, modelOverride, cloned: Boolean(cloneId), cloneId: cloneId ?? null, why: tierPlan.why,
+    };
+    const withDispatch = (result) => ({ ...result, dispatch });
     // DM 真实受管执行：复用 run() 的租约/报告/产物/用量；group 保留 runRound
     const roomKind = route.kind ?? taskRun.owner?.roomKind ?? 'group';
     if (roomKind === 'dm') {
       if (typeof runner.roomHasBot === 'function' && !runner.roomHasBot(route.roomId, route.botId)) {
         return { ok: false, stop: 'failed', code: 'DM_BOT_NOT_IN_ROOM', error: '受管目标 Bot 不属于该私聊' };
       }
-      return runner.run(route.roomId, route.botId, prompt, { managedContext, skipUserMessage: true });
+      const result = await runner.run(route.roomId, route.botId, prompt, {
+        managedContext,
+        skipUserMessage: true,
+        cloneId,
+        ...(modelOverride ? { modelOverride } : {}),
+      });
+      return withDispatch(result);
     }
-    const result = await runner.runRound(route.roomId, {
+    const raw = await runner.runRound(route.roomId, {
       openerText: prompt,
       openerBotId: null,
       kickoff: true,
       taskPrompt: prompt,
       managedContext,
+      cloneId,
+      ...(modelOverride ? { modelOverride } : {}),
     });
+    const result = withDispatch(raw ?? {});
     // 负责人的这一轮：把他 @ 的人落成持久子任务。
     // 成员轮次不解析（否则会裂变），只看 phase。
     if (phase === 'lead' && taskRun && !taskRun.parentTaskId) {
@@ -453,6 +473,51 @@ export function createTaskRuntime({
    */
   /** 独立评审档位：装配时定下来，与 supervisor 内判定用同一个值。 */
   const criticMode = resolveCriticMode(process.env);
+  /** 分身配额（`ORBIS_WORKER_CLONE` / `ORBIS_MAX_CLONES_PER_BOT`）。 */
+  const cloneConfig = resolveCloneConfig(process.env);
+  /** 模型分档模式与显式档位模型（装配时读一次环境）。 */
+  const tierMode = resolveTierMode(process.env);
+  const tierOverrides = tierModelOverrides(process.env);
+
+  /**
+   * 这一次执行该用哪一档模型。
+   *
+   * 六条边界都在 `selectTierModel` 里（standard 零扰动 / lockModel 不覆盖 /
+   * 本地不外泄 / 熔断跳过 / 档位打分 / 同模型不覆盖）。这里只负责喂真实数据：
+   * 生效模型、已启用候选、熔断状态。
+   */
+  const planTierModel = ({ taskRun, botId }) => {
+    if (tierMode === TIER_MODE.off) {
+      return { tier: MODEL_TIER.standard, modelOverride: null, why: '分档已关闭' };
+    }
+    const { tier, source } = resolveTaskTier({ taskRun, mode: tierMode });
+    if (tier === MODEL_TIER.standard) {
+      return { tier, modelOverride: null, why: source === 'explicit' ? '显式指定标准档' : '沿用成员默认模型' };
+    }
+    const bot = runner.store?.getBot?.(botId) ?? null;
+    // ★ 与 C2 评审选模**同一份口径**（`executorModelOf` / `criticCandidatesOf`）：
+    //   bot.model 为空时回落 modelLabel / runner.model，provider 走 resolveModel
+    //   再退 slug 前缀，本地判定把所有 endpoints 一起算。
+    //   两处各写一份必然长歪，长歪的后果是「本地模型被当成云端」→ 内容发出去。
+    const baseModel = executorModelOf({ runner, store: runner.store, botId });
+    const picked = selectTierModel({
+      tier,
+      baseModel,
+      candidates: criticCandidatesOf(runner.modelGroups, { resolveModel: runner.resolveModel }),
+      userLocked: bot?.lockModel === true,
+      explicitTierModels: tierOverrides,
+      isBreakerOpen: (slug, groupId) => {
+        try {
+          const found = runner.breakerFor?.(botId, slug) ?? null;
+          const breaker = runner.breakers?.get?.(found?.groupId ?? groupId) ?? found?.breaker ?? null;
+          return breaker?.state === 'open';
+        } catch {
+          return false;
+        }
+      },
+    });
+    return { tier, source, modelOverride: picked.overrideModel, why: picked.why };
+  };
 
   const concurrencyOf = () => {
     try {
@@ -513,6 +578,11 @@ export function createTaskRuntime({
           runner, store: runner.store, routeOf, clock, log,
         }),
     criticMode,
+    /**
+     * ★ 同成员槽位上限：`off` 时恒为 1（与旧行为逐字节一致）。
+     *   调度器还会再被「根并发预算」与「上游健康度」压一次。
+     */
+    maxPerBot: cloneConfig.maxPerBot,
     abortInflight: async ({ taskRunId }) => {
       // 任务级取消：终止本任务及其有效子树的在途执行，不动同房间其他目标
       const ids = [taskRunId];

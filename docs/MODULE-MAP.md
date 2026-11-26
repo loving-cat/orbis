@@ -130,6 +130,9 @@
 | `tasks/task-blackboard-tool.js` | `task_blackboard` 工具：负责人与成员都能记决定/约束/事实；目标根任务**只取受管上下文**，调用方无法指定任务 id（结构上防跨任务串写） |
 | `tasks/task-checkpoint.js` | checkpoint 放行的落地（`approveCheckpoint` / `approveCheckpointsOf` / `needsApprove`）：校验 + 写 `checkpointApprovedAt/By` + 走统一 `notify` 唤醒。不做身份核对（那是工具层）也不自己改 state；`task-supervisor` 只留一行接线 |
 | `tasks/task-critic.js` | 独立评审（Critic）纯判定（零 IO）：`CRITIC_MODE`/`resolveCriticMode`（`off|auto|all`）、`shouldRunCritic`（机械未过恒 false / `all` 全审 / `auto` 只看未评审 `expert` 与 `criticRequired`）、`criticTargetKeyOf`（`revision`+最新已结算 `attemptId`+产物指纹）、`buildCriticPrompt`、`parseCriticVerdict`（fail-closed）、`renderCriticFeedback`、`selectCriticModel`（跨组健康优先、本地不外泄）。接线在 `task-supervisor.js` 的 `doVerify` |
+| `tasks/task-worker-pool.js` | 成员分身池（纯逻辑）：`resolveCloneConfig`（`ORBIS_WORKER_CLONE`/`ORBIS_MAX_CLONES_PER_BOT`，`off` 时槽位=1）、`effectivePerBotLimit`（被根并发预算裁剪、`upstreamHealth<1` 退回串行）、`cloneLaneKey`/`parseLaneKey`/`baseBotIdOfKey`、`planWorkerSlot`（子任务才开分身；主槽空闲用主槽） |
+| `tasks/task-model-tier.js` | 任务难度模型分档（纯逻辑）：`resolveTierMode`（`off`/`explicit`/`auto`）、`tierModelOverrides`、`inferTaskTier`（确定性启发式）、`selectTierModel`（六条硬边界：standard 零扰动 / lockModel / 本地不外泄 / 熔断跳过 / 档位打分 / 同模型不覆盖）、`resolveTaskTier` |
+| `runner/session-lanes.js` | 会话泳道键唯一真源：`sessionLaneKey`（`room:bot` / `#fb` / `#clone_<id>` / `#clone_<id>#fb`）、`parseLaneKey`、`baseBotIdOfKey`（房间级中止要剥离后缀）、`releaseLaneSession` / `releaseTurnLane`（用完即焚：摘池 + 退订 + dispose） |
 | `tasks/task-critic-runner.js` | 评审执行器：`createCriticReviewer` 调 `session-factory` 的 `criticLane` 跑一轮，订阅收集文本与 `usage`，超时 `abort`，`finally` 里 `dispose` + 退订；把「评审不通过」与「评审员自身故障」分开返回（`status: reviewed | error`） |
 
 新增后端能力的落点：

@@ -64,6 +64,14 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
             + '适合“下一步依赖上一步的结论与口径”的活。不填默认直接开跑。',
         }),
       ),
+      modelTier: Type.Optional(
+        Type.Union([Type.Literal('fast'), Type.Literal('standard'), Type.Literal('strong')], {
+          description:
+            '这份活用哪一档模型：fast=格式化/提取/清单这类机械活（省钱省时）；'
+            + 'strong=架构设计/排错/重构/审计这类要吃推理的活；standard 或不填=成员自己的模型。'
+            + '不会改成员配置，只影响这一次执行。',
+        }),
+      ),
       criticRequired: Type.Optional(
         Type.Boolean({
           description:
@@ -150,6 +158,7 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
         checkpointBeforeRun: params.checkpointBeforeRun === true,
         // 不填就是 undefined（跟随父任务），不能写成 false —— 那会把父任务的要求吞掉
         criticRequired: typeof params.criticRequired === 'boolean' ? params.criticRequired : undefined,
+        modelTier: params.modelTier ? String(params.modelTier) : undefined,
         // 计划步骤号 → 真实子任务 id（负责人手里只有“第 2 条”这种写法）
         stepIds: planStepIds(taskRuns, parent),
       });

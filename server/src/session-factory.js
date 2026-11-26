@@ -43,6 +43,7 @@ import { createPolicyExtension } from './policy-hook.js';
 import { createMcpExtension, mcpSectionForPrompt } from './mcp-hook.js';
 import { capabilityGuideForPrompt } from './mcp-capability.js';
 import { log } from './util.js';
+import { sessionLaneKey } from './runner/session-lanes.js';
 import { menuEntries } from './model-menu.js';
 import { modelCatalogSection } from './model-dispatch.js';
 
@@ -162,6 +163,16 @@ export function createSessionBuilder({
     const isCriticLane = opts.criticLane === true;
     /** 两条隔离通道共用的“只读 + 纯内存”开关。 */
     const isolatedLane = isTalkLane || isCriticLane;
+    /**
+     * 本会话的泳道键（分身 / 单轮临时模型各占一条）。
+     *
+     * ★ 报告收集器、受管上下文、黑板写入都按这个键查：
+     *   同一个 Bot 的两个并发分身如果都按 `roomId:botId` 查，
+     *   A 的 `apply_completion` 会打进 B 的收集器，A 的黑板写入会落到 B 的账上。
+     */
+    const laneKey = sessionLaneKey({
+      roomId, botId, cloneId: opts.cloneId ?? null, modelOverride: opts.modelOverride ? 'v' : null,
+    });
     const wantsReportTool = !isolatedLane && opts.reportTool === true;
     const stored = store.getBot(botId);
     if (!stored) throw new Error(`找不到 bot ${botId}`);
@@ -207,7 +218,7 @@ export function createSessionBuilder({
     // ★ 受管阶段报告工具：真的注册进 SDK，模型才能调用。
     //   收集器由 runner 按「房间:Bot」挂，工具 execute 时取当前那个。
     const reportTools = wantsReportTool
-      ? [buildReportTool({ collect: (input) => runner.collectReport?.(roomId, botId, input) })]
+      ? [buildReportTool({ collect: (input) => runner.collectReport?.(roomId, botId, input, laneKey) })]
       : [];
     // 负责人派活工具：只有受管执行时注册，成员用不了（执行体里再核一次）
     // ★ 负责人先列计划、再按计划派活。
@@ -225,7 +236,7 @@ export function createSessionBuilder({
     //   约束/决定往往是无意中发现的（"这列日期是 UTC"），只给负责人等于丢一半。
     //   写入的根任务由受管上下文决定，成员跨任务写不进去。
     const blackboardTools = wantsReportTool
-      ? [buildBlackboardTool({ runner, store, roomId, botId })]
+      ? [buildBlackboardTool({ runner, store, roomId, botId, laneKey })]
       : [];
     // 验收能力与派工能力分开：单成员部门仍可有真实负责人做专业验收，只是不能派工。
     const expertTools = wantsReportTool && isRoomLead(room, botId)
@@ -375,8 +386,8 @@ export function createSessionBuilder({
           config,
           store,
           bus,
-          managedContextOf: () => runner.currentTaskContext?.(roomId, bot.id) ?? null,
-          onBlocked: (approval, info) => runner.notePolicyBlocked?.(roomId, bot.id, approval, info),
+          managedContextOf: () => runner.currentTaskContext?.(roomId, bot.id, laneKey) ?? null,
+          onBlocked: (approval, info) => runner.notePolicyBlocked?.(roomId, bot.id, approval, info, laneKey),
         }),
         ...(isolatedLane ? [] : [createMcpExtension({ botId, roomId, store })]),
       ],

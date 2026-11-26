@@ -36,9 +36,9 @@ import {
 import {
   STEP_CAP_GRACE, isBlockingAsk, managedIsAutonomous, runContinuationGuard, scheduleDmContinuation, softDeadlineTimeout,
 } from './turn-slicing.js';
-import { emitContext, sessionKey, summarizeArgs, textOf, throttle } from './runner-utils.js';
+import { emitContext, summarizeArgs, textOf, throttle } from './runner-utils.js';
 import { wireModelWait, resolveIdleFailure, onSdkRetryStart } from './model-idle.js';
-import { disposeFallbackSession } from './model-fallback.js';
+import { releaseTurnLane, sessionLaneKey } from './session-lanes.js';
 
 /** 执行一次 bot 会话回合（带 provider 配置更新租约与受管报告通道作用域） */
 export async function executeTurn(runner, roomId, botId, prompt, options = {}) {
@@ -65,7 +65,7 @@ async function runWithLease(
   prompt,
   {
     timeoutMs = runner.config.runTimeoutMs,
-    modelIdleMs = undefined, modelOverride = null, // 测试用阈值 / 单轮临时切模型（§4.2 d）
+    modelIdleMs = undefined, modelOverride = null, cloneId = null, // 阈值 / 临时模型（§4.2 d）/ 分身槽位
     meta = null,
     skipUserMessage = false,
     attachments = [],
@@ -235,7 +235,7 @@ async function runWithLease(
   let entry;
   let collectedArtifacts = [];
   try {
-    entry = await runner.ensureSession(roomId, botId, modelOverride ? { modelOverride, persist: false } : {});
+    entry = await runner.ensureSession(roomId, botId, (modelOverride || cloneId) ? { modelOverride, cloneId, persist: false } : {});
   } catch (err) {
     if (err?.code === 'SESSION_BUSY') {
       return withAttempt({
@@ -258,7 +258,8 @@ async function runWithLease(
     }, {});
   }
 
-  const scopeKey = roomId + ':' + botId;
+  // ★ 泳道键：主会话 / #fb / #clone_<id> / #clone_<id>#fb —— 分身 A/B 的报告互不覆盖
+  const scopeKey = sessionLaneKey({ roomId, botId, cloneId, modelOverride });
   const scopeReady = runner.activateReportScope(scopeKey, reports);
   if (!scopeReady) {
     log('报告通道未能激活，本轮不接受阶段报告：', scopeKey);
@@ -266,7 +267,7 @@ async function runWithLease(
   const managedCancelTask = managed.kind === 'managed' ? (managed.context?.taskRunId ?? null) : null;
   if (managedCancelTask) {
     runner.managedInflight.set(managedCancelTask, {
-      key: sessionKey(roomId, botId), botId, roomId,
+      key: scopeKey, botId, roomId, cloneId,
       session: entry?.session ?? null, attemptId: managed.context?.attemptId ?? null,
     });
   }
@@ -1166,7 +1167,7 @@ async function runWithLease(
   } finally {
     // 定时器回调可能还挂着：标记结束，回调里一律不再动会话（不再 steer / abort）
     runFinished = true; idle.stop();
-    if (modelOverride) disposeFallbackSession(runner, roomId, botId, entry);
+    if (cloneId || modelOverride) await releaseTurnLane(runner, { roomId, botId, cloneId, modelOverride });
     runner.releaseReportScope(scopeKey, reports);
     if (entry) entry.managedContext = null;
     if (timeoutHandle) clearTimeout(timeoutHandle);

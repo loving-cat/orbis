@@ -238,21 +238,29 @@ export function candidateDepartmentIds(runner, roomId, _botId) {
 }
 
 /** 当前受管执行的上下文（身份必须来自宿主，不能从模型输出读） */
-export function currentTaskContext(runner, roomId, botId) {
-  const entry = runner.sessions.get(sessionKey(roomId, botId));
+/**
+ * 当前受管上下文。
+ *
+ * ★ `laneKey` 决定看哪条泳道：分身会话与主会话的 `managedContext` 是两份，
+ *   不传就是主会话（既有行为）。分身不传就会读到主会话的上下文 ——
+ *   于是分身 A 的报告/黑板写入落到别人头上。
+ */
+export function currentTaskContext(runner, roomId, botId, laneKey = null) {
+  const key = laneKey ?? sessionKey(roomId, botId);
+  const entry = runner.sessions.get(key);
   return entry?.managedContext ?? null;
 }
 
 /** 策略钩子报告的真实阻塞：记到当前活跃的受管执行上 */
-export function notePolicyBlocked(runner, roomId, botId, approval, info = {}) {
-  const collector = runner.reportScopes.get(roomId + ':' + botId);
+export function notePolicyBlocked(runner, roomId, botId, approval, info = {}, laneKey = null) {
+  const collector = runner.reportScopes.get(laneKey ?? (roomId + ':' + botId));
   if (!collector) return;
   collector.noteBlocked?.(approval, info);
 }
 
 /** 报告工具 execute 的落点 —— 唯一被验证的收集入口 */
-export function collectReport(runner, roomId, botId, input) {
-  const collector = runner.reportScopes.get(roomId + ':' + botId);
+export function collectReport(runner, roomId, botId, input, laneKey = null) {
+  const collector = runner.reportScopes.get(laneKey ?? (roomId + ':' + botId));
   if (!collector) {
     return { ok: false, why: '这次执行没有报告通道（不是受管轮次，或已经结束）' };
   }

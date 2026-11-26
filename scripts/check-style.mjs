@@ -60,6 +60,10 @@ const PURE_MODULES = [
   'tasks/task-blackboard.js',
   // 独立评审（Critic）纯判定：档位 / 目标指纹 / fail-closed 解析 / 选模策略
   'tasks/task-critic.js',
+  // 成员分身池：配额 / 并发上限 / 泳道键 / 主槽-分身槽决策
+  'tasks/task-worker-pool.js',
+  // 任务难度模型分档：档位解析 / 难度推断 / 档位选模（六条硬边界）
+  'tasks/task-model-tier.js',
 ];
 
 const TEST_OVERRIDES = new Map([
@@ -74,6 +78,9 @@ const TEST_OVERRIDES = new Map([
   ['tasks/task-blackboard.js', 'long-task-dag-blackboard.mjs'],
   // 评审回路的纯逻辑与端到端回路在同一个文件里（同一套账本夹具）
   ['tasks/task-critic.js', 'long-task-critic.mjs'],
+  // 分身与分档也在同一个回归文件（同一条调度/执行链）
+  ['tasks/task-worker-pool.js', 'long-task-clone-tier.mjs'],
+  ['tasks/task-model-tier.js', 'long-task-clone-tier.mjs'],
 ]);
 
 const FORBIDDEN_IMPORT =

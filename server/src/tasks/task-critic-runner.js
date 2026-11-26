@@ -100,7 +100,7 @@ export function criticCandidatesOf(modelGroups, { resolveModel = null } = {}) {
  *   2. provider 优先取 `resolveModel(slug)`，其次 slug 前缀（真实 ModelGroup 没有 provider 字段）；
  *   3. 把所有 `endpoints[].baseUrl` 一起纳入本地判定（主地址公网 + 备用地址局域网也算本地）。
  */
-function executorModelOf({ runner, store, botId }) {
+export function executorModelOf({ runner, store, botId }) {
   const bot = store?.getBot?.(botId) ?? null;
   const resolveModel = typeof runner?.resolveModel === 'function' ? runner.resolveModel : null;
   const labelOf = () => {
