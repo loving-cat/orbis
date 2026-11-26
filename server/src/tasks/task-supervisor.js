@@ -374,15 +374,32 @@ export function createTaskSupervisor({
   /**
    * 这一次允许这个成员同时跑几路。
    *
-   * 被三样东西同时压：配置的槽位上限、根并发预算、上游健康度
+   * 被三样东西同时压：配置的槽位上限、**根预算的并发上限**、上游健康度
    * （有熔断打开就退回串行，不放大失败）。
+   *
+   * ★ `taskRun` 决定用哪个并发上限：有任务上下文时用 `childBatchCap`
+   *   （它已经把根的 `budget.concurrencyLimit` 算进去），没有时才退到
+   *   部门并发预算。不这么做就会「根预算只允许 1 路，分身却照样开 2 路」。
    */
-  function perBotLimit() {
+  function perBotLimit(taskRun = null) {
     return effectivePerBotLimit({
       maxPerBot,
       upstreamHealth: degradeFactor(),
-      concurrencyCap: concurrencyBudget(),
+      concurrencyCap: taskRun ? childBatchCap(taskRun) : concurrencyBudget(),
     });
+  }
+
+  /**
+   * 这个任务允许几路并发。
+   *
+   * ★ **根任务（负责人）与私聊 solo 恒为 1**：它们没有分身的资格。
+   *   两个根任务如果同时用同一个 Bot 的会话，会互相踩彼此的上下文
+   *   （负责人这一轮的协调记忆直接串掉），而且根预算也按整棵树算 ——
+   *   让根并发只会让「谁在管这件事」变得不确定。
+   */
+  function limitForTask(taskRun) {
+    if (!taskRun?.parentTaskId) return 1;
+    return perBotLimit(taskRun);
   }
   /**
    * 因为「根并发名额已满」而让出、正在等名额的子任务。
@@ -492,7 +509,7 @@ export function createTaskSupervisor({
     //   默认上限 1 时与旧的「同 Bot 互斥」完全等价。
     if (botId) {
       const already = picked?.get(botId) ?? 0;
-      if (botSlotsUsed(botId) + already >= (perBotCap ?? perBotLimit())) return false;
+      if (botSlotsUsed(botId) + already >= (perBotCap ?? limitForTask(kid))) return false;
     }
     // ★ 文件互斥是硬不变量，开了分身也不放松：两个分身撞同一个文件照样排队
     const files = claimFilesOf(kid);
@@ -557,7 +574,15 @@ export function createTaskSupervisor({
     const claimedFiles = new Set();
     // 每次选批只算一次上限：`perBotLimit()` 会走 concurrencyBudget()（全表扫），
     // 放进每 kid 的分支里就会把这条热路径拖回原来的样子。
-    const perBotCap = perBotLimit();
+    // 同一父任务下的槽位上限一致：按父任务缓存一次（`childBatchCap` 要读根记录）
+    const capCache = new Map();
+    const capOfKid = (kid) => {
+      const cacheKey = kid?.parentTaskId ?? '';
+      if (capCache.has(cacheKey)) return capCache.get(cacheKey);
+      const limit = limitForTask(kid);
+      capCache.set(cacheKey, limit);
+      return limit;
+    };
     /** 本批里已给每个成员排了几路（用于同批内也守住槽位上限）。 */
     const picked = new Map();
     const batch = [];
@@ -565,7 +590,7 @@ export function createTaskSupervisor({
     for (const kid of ordered) {
       if (batch.length >= limit) break;
       if (!kidRunnableNow(kid, allKids ?? liveKids)) continue;
-      if (!canBatchKid(kid, claimedFiles, picked, perBotCap)) continue;
+      if (!canBatchKid(kid, claimedFiles, picked, capOfKid(kid))) continue;
       batch.push(kid);
       const botId = kid.owner?.leadBotId ?? null;
       if (botId) picked.set(botId, (picked.get(botId) ?? 0) + 1);
@@ -583,7 +608,7 @@ export function createTaskSupervisor({
   async function runKidOnce(kid) {
     const kidBot = kid.owner?.leadBotId ?? null;
     // 兜底：选批已经按槽位筛过，这里再核一次（别的路径可能刚好占满）
-    if (kidBot && botSlotsUsed(kidBot) >= perBotLimit()) {
+    if (kidBot && botSlotsUsed(kidBot) >= limitForTask(kid)) {
       return { status: 'wait', why: '成员分身槽位已满' };
     }
     laneAdd(childBusyBots, kidBot, kid.id);
@@ -630,12 +655,26 @@ export function createTaskSupervisor({
       .then(async () => {
         // 本轮正在跑的，按 Bot 登记：同一个 Bot 不并行。
         const active = new Map(); // taskRunId → Promise
-        /** 本波已经排给每个成员几路（和全局槽位一起算，见 canRun）。 */
-        const busyBots = new Map();
-        /** 本 tick 的同成员槽位上限（每轮算一次，避免每个排队项都扫全表）。 */
-        let perBotCap = 1;
+        /**
+         * 本 tick 各任务的槽位上限缓存（每轮算一次，避免每个排队项都扫全表）。
+         *
+         * ★ 不再单独维护「本波已排给每个成员几路」：`schedulerBusyBots`
+         *   在 `launch()` 里已经登记了每一路，`botSlotsUsed()` 也已把
+         *   `childBusyBots + schedulerBusyBots` 加起来。再叠一个 Map 就是
+         *   同一路被算两次 → 实际上限从 2 掉到 1、从 3 掉到 1.5（取整即 1）。
+         */
+        const limitCache = new Map();
         // 被前置条件挡住、本轮起不来的任务（不留在队列里，避免活锁）
         const deferred = [];
+
+        /** 这个任务的槽位上限（按任务缓存，避免每个排队项都算一次预算）。 */
+        const capOf = (id, taskRun) => {
+          const cached = limitCache.get(id);
+          if (cached !== undefined) return cached;
+          const limit = limitForTask(taskRun);
+          limitCache.set(id, limit);
+          return limit;
+        };
 
         const canRun = (id, taskRun) => {
           if (running.has(id)) return false;
@@ -652,11 +691,11 @@ export function createTaskSupervisor({
           //   否则任务被永久判为「有执行在途」，谁也不会再来结算。
           if (active.length && inflight.has(id)) return false;
           const botId = taskRun?.owner?.leadBotId ?? null;
-          // ★ 成员槽位：本波已排 + 全局在跑（内联 + 调度器两条路）合起来必须 < 上限。
-          //   默认 `maxPerBot = 1` 时这就是原来的「同 Bot 不并行」，一行不变。
+          // ★ 成员槽位：只看真实占用（内联 + 调度器两条路都在 botSlotsUsed 里）。
+          //   默认 `maxPerBot = 1` 时这就是原来的「同 Bot 不并行」。
           if (botId) {
-            const used = botSlotsUsed(botId) + (busyBots.get(botId) ?? 0);
-            if (used >= perBotCap) return false;
+            const cap = capOf(id, taskRun);
+            if (botSlotsUsed(botId) >= cap) return false;
           }
           // ★ 受控 DAG：依赖没就位的子任务一律不放行。
           //
@@ -678,10 +717,7 @@ export function createTaskSupervisor({
           const botId = taskRun?.owner?.leadBotId ?? null;
           queue.delete(id);
           running.add(id);
-          if (botId) {
-            busyBots.set(botId, (busyBots.get(botId) ?? 0) + 1);
-            laneAdd(schedulerBusyBots, botId, id);
-          }
+          if (botId) laneAdd(schedulerBusyBots, botId, id);
           const p = (async () => {
             let outcome = null;
             try {
@@ -702,10 +738,7 @@ export function createTaskSupervisor({
               } catch {}
             } finally {
               running.delete(id);
-              if (botId) {
-                busyBots.set(botId, Math.max(0, (busyBots.get(botId) ?? 1) - 1));
-                laneDelete(schedulerBusyBots, botId, id);
-              }
+              if (botId) laneDelete(schedulerBusyBots, botId, id);
               active.delete(id);
               // ★ 只有「真的收口了」才算名额空出来。
               //
@@ -731,7 +764,8 @@ export function createTaskSupervisor({
           //   只为数「部门里有几个人」。原来每个排队项都要扫两次。
           //   计算语义（含 degradeFactor）完全不变，只是采样频率降低。
           const budget = concurrencyBudget();
-          perBotCap = perBotLimit();
+          // 换 tick 就把上限缓存清掉：预算/健康度/根预算都可能在上一波里变了
+          limitCache.clear();
           // 本轮剩余名额用本地计数维护。
           // active.size 本身也会随 launch 同步加一，但显式 slots 让
           // 「本轮最多放行 budget - active.size 个」成为看得见的规则，
@@ -1556,7 +1590,7 @@ export function createTaskSupervisor({
       taskRun,
       activeForBot: Math.max(0, botSlotsUsed(botId) - (selfInLane ? 1 : 0)),
       mainLaneBusy,
-      limit: perBotLimit(),
+      limit: limitForTask(taskRun),
     });
     const cloneId = slot.useClone ? slot.cloneId : null;
 

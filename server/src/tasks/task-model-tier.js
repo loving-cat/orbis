@@ -202,19 +202,51 @@ export function selectTierModel({
   const open = typeof isBreakerOpen === 'function' ? isBreakerOpen : () => false;
   const pool = (Array.isArray(candidates) ? candidates : [])
     .filter((c) => c && c.slug && c.enabled !== false && !open(c.slug, c.groupId ?? ''));
-  // 边界 3：本地执行者绝不外泄到公有云
-  const baseLocal = typeof baseModel?.local === 'boolean' ? baseModel.local : isLocalEndpoint({
+  // 边界 3：本地执行者的判定（多端点/预计算 local 都吃得住）
+  const baseProbe = {
     ...(baseModel ?? {}),
     provider: String(baseModel?.provider ?? '').trim() || providerOfSlug(baseSlug),
     model: baseSlug,
     id: baseSlug,
-  });
-  const allowed = baseLocal ? pool.filter((c) => isLocalCandidate(c)) : pool;
-  // 边界 6：没有别的模型可用（或只剩自己）→ 不覆盖
-  const others = allowed.filter((c) => c.slug !== baseSlug);
+  };
+  const baseLocal = typeof baseModel?.local === 'boolean' ? baseModel.local : isLocalEndpoint(baseProbe);
+  const isLocalNow = (candidate) => {
+    if (!baseLocal) return true;
+    return isLocalCandidate(candidate);
+  };
+
+  // ---------------------------------------------------------------- 显式档位
+  //
+  // ★ 显式配置是**用户的明确选择**，只有两种结局：用它，或明确拒绝并说明原因。
+  //   绝不能「它不能用 → 我顺手换一个别的」：用户以为生效了，实际跑的是另一个模型。
   const explicitWanted = String(explicitTierModels?.[wanted] ?? '').trim();
   if (explicitWanted) {
-    const hit = others.find((c) => c.slug === explicitWanted);
+    if (explicitWanted === baseSlug) {
+      // 显式指定的就是当前模型：什么都不用做（也别换走！）
+      return {
+        overrideModel: null,
+        tier: wanted,
+        why: '显式档位模型就是当前模型，不覆盖',
+        candidate: null,
+      };
+    }
+    const hit = pool.find((c) => c.slug === explicitWanted) ?? null;
+    const explicitIsLocal = hit ? isLocalCandidate(hit) : isLocalEndpoint({
+      model: explicitWanted,
+      id: explicitWanted,
+      provider: providerOfSlug(explicitWanted),
+    });
+    if (baseLocal && !explicitIsLocal) {
+      // 本地执行者 + 云端显式档位模型 = 数据外泄。池里有没有本地候选都无所谓：
+      // 用户点名要的那个不能用，就如实沿用成员模型。
+      return {
+        overrideModel: null,
+        tier: wanted,
+        why: '显式档位模型在云端，而执行者是本地模型：拒绝外泄',
+        rejected: 'explicit_cloud_for_local',
+        candidate: null,
+      };
+    }
     if (hit) {
       return {
         overrideModel: hit.slug,
@@ -223,29 +255,38 @@ export function selectTierModel({
         candidate: hit,
       };
     }
-    // 显式配置了但被边界挡掉（不在已启用组里 / 本地隔离 / 熔断）→ 说清原因，
-    // 不要静默换成别的模型（用户以为生效了，实际没有）
-    const blockedByLocal = baseLocal && pool.some((c) => c.slug === explicitWanted && !isLocalCandidate(c));
-    if (!others.length) {
-      return {
-        overrideModel: null,
-        tier: wanted,
-        why: blockedByLocal
-          ? '显式档位模型在云端，而执行者是本地模型：拒绝外泄'
-          : '没有可用的同档候选，沿用成员默认模型',
-        candidate: null,
-      };
-    }
+    return {
+      overrideModel: null,
+      tier: wanted,
+      why: '显式档位模型不可用（不在已启用组里或熔断打开）：沿用成员默认模型',
+      rejected: 'explicit_unavailable',
+      candidate: null,
+    };
   }
+
+  // ---------------------------------------------------------------- 自动挑选
+  //
+  // ★ 必须**比基线更好**才换：旧实现只在「同分」时才不换，于是
+  //   `opus + strong` 会被挑成 mini（因为 mini 在别的维度分更高）、
+  //   `flash + fast` 会被升成 opus —— 反向降级/升级比不换更贵。
+  const others = pool.filter((c) => c.slug !== baseSlug && isLocalNow(c));
   if (!others.length) {
     return { overrideModel: null, tier: wanted, why: '没有其它可用模型，沿用成员默认模型', candidate: null };
   }
+  const baseScore = scoreForTier(wanted, baseProbe);
   const scored = others
     .map((candidate, index) => ({ candidate, score: scoreForTier(wanted, candidate) - index * 0.01 }))
     .sort((a, b) => b.score - a.score);
-  const pick = scored[0].candidate;
-  if (!pick || pick.slug === baseSlug) {
-    return { overrideModel: null, tier: wanted, why: '同档最佳就是当前模型，不覆盖', candidate: null };
+  const pick = scored[0]?.candidate ?? null;
+  const bestScore = scored[0]?.score ?? Number.NEGATIVE_INFINITY;
+  // 必须有**正向**档位特征，且比当前模型更贴这一档
+  if (!pick || bestScore <= 0 || bestScore <= baseScore) {
+    return {
+      overrideModel: null,
+      tier: wanted,
+      why: '当前模型已是同档最佳或无更合适候选，不覆盖',
+      candidate: null,
+    };
   }
   return {
     overrideModel: pick.slug,

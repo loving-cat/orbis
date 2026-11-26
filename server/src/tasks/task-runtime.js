@@ -27,7 +27,7 @@ import { resolveAutonomy } from './task-autonomy.js';
 import { admissionBudget } from '../coordination/task-admission.js';
 import { newId } from '../util.js';
 import { resumeAdmission } from '../coordination/task-admission.js';
-import { createCriticReviewer } from './task-critic-runner.js';
+import { createCriticReviewer, criticCandidatesOf, executorModelOf } from './task-critic-runner.js';
 import {
   MODEL_TIER, TIER_MODE, resolveTierMode, resolveTaskTier, selectTierModel, tierModelOverrides,
 } from './task-model-tier.js';
@@ -495,13 +495,15 @@ export function createTaskRuntime({
       return { tier, modelOverride: null, why: source === 'explicit' ? '显式指定标准档' : '沿用成员默认模型' };
     }
     const bot = runner.store?.getBot?.(botId) ?? null;
-    const baseSlug = String(bot?.model ?? '').trim()
-      || String(runner.model?.slug ?? `${runner.model?.provider ?? ''}/${runner.model?.id ?? ''}`).trim();
-    const baseModel = runner.resolveModel?.(baseSlug) ?? runner.model ?? { slug: baseSlug };
+    // ★ 与 C2 评审选模**同一份口径**（`executorModelOf` / `criticCandidatesOf`）：
+    //   bot.model 为空时回落 modelLabel / runner.model，provider 走 resolveModel
+    //   再退 slug 前缀，本地判定把所有 endpoints 一起算。
+    //   两处各写一份必然长歪，长歪的后果是「本地模型被当成云端」→ 内容发出去。
+    const baseModel = executorModelOf({ runner, store: runner.store, botId });
     const picked = selectTierModel({
       tier,
-      baseModel: { ...baseModel, slug: baseSlug || baseModel?.slug || '' },
-      candidates: tierCandidates(),
+      baseModel,
+      candidates: criticCandidatesOf(runner.modelGroups, { resolveModel: runner.resolveModel }),
       userLocked: bot?.lockModel === true,
       explicitTierModels: tierOverrides,
       isBreakerOpen: (slug, groupId) => {
@@ -515,36 +517,6 @@ export function createTaskRuntime({
       },
     });
     return { tier, source, modelOverride: picked.overrideModel, why: picked.why };
-  };
-
-  /** 已启用的模型候选（带 provider/baseUrl/contextWindow/本地标记）。 */
-  const tierCandidates = () => {
-    try {
-      const groups = runner.modelGroups?.list?.() ?? [];
-      const out = [];
-      for (const group of groups) {
-        if (!group || group.enabled === false) continue;
-        for (const entry of group.menuEntries?.() ?? []) {
-          for (const slug of entry.slugs ?? []) {
-            const resolved = runner.resolveModel?.(slug) ?? null;
-            const provider = String(resolved?.provider ?? '').trim() || String(slug).split('/')[0];
-            const baseUrl = String(resolved?.baseUrl ?? group.baseUrl ?? '').trim();
-            out.push({
-              slug,
-              label: entry.label,
-              groupId: group.id,
-              provider,
-              baseUrl,
-              contextWindow: entry.contextWindow ?? resolved?.contextWindow ?? 0,
-              enabled: true,
-            });
-          }
-        }
-      }
-      return out;
-    } catch {
-      return [];
-    }
   };
 
   const concurrencyOf = () => {

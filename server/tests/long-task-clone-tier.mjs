@@ -648,6 +648,210 @@ await test('17. ★ 本地执行者 + strong：只有云端强模型时拒绝外
   assert.equal(store.getBot(bot.id).model, 'ollama/qwen3');
 });
 
+await test('18. ★ 调度器直接入队并发（不经父内联）：maxPerBot=2 → 2 路真并发；根任务仍串行', async () => {
+  const rootId = await makeRoot({ concurrencyLimit: 4 });
+  const kids = [
+    await addKid(rootId, { botId: memberA.id }),
+    await addKid(rootId, { botId: memberA.id }),
+  ];
+  // 只额外允许 2 路：不直连父任务，直接按 id 叫醒两个子任务（走 schedule() 那条路）
+  const m = meter();
+  const sup = makeSupervisor({ executeMember: memberRunner(m, 90), maxPerBot: 2 });
+  sup.notify(kids[0]);
+  sup.notify(kids[1]);
+  const runs = await waitFor(sup, kids, (rs) => rs.every((r) => r.state === STATE.completed), { timeoutMs: 12_000 });
+  sup.dispose();
+  for (const run of runs) assert.equal(run.state, STATE.completed, `应完成，实际 ${run.state}（${run.flags?.blockedReason ?? ''}）`);
+  assert.equal(m.maxPerBot, 2, `maxPerBot=2 时该有 2 路并发（旧的“双倍计数”会把它压成 1），实测 ${m.maxPerBot}`);
+});
+
+await test('19. ★ 调度器直接入队：maxPerBot=3 → 3 路并发；同 Bot 两个根任务仍严格串行', async () => {
+  const rootId = await makeRoot({ concurrencyLimit: 4 });
+  const kids = [];
+  for (let i = 0; i < 3; i += 1) kids.push(await addKid(rootId, { botId: memberA.id }));
+  const m = meter();
+  const sup = makeSupervisor({ executeMember: memberRunner(m, 80), maxPerBot: 3 });
+  for (const kid of kids) sup.notify(kid);
+  const runs = await waitFor(sup, kids, (rs) => rs.every((r) => r.state === STATE.completed), { timeoutMs: 12_000 });
+  sup.dispose();
+  for (const run of runs) assert.equal(run.state, STATE.completed);
+  assert.ok(m.maxPerBot >= 3, `maxPerBot=3 时三路该全部并发，实测 ${m.maxPerBot}`);
+
+  // 两个根任务都归同一个负责人：根任务上限恒为 1，绝不并发
+  const root2 = await makeRoot();
+  const root3 = await makeRoot();
+  const leads = { inflight: 0, max: 0 };
+  const sup2 = makeSupervisor({
+    maxPerBot: 3,
+    execute: async () => {
+      leads.inflight += 1;
+      leads.max = Math.max(leads.max, leads.inflight);
+      await sleep(70);
+      leads.inflight -= 1;
+      return { ok: true, stop: 'returned' };
+    },
+    executeMember: async () => ({ ok: true, stop: 'returned', appliedCompletion: true, artifacts: [] }),
+  });
+  sup2.notify(root2);
+  sup2.notify(root3);
+  await sleep(400);
+  await sup2.idle();
+  sup2.dispose();
+  assert.equal(leads.max, 1, `同一个负责人的两个根任务必须串行（根上限 1），实测 ${leads.max}`);
+});
+
+await test('20. ★ 根预算 concurrencyLimit=1 时，maxPerBot=3 也只能 1 路', async () => {
+  const rootId = await makeRoot({ concurrencyLimit: 1 });
+  const kids = [
+    await addKid(rootId, { botId: memberA.id }),
+    await addKid(rootId, { botId: memberA.id }),
+  ];
+  const m = meter();
+  const sup = makeSupervisor({ executeMember: memberRunner(m, 60), maxPerBot: 3, maxConcurrency: () => 4 });
+  for (const kid of kids) sup.notify(kid);
+  const runs = await waitFor(sup, kids, (rs) => rs.every((r) => r.state === STATE.completed), { timeoutMs: 12_000 });
+  sup.dispose();
+  for (const run of runs) assert.equal(run.state, STATE.completed);
+  assert.equal(m.max, 1, `根预算只允许 1 路，分身不得越界，实测 ${m.max}`);
+});
+
+await test('21. ★ selectTierModel 绝不反向切换（opus+strong 不降级、flash+fast 不升级）', () => {
+  const opus = { slug: 'cloud/claude-opus-4', label: 'claude opus 4', groupId: 'cloud', provider: 'openai', baseUrl: 'https://api.x', contextWindow: 200_000 };
+  const mini = { slug: 'cloud/gpt-4o-mini', label: 'gpt-4o-mini', groupId: 'cloud2', provider: 'openai', baseUrl: 'https://api.y', contextWindow: 128_000 };
+  const flash = { slug: 'cloud/gemini-flash', label: 'gemini flash', groupId: 'cloud3', provider: 'openai', baseUrl: 'https://api.z', contextWindow: 1_000_000 };
+
+  const noDowngrade = TIER.selectTierModel({ tier: 'strong', baseModel: { ...opus }, candidates: [opus, mini] });
+  assert.equal(noDowngrade.overrideModel, null, `opus + strong 不该被降级成 mini（实际 ${noDowngrade.overrideModel}）`);
+
+  const noUpgrade = TIER.selectTierModel({ tier: 'fast', baseModel: { ...flash }, candidates: [flash, opus] });
+  assert.equal(noUpgrade.overrideModel, null, `flash + fast 不该被升级成 opus（实际 ${noUpgrade.overrideModel}）`);
+
+  // 正常方向仍然要能换
+  assert.equal(
+    TIER.selectTierModel({ tier: 'strong', baseModel: { ...flash }, candidates: [flash, opus] }).overrideModel,
+    'cloud/claude-opus-4',
+  );
+  assert.equal(
+    TIER.selectTierModel({ tier: 'fast', baseModel: { ...opus }, candidates: [opus, flash] }).overrideModel,
+    'cloud/gemini-flash',
+  );
+});
+
+await test('22. ★ 显式档位边界：等于当前模型不换走；本地执行者 + 云端显式档位一律拒绝外泄', () => {
+  const opus = { slug: 'cloud/opus-x', label: 'claude opus x', groupId: 'cloud', provider: 'openai', baseUrl: 'https://api.x', contextWindow: 200_000 };
+  const mini = { slug: 'cloud/mini-y', label: 'gpt mini y', groupId: 'cloud2', provider: 'openai', baseUrl: 'https://api.y', contextWindow: 128_000 };
+  const same = TIER.selectTierModel({
+    tier: 'strong',
+    baseModel: { ...opus },
+    candidates: [opus, mini],
+    explicitTierModels: { strong: 'cloud/opus-x' },
+  });
+  assert.equal(same.overrideModel, null, '显式档位模型就是当前模型时不许换走');
+  assert.match(same.why, /就是当前模型/);
+
+  // 本地执行者 + 显式档位指向云端，即使池里还有别的本地模型 → 仍然拒绝外泄
+  const localA = { slug: 'mg_local/a', label: 'local a', groupId: 'mg_local', provider: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', local: true };
+  const localB = { slug: 'mg_local/b', label: 'local b big', groupId: 'mg_local', provider: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', local: true, contextWindow: 200_000 };
+  const leaked = TIER.selectTierModel({
+    tier: 'strong',
+    baseModel: { ...localA },
+    candidates: [localA, localB, opus],
+    explicitTierModels: { strong: 'cloud/opus-x' },
+  });
+  assert.equal(leaked.overrideModel, null, '本地执行者绝不外泄，也不许“顺手换一个别的”');
+  assert.match(leaked.why, /拒绝外泄/);
+});
+
+await test('23. ★ 本地自定义 ModelGroup（127.0.0.1/v1 + resolveModel 无 baseUrl + runner.model=null）不误判成云端', async () => {
+  const bot = store.createBot({ name: '本地自定义组', persona: 'x', model: 'mg_local/qwen3' });
+  const dm = store.ensureDm(bot.id);
+  const calls = [];
+  const runner = {
+    store,
+    // ★ runner.model 为 null：绝不能因此拼出 "/" 或把执行者当成"没有模型"
+    model: null,
+    modelLabel: () => '',
+    modelGroups: {
+      list: () => [{
+        id: 'mg_local',
+        enabled: true,
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        endpoints: [{ baseUrl: 'http://127.0.0.1:11434/v1' }],
+        menuEntries: () => [{ label: '本地 qwen3', slugs: ['mg_local/qwen3'] }],
+      }],
+      get: (id) => (id === 'mg_local' ? { id, baseUrl: 'http://127.0.0.1:11434/v1', endpoints: [{ baseUrl: 'http://127.0.0.1:11434/v1' }] } : null),
+    },
+    // 故意不带 baseUrl：baseUrl 只能从 ModelGroup/endpoints 拿到
+    resolveModel: (slug) => (slug === 'mg_local/qwen3' ? { provider: 'ollama', id: 'qwen3' } : null),
+    breakerFor: () => null,
+    breakers: new Map(),
+    isBusy: () => false,
+    abortManagedTask: () => {},
+    roomHasBot: () => true,
+    async run(roomId, botId, prompt, opts) { calls.push({ opts }); return { ok: true, stop: 'returned', appliedCompletion: true }; },
+  };
+  const runtime = createTaskRuntime({
+    taskRuns, runner,
+    routeOf: () => ({ roomId: dm.id, botId: bot.id, kind: 'dm' }),
+    verify: async () => null,
+    access: { stat: async () => ({ exists: true }), readText: async () => ({ ok: false }), resolveRef: (r) => r },
+    clock: () => Date.now(), log: () => {}, emit: () => {},
+  });
+  process.env.ORBIS_MODEL_TIER = 'explicit';
+  const requestId = 'rq-mglocal';
+  const built = createTaskRun({
+    id: 'tr_mglocal', requestId, requesterId: 'local', at: Date.now(),
+    origin: { roomId: dm.id },
+    owner: { departmentId: dm.id, leadBotId: bot.id, roomKind: 'dm' },
+    budget: { maxRuns: null },
+    goal: { requirement: '重构并发调度', verification: [{ id: 'v', kind: 'artifact', description: 'x' }] },
+    modelTier: 'strong',
+  });
+  await taskRuns.acceptRequest({
+    requesterId: 'local', requestId, fingerprint: 'fp-mglocal', build: () => built.taskRun, at: Date.now(),
+  });
+  await runtime.supervisor.runTask(built.taskRun.id).catch(() => null);
+  delete process.env.ORBIS_MODEL_TIER;
+  assert.ok(calls.length >= 1, '应真的派发了');
+  const opts = calls[0].opts ?? {};
+  assert.equal(opts.modelOverride, undefined, '本地自定义组不得被换到云端（也不该拼出 "/" 当模型）');
+  assert.notEqual(opts.modelOverride, '/', '绝不能拼出 "/"');
+  assert.equal(store.getBot(bot.id).model, 'mg_local/qwen3', 'bot.model 未改');
+});
+
+await test('24. ★ createChildTask 复用同一派工时更新 flags.modelTier', async () => {
+  const rootId = await makeRoot();
+  const parent = taskRuns.read(rootId).taskRun;
+  const goal = {
+    requirement: '同一份活：写口径表',
+    verification: [{ id: 'v1', kind: 'expert', description: '负责人确认' }],
+  };
+  const first = await createChildTask({ taskRuns, parentTaskRun: parent, botId: memberB.id, goal });
+  assert.equal(first.ok, true);
+  assert.equal(first.reused, false);
+  assert.equal(taskRuns.read(first.child.id).taskRun.flags?.modelTier ?? null, null, '第一次没指定档位');
+
+  // 同一份派工重派 + 补一句 modelTier：应复用同一条，并更新档位
+  const again = await createChildTask({
+    taskRuns,
+    parentTaskRun: taskRuns.read(rootId).taskRun,
+    botId: memberB.id,
+    goal,
+    modelTier: 'strong',
+  });
+  assert.equal(again.ok, true, again.text ?? '');
+  assert.equal(again.reused, true, '同一份派工应复用（不进业务身份指纹）');
+  assert.equal(again.child.id, first.child.id, '复用的必须是同一条子任务');
+  const merged = taskRuns.read(first.child.id).taskRun;
+  assert.equal(merged.flags?.modelTier, 'strong', '复用时要同步更新 flags.modelTier');
+  // 再重派一次但不带档位：不能把已有档位清掉
+  const third = await createChildTask({
+    taskRuns, parentTaskRun: taskRuns.read(rootId).taskRun, botId: memberB.id, goal,
+  });
+  assert.equal(third.reused, true);
+  assert.equal(taskRuns.read(first.child.id).taskRun.flags?.modelTier, 'strong', '没指定时保持原档位');
+});
+
 // ---------------------------------------------------------------------------
 
 const passed = results.filter((r) => r.ok).length;

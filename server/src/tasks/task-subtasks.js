@@ -204,7 +204,7 @@ export async function createChildTask({
       }
       await mergeClaims(existing?.id, claims.files, taskRuns, clock);
       const linkedA = await mergeChildLinks(taskRuns, existing?.id, {
-        dependsOn: deps.ids, checkpointBeforeRun, siblings, clock,
+        dependsOn: deps.ids, checkpointBeforeRun, modelTier, siblings, clock,
       });
       if (!linkedA.ok) return linkedA;
       return { ok: true, child: existing, reused: true };
@@ -220,7 +220,7 @@ export async function createChildTask({
     }
     await mergeClaims(child?.id, claims.files, taskRuns, clock);
     const linkedB = await mergeChildLinks(taskRuns, child?.id, {
-      dependsOn: deps.ids, checkpointBeforeRun, siblings, clock,
+      dependsOn: deps.ids, checkpointBeforeRun, modelTier, siblings, clock,
     });
     if (!linkedB.ok) return linkedB;
     return { ok: true, child, reused: true };
@@ -240,7 +240,7 @@ export async function createChildTask({
  * 依赖并集同样要过环检测：两份重派各自只合法，合起来可能就成环了。
  */
 async function mergeChildLinks(taskRuns, childId, {
-  dependsOn = [], checkpointBeforeRun = false, siblings = [], clock = () => Date.now(),
+  dependsOn = [], checkpointBeforeRun = false, modelTier = undefined, siblings = [], clock = () => Date.now(),
 } = {}) {
   if (!childId) return { ok: true };
   const others = siblings.filter((run) => run.id !== childId).map((run) => run.id);
@@ -258,9 +258,19 @@ async function mergeChildLinks(taskRuns, childId, {
       }
       const gate = checkpointBeforeRun === true || cur.checkpointBeforeRun === true;
       const sameDeps = mergedDeps.ids.join('|') === (cur.dependsOn ?? []).join('|');
-      if (sameDeps && gate === (cur.checkpointBeforeRun === true)) return null;
+      // ★ 档位：显式传入合法值就跟着更新（它不进业务身份指纹，复用时可改）。
+      //   `undefined` = 这次没指定，保持原样；不能因为没填就把已有档位清掉。
+      const wantTier = ['fast', 'standard', 'strong'].includes(String(modelTier ?? '').trim().toLowerCase())
+        ? String(modelTier).trim().toLowerCase()
+        : null;
+      const tierChanged = wantTier !== null && (cur.flags?.modelTier ?? null) !== wantTier;
+      if (sameDeps && gate === (cur.checkpointBeforeRun === true) && !tierChanged) return null;
       return {
-        ...cur, dependsOn: mergedDeps.ids, checkpointBeforeRun: gate, updatedAt: clock(),
+        ...cur,
+        dependsOn: mergedDeps.ids,
+        checkpointBeforeRun: gate,
+        ...(tierChanged ? { flags: { ...(cur.flags ?? {}), modelTier: wantTier } } : {}),
+        updatedAt: clock(),
       };
     },
   });
