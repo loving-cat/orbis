@@ -64,6 +64,8 @@ const PURE_MODULES = [
   'tasks/task-worker-pool.js',
   // 任务难度模型分档：档位解析 / 难度推断 / 档位选模（六条硬边界）
   'tasks/task-model-tier.js',
+  // Worktree 隔离纯策略：档位 / 落点与分支名 / 场景判定 / 文件互斥放宽
+  'tasks/task-worktree-policy.js',
 ];
 
 const TEST_OVERRIDES = new Map([
@@ -81,6 +83,8 @@ const TEST_OVERRIDES = new Map([
   // 分身与分档也在同一个回归文件（同一条调度/执行链）
   ['tasks/task-worker-pool.js', 'long-task-clone-tier.mjs'],
   ['tasks/task-model-tier.js', 'long-task-clone-tier.mjs'],
+  // worktree 纯策略与真实 git 场景在同一个回归文件
+  ['tasks/task-worktree-policy.js', 'long-task-worktree.mjs'],
 ]);
 
 const FORBIDDEN_IMPORT =

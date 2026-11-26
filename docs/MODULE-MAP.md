@@ -133,6 +133,9 @@
 | `tasks/task-worker-pool.js` | 成员分身池（纯逻辑）：`resolveCloneConfig`（`ORBIS_WORKER_CLONE`/`ORBIS_MAX_CLONES_PER_BOT`，`off` 时槽位=1）、`effectivePerBotLimit`（被根并发预算裁剪、`upstreamHealth<1` 退回串行）、`cloneLaneKey`/`parseLaneKey`/`baseBotIdOfKey`、`planWorkerSlot`（子任务才开分身；主槽空闲用主槽） |
 | `tasks/task-model-tier.js` | 任务难度模型分档（纯逻辑）：`resolveTierMode`（`off`/`explicit`/`auto`）、`tierModelOverrides`、`inferTaskTier`（确定性启发式）、`selectTierModel`（六条硬边界：standard 零扰动 / lockModel / 本地不外泄 / 熔断跳过 / 档位打分 / 同模型不覆盖）、`resolveTaskTier` |
 | `runner/session-lanes.js` | 会话泳道键唯一真源：`sessionLaneKey`（`room:bot` / `#fb` / `#clone_<id>` / `#clone_<id>#fb`）、`parseLaneKey`、`baseBotIdOfKey`（房间级中止要剥离后缀）、`releaseLaneSession` / `releaseTurnLane`（用完即焚：摘池 + 退订 + dispose） |
+| `tasks/task-worktree-policy.js` | Worktree 隔离纯策略：`WORKTREE_MODE`/`resolveWorktreeMode`、`sanitizeWorktreeId`（白名单 + 去 `..`）、`worktreeBranchOf`（`orbis/task/<safeId>`）、`worktreeRelPathOf`（`.orbis-worktrees/<safeId>`）、`shouldUseWorktree`（子任务限定 + `explicit`/`auto`）、`worktreePromptNote`、`worktreesBypassFileClaims`（**仅双方都隔离**才放宽） |
+| `tasks/task-worktree.js` | Worktree 生命周期（IO）：`createWorktreeManager` → `prepareWorktree`（幂等复用）/ `mergeWorktree`（脏主仓与冲突双 fail-closed）/ `cleanupWorktree`（只清 active）/ `pruneOrphanWorktrees`。全部走 `locateGit` + `resolveRepoLayout` + `repoTrustVerdict` + 安全参数、`spawnSync` 无 shell、`withRepoWriteLock` 串行化 |
+| `runner/stream-bubbles.js` | 气泡收尾与「换条」的落库逻辑（从 `turn-executor.js` 抽出、原样 re-export）：`settleRunningSteps` / `applyPendingReseat` |
 | `tasks/task-critic-runner.js` | 评审执行器：`createCriticReviewer` 调 `session-factory` 的 `criticLane` 跑一轮，订阅收集文本与 `usage`，超时 `abort`，`finally` 里 `dispose` + 退订；把「评审不通过」与「评审员自身故障」分开返回（`status: reviewed | error`） |
 
 新增后端能力的落点：

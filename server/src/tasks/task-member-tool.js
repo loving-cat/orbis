@@ -72,6 +72,18 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
             + '不会改成员配置，只影响这一次执行。',
         }),
       ),
+      useWorktree: Type.Optional(
+        Type.Boolean({
+          description:
+            '这份编码活要不要在独立的 Git worktree + 独立分支里做（改代码互不打扰，验收通过后自动合回主仓）。'
+            + '默认不填 = 跟主工作区一样；同一仓库的并行编码活建议开。',
+        }),
+      ),
+      worktreeRepo: Type.Optional(
+        Type.String({
+          description: '目标仓库（相对工作目录的路径；不填 = 工作目录本身就是仓库）。',
+        }),
+      ),
       criticRequired: Type.Optional(
         Type.Boolean({
           description:
@@ -159,6 +171,8 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
         // 不填就是 undefined（跟随父任务），不能写成 false —— 那会把父任务的要求吞掉
         criticRequired: typeof params.criticRequired === 'boolean' ? params.criticRequired : undefined,
         modelTier: params.modelTier ? String(params.modelTier) : undefined,
+        useWorktree: typeof params.useWorktree === 'boolean' ? params.useWorktree : undefined,
+        worktreeRepo: params.worktreeRepo ? String(params.worktreeRepo) : undefined,
         // 计划步骤号 → 真实子任务 id（负责人手里只有“第 2 条”这种写法）
         stepIds: planStepIds(taskRuns, parent),
       });

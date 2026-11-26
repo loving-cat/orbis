@@ -33,6 +33,19 @@
 - 防死等：`upstream_failed` 与「受阻」等价参与父任务收口，自主模式交回负责人、非自主模式如实阻塞并说清是谁的失败。
 - 共享黑板挂在根任务 `blackboard` 上：最多 24 条（先淘汰最旧的非约束）、单条 ≤240 字、渲染 ≤1200 字；交付事实自动落一条 `artifact`，负责人/成员可用 `task_blackboard` 写 `decision`/`constraint`/`fact`。写入目标只取受管上下文的根任务，调用方无法指定（防跨任务串写）。
 
+## 并发编码的 Git Worktree 隔离（2.0 集群 C4）
+
+- **何时启用**：`ORBIS_TASK_WORKTREE` = `off` | `explicit`（默认）| `auto`。只有**子任务**可开（负责人/主控永远在主工作区协调）；`explicit` 只在 `assign_member_task` / `createChildTask` / `createTaskRun` 显式给了 `useWorktree: true` 或 `worktreeRepo` 时建，`auto` 额外按「声明了仓库内文件 / 目标是改代码」判定。
+- **落点**：`<workspace>/.orbis-worktrees/<safeTaskId>`（必须在 workspace 内 —— 沙箱允许目录、`repoTrustVerdict`、git 工具的 `resolveRepo` 三条都按这条判）。**绝不落 `dataDir`**；**绝不改 `.gitignore`**（幂等写 `<commonDir>/info/exclude`）；分支固定 `orbis/task/<safeTaskId>`，`safeId` 只允许 `[A-Za-z0-9._-]`（防参数注入与路径穿越）。
+- **生命周期**（全部在 `withRepoWriteLock({ commonDir })` 内串行化，拿不到锁短暂重排而非判死）：
+  1. `prepareWorktree`（幂等）：复用优先 —— 返工/续段直接接着用同一棵树，**绝不清空半成品**；空仓（无 HEAD）与越界 `worktreeRepo` fail-closed 拒绝。
+  2. `mergeWorktree`（**只在机械验收 + 独立复核全过之后、`verification_finished(passed)` 之前**，否则归约器已把任务置为 `completed`，再 `block()` 会被拒、冲突被静默吞掉）：自动 `git add -A` + `commit`（没配提交身份才用兜底身份，**绝不 `--no-verify`**）→ 无净提交记 `noop` 并清理 → **主仓脏则拒绝合并**（保留分支，`preserved_dirty_main`）→ 干净则 `git merge --no-ff` → 成功后核对 HEAD 前进、`worktree remove` + 安全 `branch -d`，记 `mergedHead` / `filesChanged` 并落黑板。
+  3. **冲突 fail-closed**：冲突清单**先取再 `merge --abort`**（abort 会清空未合并索引），主工作树恢复 100% 干净，分支与 worktree **完整保留**（`conflict`），`block()` 交回负责人。
+  4. `cleanupWorktree`：取消/改版时只清 `status === 'active'` 的树（`worktree remove --force` + `branch -D`）；`conflict` / `preserved_dirty_main` 的分支**绝不删**。`pruneOrphanWorktrees` 只扫终态残留。
+- **与文件互斥**：非 worktree 子任务 `fileClaims` 100% 照旧；**只有双方都在各自 worktree** 时才放宽（`worktreesBypassFileClaims`）——磁盘真分开了，冲突留到合并阶段。
+- **Critic 联动**：`task-critic-runner` 把 `workDir = taskRun.worktree.worktreePath` 传给 `criticLane`，评审员的 `read/ls/find/grep` 直接在子任务那棵树里验真改动；没过就在同一棵里返工，绝不污染主仓。
+- **会话隔离**：带 `workDir` 的执行一律走独立内存泳道（`cloneId = taskRun.id` + `persist: false`）；`session-factory` 用 `effectiveWorkDir = opts.workDir || config.workspace` 注入 `cwd` / 沙箱 `workDir` / `createAgentSession.cwd` / git 工具目标。
+
 ## 同角色临时分身与模型分档（2.0 集群 C3）
 
 - **分身边界**：只有**子任务**（`parentTaskId` 非空）可以开临时分身；负责人（根任务）与私聊 solo 永远走主会话，保住协调记忆连续性。

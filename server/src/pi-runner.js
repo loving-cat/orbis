@@ -375,9 +375,9 @@ export class PiRunner {
   async ensureSession(roomId, botId, opts = {}) {
     // ★ 临时模型用独立键、且**不复用**缓存：复用原键会直接返回旧模型那个会话，
     //   modelOverride 就成了假开关（说切了，请求还发往老模型）。
-    // 泳道键：主会话 / #fb（临时模型）/ #clone_<id> / #clone_<id>#fb 四种形态
+    // 泳道键：主会话 / #fb / #clone_<id> / #clone_<id>#fb；workDir 也必须独立泳道
     const key = sessionLaneKey({ roomId, botId, cloneId: opts.cloneId, modelOverride: opts.modelOverride });
-    if (!opts.modelOverride && !opts.cloneId) {
+    if (!opts.modelOverride && !opts.cloneId && !opts.workDir) {
       retireStaleSession(this.sessions, key);
       const existing = this.sessions.get(key);
       if (existing?.session) return reserveSession(existing);

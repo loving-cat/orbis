@@ -292,6 +292,7 @@ async function runManagedOnce(runner, {
   kickoff = false,
   cloneId = null,
   modelOverride = null,
+  workDir = null,
 } = {}) {
   const roomId = room.id;
   const bot = runner.store.getBot(botId);
@@ -334,6 +335,7 @@ async function runManagedOnce(runner, {
       human: !openerBotId,
       cloneId,
       modelOverride,
+      workDir,
     });
     return res;
   } catch (err) {
@@ -367,6 +369,7 @@ export async function executeGroupRound(
     summary = null,
     cloneId = null,
     modelOverride = null,
+    workDir = null,
   } = {},
 ) {
   const room = runner.store.getRoom(roomId);
@@ -415,6 +418,7 @@ export async function executeGroupRound(
       //   不额外多建一层会话（§2 的“天然合一”）。
       cloneId,
       modelOverride,
+      workDir,
     });
   }
 

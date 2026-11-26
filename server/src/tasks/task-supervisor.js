@@ -36,6 +36,9 @@ import {
 } from './task-critic.js';
 import { tokenCountOf } from './task-budget.js';
 import { effectivePerBotLimit, planWorkerSlot } from './task-worker-pool.js';
+import {
+  DEFAULT_WORKTREE_MODE, resolveWorktreeMode, shouldUseWorktree,
+} from './task-worktree-policy.js';
 import { reserveRootBudget, refundRootBudget, settleRootBudget, extendRootBudget } from './task-budget-coordinator.js';
 
 const PAUSED = new Set([STATE.paused_user, STATE.paused_budget]);
@@ -207,6 +210,11 @@ export function createTaskSupervisor({
    *   `ORBIS_MAX_CLONES_PER_BOT` 算好再传进来。
    */
   maxPerBot = 1,
+  /**
+   * Worktree 管理器（C4）。**不传就是 null → 完全不启用**：
+   * 既有 203 个单测因此零改动零影响。生产装配按 `ORBIS_TASK_WORKTREE` 注入。
+   */
+  worktreeManager = null,
   criticMode = null,
   maxCriticReworks = null,
   access = null,
@@ -267,6 +275,9 @@ export function createTaskSupervisor({
     : MAX_CRITIC_REWORKS;
   /** 真的能跑评审吗：没注入执行器 / 关了都不跑。 */
   const criticActive = typeof criticReview === 'function' && criticSetting !== CRITIC_MODE.off;
+  /** Worktree 档位：只有注入了管理器且模式不是 off 才可能开树。 */
+  const worktreeSetting = resolveWorktreeMode(process.env) ?? DEFAULT_WORKTREE_MODE;
+  const worktreeActive = Boolean(worktreeManager?.prepareWorktree) && worktreeSetting !== 'off';
 
   /** 执行者名字（拿不到就退回一个中性的称呼）。 */
   function nameOfBot(botId) {
@@ -511,9 +522,17 @@ export function createTaskSupervisor({
       const already = picked?.get(botId) ?? 0;
       if (botSlotsUsed(botId) + already >= (perBotCap ?? limitForTask(kid))) return false;
     }
-    // ★ 文件互斥是硬不变量，开了分身也不放松：两个分身撞同一个文件照样排队
+    // ★ 文件互斥是硬不变量，开了分身也不放松：两个分身撞同一个文件照样排队。
+    //   C4 唯一的例外是**双方都隔离在各自 worktree**：磁盘真的分开了，
+    //   这时候还排队等于白等（冲突留到合并阶段处理）。
     const files = claimFilesOf(kid);
-    if (files.length && claimsOverlap(files, [...claimedFiles])) return false;
+    if (files.length) {
+      for (const entry of claimedFiles) {
+        if (!claimsOverlap(files, entry.files)) continue;
+        if (canBypassClaimsForWorktree(kid, entry.kid)) continue;
+        return false;
+      }
+    }
     return true;
   }
 
@@ -571,7 +590,8 @@ export function createTaskSupervisor({
     // ★ 从调度器正在用掉的 Bot 起步：`canRun()` 已经会避开 `childBusyBots`（内联在用），
     //   这里补齐反向那一半 —— 内联也要避开调度器正在跑的会话，否则两条路径各看各的，
     //   同一份活会被派给同一个 Bot 两次（同一个会话只有一个，第二个必然撞）。
-    const claimedFiles = new Set();
+    /** 本批已排的「任务 + 它声明的文件」：用于按 path 做互斥（worktree 双方可放宽）。 */
+    const claimedFiles = [];
     // 每次选批只算一次上限：`perBotLimit()` 会走 concurrencyBudget()（全表扫），
     // 放进每 kid 的分支里就会把这条热路径拖回原来的样子。
     // 同一父任务下的槽位上限一致：按父任务缓存一次（`childBatchCap` 要读根记录）
@@ -594,7 +614,8 @@ export function createTaskSupervisor({
       batch.push(kid);
       const botId = kid.owner?.leadBotId ?? null;
       if (botId) picked.set(botId, (picked.get(botId) ?? 0) + 1);
-      for (const file of claimFilesOf(kid)) claimedFiles.add(file);
+      const files = claimFilesOf(kid);
+      if (files.length) claimedFiles.push({ kid, files });
     }
     return batch;
   }
@@ -1320,6 +1341,8 @@ export function createTaskSupervisor({
           continue;
         }
         if (out === 'critic_blocked') return { status: 'blocked', why: 'critic_exhausted' };
+        if (out === 'worktree_blocked') return { status: 'blocked', why: 'worktree_merge_failed' };
+        if (out === 'worktree_retry') return { status: 'retry_scheduled', why: '主仓正在被别的任务写入，稍后重试合入' };
         if (out === 'critic_error') {
           // ★ 评审员自身故障：不伪造通过、不扣返工额度，过一会儿重跑。
           //   不在这里 return wait 是因为“等一个不会到来的事件”＝静死；
@@ -1558,7 +1581,8 @@ export function createTaskSupervisor({
   }
 
   /** 执行一步：先持久（失败即止）→ 预算 → 执行 → 结算。 */
-  async function doLeadStep(taskRun, action) {
+  async function doLeadStep(initialTaskRun, action) {
+    let taskRun = initialTaskRun;
     const attemptId = nextAttemptId(taskRun);
     const botId = taskRun.owner?.leadBotId ?? null;
     const isChild = Boolean(taskRun.parentTaskId);
@@ -1568,6 +1592,30 @@ export function createTaskSupervisor({
     if (!botId) {
       await block(taskRun.id, '没有可执行的负责人');
       return { status: 'blocked', why: 'no_lead' };
+    }
+
+    /**
+     * ★ C4：需要隔离的编码子任务，开跑前先准备它自己的 worktree。
+     *
+     * 幂等：返工/续段会复用同一棵树（绝不清空成员正在改的半成品）。
+     * 失败就**不开工**（fail-closed）—— 在主工作区里改只会污染主仓，
+     * 比"这次没做成"糟得多。
+     */
+    if (wantsWorktree(taskRun)) {
+      const prepared = await worktreeManager.prepareWorktree({
+        taskRun: read(taskRun.id) ?? taskRun,
+        taskRuns,
+        worktreeRepo: taskRun.worktreeRepo ?? taskRun.flags?.worktreeRepo ?? null,
+      });
+      if (!prepared.ok) {
+        await block(taskRun.id, 'Worktree 准备失败：' + String(prepared.text ?? prepared.code ?? '未知原因').slice(0, 200));
+        return { status: 'blocked', why: 'worktree_prepare_failed' };
+      }
+      // ★ 必须换成**落盘后**的最新快照：`prepareWorktree` 把 worktree 写进了账本，
+      //   手里这份旧快照还没有它 —— 不刷新的话，成员第 1 轮拿到的提示词里
+      //   就不会有 `worktreePromptNote`（"你正在独立 worktree 里开发"），
+      //   而 `workDir` 也会是 null（在主仓里改，直接污染主工作区）。
+      taskRun = read(taskRun.id) ?? taskRun;
     }
 
     /**
@@ -1683,6 +1731,8 @@ export function createTaskSupervisor({
             phase: isChild ? 'member' : LEAD_PHASE.plan, prompt,
             // ★ 分身槽位传给执行层：它决定用哪条会话泳道（不影响业务身份）
             cloneId,
+            // ★ C4：worktree 子任务的执行必须在它自己那棵树里跑
+            workDir: read(taskRun.id)?.worktree?.worktreePath ?? null,
           });
           return rawResult;
         },
@@ -1895,11 +1945,43 @@ export function createTaskSupervisor({
         botName: nameOfBot(run.owner?.leadBotId),
       });
     }
-    return pickBlockingClaim({
+    const blocking = pickBlockingClaim({
       self: { id: taskRun.id, files: mine },
       runs,
       holdingStates: CLAIM_HOLDING_STATES,
     });
+    if (!blocking) return null;
+    // ★ C4：双方都在各自独立的 worktree 里时，磁盘是真分开的 ——
+    //   同文件不再互相阻塞，冲突留到合并阶段由仓库锁 + git 确定性处理。
+    const other = read(blocking.taskRunId ?? blocking.holderId ?? blocking.id ?? '') ?? null;
+    if (other && canBypassClaimsForWorktree(taskRun, other)) return null;
+    return blocking;
+  }
+
+  /**
+   * 这两个子任务之间的文件互斥能不能放宽。
+   *
+   * ★ 必须先受 `worktreeActive` 守卫：`ORBIS_TASK_WORKTREE=off` 或宿主没注入
+   *   `worktreeManager` 时，`useWorktree` 只是一个标记 —— 两边其实都在主工作区里
+   *   改同一批文件，放宽就是"两个人同时写同一个文件"。
+   * 另外双方都要么已经有活跃的 worktree（`status === 'active'`），要么这一次
+   * 确实会开（`wantsWorktree`）—— 后者让 `auto` 模式在首轮（prepare 之前）也能并发。
+   */
+  function canBypassClaimsForWorktree(kidA, kidB) {
+    if (!worktreeActive) return false;
+    const isolated = (kid) => kid?.worktree?.status === 'active' || wantsWorktree(kid);
+    return isolated(kidA) && isolated(kidB);
+  }
+
+  /**
+   * 这个子任务这一次要不要开 worktree。
+   *
+   * 只有「注入了管理器 + 档位允许 + 任务声明/模式命中」才开；
+   * 根任务永远不开（它要在主工作区协调）。
+   */
+  function wantsWorktree(taskRun) {
+    if (!worktreeActive) return false;
+    return shouldUseWorktree({ taskRun, mode: worktreeSetting });
   }
 
   /** 把一次执行失败接到既有状态机：预算暂停 / 有界重试 / 结果未知 / 阻塞。 */
@@ -2043,6 +2125,25 @@ export function createTaskSupervisor({
       // 评审记录已经落盘，重跑一次验收：这次 expert 条件应该真能过。
       const again = await checker(read(taskRun.id) ?? taskRun, { access, attemptId: null });
       finalVerdict = { ...again, reason: critic.reason ?? again.reason };
+    }
+
+    /**
+     * ★ C4：worktree 的改动要在这里合回主仓 —— **通过判定之后、`settle` 之前**。
+     *
+     * 为什么不能放到 `deliver()` 里：验通过的那一刻归约器已经把任务置为
+     * `completed`，之后再 `block()` 会被状态机拒绝（completed 不接受 blocked），
+     * 于是"合入冲突"会被静默吞掉，任务显示成功但代码没进主仓。
+     */
+    if (finalVerdict?.passed === true) {
+      const merged = await mergeWorktreeBeforePass(taskRun);
+      if (merged?.ok === false) {
+        if (merged.retry) {
+          await patch(taskRun.id, { nextAction: null, retryAt: clock() + CLAIM_RETRY_MS });
+          setTimer(clock() + CLAIM_RETRY_MS, taskRun.id);
+          return 'worktree_retry';
+        }
+        return 'worktree_blocked';
+      }
     }
 
     const out = await settle(taskRun.id, {
@@ -2433,6 +2534,12 @@ export function createTaskSupervisor({
       delivery: { summary, at: clock(), revision: taskRun.revision },
     };
     await writeBlackboardArtifact(delivered);
+    // ★ C4：worktree 已在「判定通过之后、settle 之前」合入；这里把合入事实落黑板
+    //   （负责人/后来的人要能看到"合到哪个 commit、动了哪些文件"）。
+    const wt = (read(taskRun.id) ?? taskRun)?.worktree ?? null;
+    if (wt?.status === 'merged') {
+      await writeMergeFact(taskRun, { mergedHead: wt.mergedHead, files: wt.filesChanged ?? [] });
+    }
     // 共用交回事件：先按真实证据解除父的依赖门槛，再唤醒父任务
     await releaseParentDependency(taskRun);
     notifyParent(taskRun);
@@ -2440,6 +2547,71 @@ export function createTaskSupervisor({
     //   机械验收通过就开跑，不需要负责人再跑一轮模型去“推进度”。
     await wakeReadyDownstream(taskRun);
     return summary;
+  }
+
+  /**
+   * 交付前的 worktree 收口：合入 / 冲突 / 脏主仓 / 无改动。
+   *
+   * 三种 fail-closed 走法各有各的归宿：
+   *   · 冲突 → 保留分支与 worktree，`block()` 交回负责人；
+   *   · 主仓脏 → 保留分支（绝不覆盖用户未提交代码），`block()` 说明原因；
+   *   · 锁被占 → 不判死，返回可重试标记让外层稍后再来。
+   *
+   * @returns {Promise<{ok:boolean, merged?:object, status?:string, summary?:string}>}
+   */
+  async function mergeWorktreeBeforePass(taskRun) {
+    const note = taskRun?.worktree ?? null;
+    if (!note?.worktreePath || !worktreeActive) return { ok: true, status: 'none' };
+    const live = read(taskRun.id) ?? taskRun;
+    if (live?.worktree?.status === 'merged') return { ok: true, status: 'merged' };
+    const out = await worktreeManager.mergeWorktree({
+      taskRun: read(taskRun.id) ?? taskRun,
+      taskRuns,
+      shortTitle: String(taskRun?.goal?.requirement ?? '').slice(0, 80),
+    });
+    if (out?.ok === true) {
+      if (out.status === 'merged') {
+        log('worktree 已合入主仓', taskRun.id, out.mergedHead?.slice(0, 8) ?? '');
+      }
+      return { ok: true, status: out.status, merged: out.status === 'merged' ? out : null };
+    }
+    if (out?.status === 'merge_retry') {
+      // 锁一时被占：不判死，让调度器稍后重试（下一轮验收还会再进来）
+      return { ok: false, retry: true, status: 'retry' };
+    }
+    const files = (out?.conflictFiles ?? []).slice(0, 6).join('、');
+    const why = out?.status === 'conflict'
+      ? `合入主仓发生冲突（分支 ${out.branch ?? note.branch}${files ? '，冲突文件：' + files : ''}）。改动已完整保留在该分支，请负责人处理冲突后重试。`
+      : (out?.status === 'preserved_dirty_main'
+        ? `主仓库有未提交改动，已拒绝合并以免覆盖（分支 ${out.branch ?? note.branch} 完整保留）。`
+        : `Worktree 合入失败：${String(out?.text ?? out?.code ?? '未知原因').slice(0, 200)}`);
+    await block(taskRun.id, why);
+    return { ok: false, status: out?.status ?? 'error', summary: why };
+  }
+
+  /** 合入主仓这件事本身记一条黑板事实（不改交付摘要）。 */
+  async function writeMergeFact(taskRun, merged) {
+    const rootId = taskRun.rootTaskId ?? taskRun.parentTaskId ?? taskRun.id;
+    const head = String(merged.mergedHead ?? '').slice(0, 12);
+    if (!head) return;
+    const files = Array.isArray(merged.files) ? merged.files : [];
+    const entry = {
+      kind: 'fact',
+      taskRunId: taskRun.id,
+      authorBotId: taskRun.owner?.leadBotId ?? null,
+      authorName: nameOfBot(taskRun.owner?.leadBotId) || '成员',
+      text: `已合入主仓 ${head}（${files.length} 个文件）：${String(taskRun.goal?.requirement ?? '').slice(0, 80)}`,
+      ref: files[0] ?? '',
+      at: clock(),
+    };
+    await taskRuns.mutate(rootId, {
+      mutate: (cur) => {
+        if (!cur) return null;
+        const next = appendEntry(cur.blackboard, entry, { now: clock() });
+        if (!next.added) return null;
+        return { ...cur, blackboard: next.blackboard, updatedAt: clock() };
+      },
+    });
   }
 
   /**
@@ -2555,6 +2727,30 @@ export function createTaskSupervisor({
     notify(parentId);
   }
 
+  /**
+   * 收掉这个任务子树里所有「还活着」的 worktree。
+   *
+   * `conflict` / `preserved_dirty_main` 的分支会被保留（那是已验收的成果）。
+   */
+  async function cleanupWorktreesUnder(taskRunId, reason = '') {
+    if (!worktreeActive) return;
+    let ids = [];
+    try {
+      ids = [taskRunId, ...descendantsOf(taskRuns, taskRunId).map((d) => d.id ?? d)];
+    } catch {
+      ids = [taskRunId];
+    }
+    for (const id of ids) {
+      const run = read(id);
+      if (!run?.worktree?.worktreePath) continue;
+      try {
+        await worktreeManager.cleanupWorktree({ taskRun: run, taskRuns, reason });
+      } catch (err) {
+        log('worktree 清理失败（不影响取消/改版）', id, String(err?.message ?? err).slice(0, 120));
+      }
+    }
+  }
+
   /** 这条任务的根记录（自己是根就返回自己）。 */
   function rootRunOf(taskRun) {
     const rootId = taskRun?.rootTaskId ?? taskRun?.id;
@@ -2591,12 +2787,17 @@ export function createTaskSupervisor({
     if (typeof abortInflight === 'function') {
       await abortInflight({ taskRunId, revision: read(taskRunId)?.revision ?? null }).catch(() => {});
     }
+    // ★ C4：作废未交付的 worktree（conflict / preserved_dirty_main 会保留分支）
+    await cleanupWorktreesUnder(taskRunId, '取消任务');
+
     return onControl(taskRunId, { ...control, type: CONTROL.cancel });
   }
 
   async function bumpRevision(taskRunId, control = {}) {
     const result = await onControl(taskRunId, { ...control, type: CONTROL.revision });
     if (!result?.ok) return result;
+    // ★ C4：改版会让旧版本的子任务全部作废，它们的 worktree 也一起收掉
+    await cleanupWorktreesUnder(taskRunId, '任务改版');
     // ★ 改版就从头算：上一版的评审结论（含返工轮次、缺陷清单、已通过指纹）
     //   绑的都是旧目标，留着只会让新一轮被旧结论卡住或被旧清单误骂。
     await patch(taskRunId, { criticState: null, criticFeedback: null });

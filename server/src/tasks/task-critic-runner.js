@@ -213,6 +213,12 @@ export function createCriticReviewer({
       entry = await runner.__buildSession(roomId, botId, {
         criticLane: true,
         persist: false,
+        /**
+         * ★ C4：worktree 子任务的代码**还没合回主仓**。评审员必须去
+         *   `worktreePath` 里读真实改动，否则它看到的是主仓（没有这些文件），
+         *   于是「评审通过」与「实际交付」完全脱节。
+         */
+        ...(taskRun?.worktree?.worktreePath ? { workDir: taskRun.worktree.worktreePath } : {}),
         // 没有别的可用模型时退回执行者同款：`undefined` 就是"用 bot 自己的模型"
         ...(picked.slug ? { modelOverride: picked.slug } : {}),
       });

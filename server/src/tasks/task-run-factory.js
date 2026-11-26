@@ -68,6 +68,10 @@ export function createTaskRun({
    * 存进 `flags.modelTier`：不进业务身份指纹（补一个档位不是另一份活）。
    */
   modelTier = null,
+  /** 显式要求独立 Git worktree（子任务才有效）。 */
+  useWorktree = false,
+  /** 目标仓库（相对 workspace；缺省 = workspace 本身）。 */
+  worktreeRepo = null,
 } = {}) {
   if (!isId(id)) return reject(REJECT.badField, 'id', '任务 ID 形如 tr_xxx');
   if (!isId(requestId)) return reject(REJECT.badField, 'requestId', 'requestId 必须是稳定标识');
@@ -160,6 +164,9 @@ export function createTaskRun({
       criticRequired: criticRequired === true,
       // 难度档位（见 task-model-tier.js）：null = 跟随成员默认模型
       modelTier: normalizeModelTier(modelTier),
+      // Worktree 隔离（见 task-worktree-policy.js）：不进业务身份指纹
+      useWorktree: useWorktree === true,
+      worktreeRepo: worktreeRepo ? String(worktreeRepo).slice(0, 200) : null,
     },
     // ---- 预算
     budget: budgetOut.budget,
