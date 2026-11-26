@@ -199,6 +199,8 @@ const TESTS = [
   'long-task-supervisor',
   'long-task-parallel',
   'long-task-guardrails',
+  // 受控子任务 DAG（dependsOn + checkpoint）与根任务共享黑板（2.0 集群 C1）
+  'long-task-dag-blackboard',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',

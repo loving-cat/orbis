@@ -15,7 +15,7 @@
  */
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { createChildTask } from './task-subtasks.js';
+import { createChildTask, childrenOf } from './task-subtasks.js';
 import { readManagedSubmission, revalidateManaged, SUBMISSION } from '../coordination/task-context.js';
 import { isLeadOfRoom } from '../role-tools.js';
 
@@ -48,6 +48,20 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
           description:
             '这份活会碰的文件或目录路径（仓库内相对路径）。'
             + '填了就与其它正在跑的活互斥：别人也在改同一批文件时，这份会排队而不是同时写坏。不填表示不知道/不冲突。',
+        }),
+      ),
+      dependsOn: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            '前置子任务 id（也可以是计划里的步骤号）：这些子任务全部验收完成后，这份活才会开跑。'
+            + '不填表示不依赖任何分工（立刻可跑）。不要填成本身，也不许成环。',
+        }),
+      ),
+      checkpointBeforeRun: Type.Optional(
+        Type.Boolean({
+          description:
+            '前置都完成后，先唤醒你（负责人）审一下上游产物再放行，而不是直接开跑。'
+            + '适合“下一步依赖上一步的结论与口径”的活。不填默认直接开跑。',
         }),
       ),
       deliverables: Type.Optional(Type.Array(Type.String(), { description: '交付物清单' })),
@@ -125,6 +139,10 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
         goal,
         botId: memberBotId,
         files: params.files ?? [],
+        dependsOn: params.dependsOn ?? [],
+        checkpointBeforeRun: params.checkpointBeforeRun === true,
+        // 计划步骤号 → 真实子任务 id（负责人手里只有“第 2 条”这种写法）
+        stepIds: planStepIds(taskRuns, parent),
       });
       if (!created.ok) return error(`没派出去：${created.text ?? created.code}`);
 
@@ -134,13 +152,116 @@ export function buildMemberTaskTool({ runner, store, roomId, botId }) {
       if (!stillSame) return error('派工期间父目标已改版，这次派工不生效。');
 
       const claims = created.child?.fileClaims ?? [];
+      const deps = created.child?.dependsOn ?? [];
       return {
         content: [{
           type: 'text',
           text: `已派给成员，子任务 ${created.child?.id} 已登记。`
-            + (claims.length ? `\n占用的文件：${claims.join('、')}（撞车的活会排队）` : ''),
+            + (claims.length ? `\n占用的文件：${claims.join('、')}（撞车的活会排队）` : '')
+            + (deps.length
+              ? `\n等这些前置完成才开跑：${deps.join('、')}`
+                + (created.child?.checkpointBeforeRun ? '（前置完成后先叫你来把关）' : '')
+              : ''),
         }],
-        details: { childTaskRunId: created.child?.id ?? null, reused: created.reused === true, files: claims },
+        details: {
+          childTaskRunId: created.child?.id ?? null,
+          reused: created.reused === true,
+          files: claims,
+          dependsOn: deps,
+          checkpointBeforeRun: created.child?.checkpointBeforeRun === true,
+        },
+      };
+    },
+  });
+}
+
+/**
+ * 计划步骤号 → 真实子任务 id 的对照表（只含已真的派出去的那些）。
+ *
+ * 负责人写依赖时手里只有「第 2 条」，而调度需要的是 `tr_x_c1_ab12cd34`。
+ * 计划条目与子任务本没有硬关联，所以按「成员 + 任务正文」匹配：
+ * 正文是负责人在 task_plan 里写的那一句，派活时通常原样带过来。
+ * 匹配不上就不给映射 —— 宁可让 normalizeDependsOn 明确报“不存在”，
+ * 也不能猜一条错的依赖（猜错的代价是下游永远不跑）。
+ *
+ * @returns {Map<string,string>} 步骤号（1 基字符串）→ 子任务 id
+ */
+export function planStepIds(taskRuns, parentTaskRun) {
+  const steps = parentTaskRun?.plan?.steps ?? [];
+  const map = new Map();
+  if (!Array.isArray(steps) || !steps.length) return map;
+  const kids = childrenOf(taskRuns, parentTaskRun);
+  steps.forEach((step, index) => {
+    const wanted = String(step?.task ?? '').trim();
+    if (!wanted) return;
+    const hit = kids.find((kid) => String(kid?.goal?.requirement ?? '').trim() === wanted);
+    if (hit?.id) map.set(String(index + 1), hit.id);
+  });
+  return map;
+}
+
+/**
+ * 构造「放行等把关的分工」工具。
+ *
+ * ## 只给本部门真实负责人
+ *
+ * checkpoint 的含义是“前置做完了，但得有人看一眼才准继续”，那个人就是负责人。
+ * 所以这里按真实角色再核一次（不是“owner 恰好是我”），成员拿到也调不通。
+ *
+ * ## 为什么写进 supervisor 而不是直接改账本
+ *
+ * 放行只是“允许开始”，真正跑起来要靠统一的唤醒链路：自己写 state 会造成
+ * “账本说该跑了、调度器却不知道”的隐形任务。
+ */
+export function buildCheckpointApproveTool({ runner, store, roomId, botId }) {
+  const taskRuns = store.taskRuns;
+  return defineTool({
+    name: 'approve_subtask_checkpoint',
+    label: '★ 放行等把关的分工',
+    description:
+      '有一份分工的前置已经都交付了，但它设了「先由你放行」，现在停着等你把关。' +
+      '看过前置产物觉得可以，就调用它放行（放行后立即自动开跑）；不够就改派或取消。' +
+      '不传 childTaskRunId 时放行当前所有等把关的分工。',
+    parameters: Type.Object({
+      childTaskRunId: Type.Optional(Type.String({ description: '要放行的子任务 id（不填=全部待放行的）' })),
+      reason: Type.Optional(Type.String({ description: '放行理由（一句话，会记在子任务上）' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId });
+      if (submission.kind === SUBMISSION.invalid) return error(`这次执行不能放行：${submission.text}`);
+      if (submission.kind !== SUBMISSION.managed) return error('当前没有受管任务，不能放行。');
+
+      const room = store.getRoom(roomId);
+      if (!room || room.kind !== 'group' || !isLeadOfRoom(room, botId)) {
+        return error('只有部门负责人可以放行分工。');
+      }
+
+      const supervisor = runner?.taskRuntime?.supervisor ?? null;
+      if (typeof supervisor?.approveCheckpoint !== 'function') {
+        return error('任务调度器不在线，暂时不能放行（稍后再试一次）。');
+      }
+
+      const wanted = String(params?.childTaskRunId ?? '').trim();
+      const parent = taskRuns.read(submission.taskRunId);
+      const parentRun = parent?.status === 'found' ? parent.taskRun : null;
+      if (!parentRun) return error('找不到当前任务。');
+
+      // 点名放行时必须是**这个任务**的子任务（防跨任务串改）
+      if (wanted) {
+        const kids = childrenOf(taskRuns, parentRun);
+        if (!kids.some((kid) => kid.id === wanted)) {
+          return error(`${wanted} 不是这个任务下的分工，不能放行。`);
+        }
+      }
+
+      const out = wanted
+        ? await supervisor.approveCheckpoint(wanted, { botId, reason: params?.reason ?? '' })
+        : await supervisor.approveCheckpointsOf(parentRun.id, { botId, reason: params?.reason ?? '' });
+
+      if (!out.ok) return error(out.text ?? '没有可放行的分工。');
+      return {
+        content: [{ type: 'text', text: out.text }],
+        details: { approved: out.approved ?? [] },
       };
     },
   });

@@ -20,6 +20,11 @@ import {
   CONTROL, applyControl, reconcileEarlyControls, descendants as descendantsOf,
 } from './task-controls.js';
 import { childrenOf } from './task-subtasks.js';
+import {
+  DEP_STATUS, dependencyStatus, pendingCheckpointKids, readyDownstreamOf, upstreamFailedIds,
+} from './task-dag.js';
+import { appendEntry, artifactEntryOf } from './task-blackboard.js';
+import { approveCheckpoint as approveCheckpointIn, approveCheckpointsOf as approveCheckpointsOfIn } from './task-checkpoint.js';
 import { classifyNonRetriableFailure, nonRetriableOf, handBackBlockedBy } from './task-guardrails.js';
 import { fileClaimList, pickBlockingClaim, claimsOverlap } from './task-file-claims.js';
 import { decideRecovery, RECOVERY_STAGE } from './task-recovery.js';
@@ -105,6 +110,29 @@ const CLAIM_HOLDING_STATES = new Set([
 function claimFilesOf(run) {
   if (!Array.isArray(run?.fileClaims) || !run.fileClaims.length) return [];
   return fileClaimList(run.fileClaims).files;
+}
+
+/** 永久受阻：不会自己再动的那种（可恢复阻塞 / 排队中都不算）。 */
+function permanentlyBlocked(run) {
+  return Boolean(run) && run.state === STATE.blocked && !run.recoverableBlock;
+}
+
+/**
+ * 这个子任务算不算「停住了」（父任务不能干等它）。
+ *
+ * 判定三选一，任一成立即停住：
+ *   · 自己永久受阻；
+ *   · 自己的依赖里有人已永久失败 / 被取消（upstream_failed）—— 它永远不会启动；
+ *   · 已被取消。
+ *
+ * ★ 少了第二条就是死等现场：成员 A 永久受阻，C `dependsOn: [A]` 还停在
+ *   queued，旧码的 `stuck.every(blocked)` 于是恒为 false，父任务永远不结收。
+ */
+function isStuckLike(kid, allKids) {
+  if (!kid) return false;
+  if (kid.state === STATE.cancelled) return true;
+  if (permanentlyBlocked(kid)) return true;
+  return dependencyStatus(kid, allKids) === DEP_STATUS.upstream_failed;
 }
 
 /** 这次失败是不是「目标会话还在忙」——受管执行可以等，不能判成永久失败。 */
@@ -369,12 +397,40 @@ export function createTaskSupervisor({
    * 受阻的不算「可跑」：它的 `retryAt` 还没到就不该反复重派，
    * 否则父任务会在这一轮里把同一个受阻子任务重试到步数上限。
    * 到点（或可恢复阻塞到期）的才算 —— 那时 `runTaskInner` 会先解阻再跑。
+   *
+   * ★ 依赖不在 `ready` 也一律不算「可跑」：
+   *   · waiting         前置还在跑 —— 抢跑就会拿半份前置产物开干；
+   *   · checkpoint      前置都完成了，但设了「先由负责人把关」；
+   *   · upstream_failed 前置已永久受阻 —— 下游绝不启动。
+   *   旧码只看 terminal/retryAt，于是 DAG 下游会被抢跑、或者在上游已死的
+   *   情况下空转重试到步数上限。
    */
-  function kidRunnableNow(kid) {
+  function kidRunnableNow(kid, allKids = null) {
     if (terminal(kid)) return false;
+    if (allKids && dependencyStatus(kid, allKids) !== DEP_STATUS.ready) return false;
     if (kid.state !== STATE.blocked) return true;
     const due = Number(kid.retryAt);
     return Number.isFinite(due) && due <= clock();
+  }
+
+  /**
+   * 这个子任务的依赖此刻没就位吗。
+   *
+   * 调度器入口用它再挡一次：队列里可能还留着依赖就位之前的事件，
+   * 而 `runTask(kid)` 不经过父任务的选批判定。
+   *
+   * ★ 这里按 id 直读依赖，不做全表扫：调度器的每个 tick 都会调它，
+   *   `childrenOf()` 是一次 listAll 全扫，乘上队列长度会把热路径拖慢。
+   */
+  function depsNotReady(kid) {
+    if (!kid?.parentTaskId) return false;
+    const deps = Array.isArray(kid.dependsOn) ? kid.dependsOn : [];
+    for (const depId of deps) {
+      const dep = read(depId);
+      // 读不到 / 已永久失败 / 还在推进：都不放行（checkpoint 另算一道闸）
+      if (!dep || dep.state !== STATE.completed) return true;
+    }
+    return kid.checkpointBeforeRun === true && !kid.checkpointApprovedAt;
   }
 
   /**
@@ -383,7 +439,7 @@ export function createTaskSupervisor({
    * 优先级数字小的先跑；没排过的按 0，保证「没指定顺序」不会比
    * 「明确排第一」更优先。
    */
-  function pickKidBatch(liveKids, cap) {
+  function pickKidBatch(liveKids, cap, allKids = null) {
     const limit = Math.max(0, Math.floor(Number(cap) || 0));
     if (!limit) return [];
     // ★ 从调度器正在用掉的 Bot 起步：`canRun()` 已经会避开 `childBusyBots`（内联在用），
@@ -395,7 +451,7 @@ export function createTaskSupervisor({
     const ordered = [...liveKids].sort((a, b) => priorityOf(a) - priorityOf(b));
     for (const kid of ordered) {
       if (batch.length >= limit) break;
-      if (!kidRunnableNow(kid)) continue;
+      if (!kidRunnableNow(kid, allKids ?? liveKids)) continue;
       if (!canBatchKid(kid, busyBots, claimedFiles)) continue;
       batch.push(kid);
       const botId = kid.owner?.leadBotId ?? null;
@@ -482,6 +538,13 @@ export function createTaskSupervisor({
           //   内联那条路用的是 `childBusyBots`，调度器只看自己的 `busyBots` ——
           //   两份各看各的，就会把同一份活派给同一个会话两次。
           if (botId && childBusyBots.has(botId)) return false;
+          // ★ 受控 DAG：依赖没就位的子任务一律不放行。
+          //
+          //   队列里可能还留着“依赖就位前”的事件（例如上一步收尾时的
+          //   `notify(kid.id)`），而调度器直接 `runTask(kid)` 会绕过父任务
+          //   那条 `kidRunnableNow` 判据 —— checkpoint 岗位于是形同虚设，
+          //   下游会在前置刚完成时抢跑。这里在真正的入口再挡一次（fail-closed）。
+          if (taskRun?.parentTaskId && depsNotReady(taskRun)) return false;
           return true;
         };
 
@@ -848,6 +911,10 @@ export function createTaskSupervisor({
     //   这里用"本轮前后 progressSignature 是否变化"判定：连续 N 轮没变化
     //   就明确停下并说明原因，而不是无限重跑。
     const stallLimit = Math.max(1, Number(maxStallRounds) || 2);
+    // ★ 本轮唤醒里是否已经把「全部子任务在等 checkpoint」这件事交给负责人把关过。
+    //   一次唤醒只交一次：否则负责人不做任何事时，循环会在 maxSteps 内
+    //   把同一份清单反复丢给他。
+    let checkpointPassed = false;
     for (let step = 0; step < maxSteps; step += 1) {
       const taskRun = read(taskRunId);
       if (!taskRun) return { status: 'missing' };
@@ -886,7 +953,24 @@ export function createTaskSupervisor({
       // 子任务
       const kids = childrenOf(taskRuns, taskRun);
       const liveKids = kids.filter((k) => !terminal(k));
-      if (liveKids.length) {
+      // ★ 全部未终态子任务都在等负责人放行 checkpoint → 这一轮交给负责人把关。
+      //
+      //   它们不是受阻、也不是在推进：它们在等一句「可以开始了」。
+      //   旧行为是落到下面 return wait → 父任务停在「排队中」，而负责人
+      //   从来不会被叫醒，checkpoint 就成了永久死锁。
+      //   这里不入派活分支，直接落到下方的负责人步骤，提示词里会列清
+      //   待审的子任务与它们的前置产物。
+      //
+      //   ★ 判据要拿**全部**子任务（含已完成的）：依赖状态必须能在同父全集里
+      //     解析出前置，只拿未终态列表会把“前置已完成”误判成“上游不见了”。
+      const checkpointOnly = liveKids.length > 0
+        && !checkpointPassed
+        && pendingCheckpointKids(kids).length === liveKids.length;
+      if (checkpointOnly) {
+        checkpointPassed = true;
+        log('子任务都在等负责人放行 checkpoint，本轮交给负责人把关', taskRunId, liveKids.length);
+      }
+      if (liveKids.length && !checkpointOnly) {
         let progressed = false;
         // ★ 子任务按「受控并发」推进，不再一份一份串着来。
         //
@@ -897,7 +981,7 @@ export function createTaskSupervisor({
         //     · 同 Bot 互斥与文件互斥（真正硬的那两条不变量）。
         const cap = childBatchCap(taskRun);
         // 本批之外已经试过的不再重复试；下一波（有进展）时才清空。
-        const batch = pickKidBatch(liveKids.filter((k) => !triedKids.has(k.id)), cap);
+        const batch = pickKidBatch(liveKids.filter((k) => !triedKids.has(k.id)), cap, kids);
         let batchResults = [];
         if (batch.length) {
           // ★ 逐个子任务独立收尾：一个抛异常不能带走同批里别人的进度。
@@ -936,9 +1020,10 @@ export function createTaskSupervisor({
           //
           //   并发度可能小于待办数（根预算紧 / 上游降级 / 两个子任务抢同一个 Bot）。
           //   这时干等着没有任何意义：能跑的先跑，跑不上的等事件。
-          const pending = childrenOf(taskRuns, read(taskRunId) ?? taskRun)
-            .filter((k) => !terminal(k) && !triedKids.has(k.id));
-          if (pickKidBatch(pending, cap).length) continue;
+          const parentNow = read(taskRunId) ?? taskRun;
+          const allKidsNow = childrenOf(taskRuns, parentNow);
+          const pending = allKidsNow.filter((k) => !terminal(k) && !triedKids.has(k.id));
+          if (pickKidBatch(pending, cap, allKidsNow).length) continue;
           // ★ 子任务全部停住时，父任务不能无限「等」。
           //
           //   原来直接 return wait：父任务永久停在 queued，停滞计数不增加，
@@ -946,9 +1031,7 @@ export function createTaskSupervisor({
           //
           //   子任务自己受阻（blocked）不是父任务在"推进中"，
           //   而是整件事卡住了 —— 要说清是谁卡住、为什么。
-          const parentNow = read(taskRunId) ?? taskRun;
-          const stuck = childrenOf(taskRuns, parentNow)
-            .filter((k) => !terminal(k));
+          const stuck = allKidsNow.filter((k) => !terminal(k));
           // ★ 「可恢复阻塞」不算永久受阻。
           //
           //   上游退避（`recoverableBlock: 'upstream'`）中的子任务到点会自己醒，
@@ -979,54 +1062,13 @@ export function createTaskSupervisor({
               child: resumable.id,
             };
           }
-          if (stuck.length && stuck.every((k) => k.state === STATE.blocked && !k.recoverableBlock)) {
-            // ★ 自主推进：交回负责人重新安排，而不是停下来等用户。
-            //
-            //   负责人提示词本来就写着「同事没交作业 → 再派 / 换人 / 自己上」，
-            //   但负责人只有在子任务都收口后才会被叫起来 —— 受阻的子任务
-            //   不是终态，于是负责人永远没机会处理。这里把受阻的分工如实
-            //   收口（取消并记下原因），让负责人带着失败原因重新安排。
-            //   有上限：反复交回仍不成，就是真卡住了，如实阻塞给用户看。
-            // ★ 交回负责人也没用的那些（鉴权/余额/中止/审批/显式 impossible）：
-            //   换人、拆小、重排都还是同一个死因，直接如实阻塞父任务，别空转 2 轮
-            const noHandBack = handBackBlockedBy(stuck);
-            if (noHandBack) {
-              await block(taskRunId, '分工卡在不可恢复的问题上（' + noHandBack.kind + '）：'
-                + String(noHandBack.why ?? '').slice(0, 120)
-                + '。已跳过错峰重排，需要你处理后才能继续');
-              return { status: 'blocked', why: 'children_non_retriable' };
-            }
-            const handBacks = Number(parentNow.childHandBacks ?? 0);
-            if (autonomousOf(parentNow) && handBacks < MAX_CHILD_HANDBACKS) {
-              const failures = stuck.map((k) => ({
-                taskRunId: k.id,
-                botId: k.owner?.leadBotId ?? null,
-                name: nameOfBot(k.owner?.leadBotId) || '成员',
-                requirement: String(k.goal?.requirement ?? '').slice(0, 160),
-                reason: String(k.flags?.blockedReason ?? '未说明').slice(0, 160),
-                at: clock(),
-              }));
-              for (const kid of stuck) {
-                await settle(kid.id, {
-                  type: EVENT.cancelled, revision: kid.revision, at: clock(),
-                  reason: '成员受阻，交回负责人重新安排',
-                }).catch(() => null);
-              }
-              await patch(taskRunId, {
-                childHandBacks: handBacks + 1,
-                childFailures: [...(parentNow.childFailures ?? []), ...failures].slice(-6),
-                stall: null,
-              });
-              log('子任务全部受阻，交回负责人重新安排', taskRunId, failures.length);
-              continue;
-            }
-            const first = stuck[0];
-            const who = nameOfBot(first.owner?.leadBotId) || '成员';
-            const why = '等在子任务上：' + who + '受阻（'
-              + String(first.flags?.blockedReason ?? '未说明').slice(0, 80) + '）'
-              + (handBacks >= MAX_CHILD_HANDBACKS ? '；已交回负责人重新安排 ' + handBacks + ' 次仍未解决' : '');
-            await block(taskRunId, why);
-            return { status: 'blocked', why: 'children_blocked' };
+          // ★ 全部子任务都停住了（永久受阻 / 被上游拖死 / 被取消）→ 交回负责人或如实阻塞。
+          //   旧码只算 `state === blocked`：一个成员永久受阻、它的下游还停在 queued 时
+          //   `stuck.every(blocked)` 恒为 false，父任务于是永久死等一个永远不会启动的分工。
+          if (stuck.length && stuck.every((k) => isStuckLike(k, allKidsNow))) {
+            const outcome = await handBackBlockedChildren({ parentNow, stuck, allKidsNow });
+            if (outcome.action === 'continue') continue;
+            return outcome;
           }
           return { status: 'wait', why: '子任务推进中' };
         }
@@ -1373,9 +1415,29 @@ export function createTaskSupervisor({
 
     // 续段：上一段让出/中断了，告诉它从断点接着做，而不是把整件事从头再来一遍
     const resume = continuationNote(taskRun, { autonomous: autonomousOf(taskRun) });
+    // ★ DAG + 共享黑板的注入：成员要看到前置交付与全组约束，
+    //   负责人要看到黑板与待放行的 checkpoint（否则它们成了隐形状态）。
+    const rootRun = rootRunOf(taskRun);
+    const allKids = isChild ? (parentTask ? childrenOf(taskRuns, parentTask) : []) : childrenOf(taskRuns, taskRun);
+    const nameOf = (id) => nameOfBot(id);
     const basePrompt = isChild
-      ? buildMemberPrompt({ childTaskRun: taskRun, parentTaskRun: parentTask, autonomous: autonomousOf(taskRun) })
-      : buildLeadPrompt({ phase: LEAD_PHASE.plan, taskRun: autonomousOf(taskRun) ? { ...taskRun, flags: { ...(taskRun.flags ?? {}), autonomous: true } } : taskRun });
+      ? buildMemberPrompt({
+        childTaskRun: taskRun,
+        parentTaskRun: parentTask,
+        autonomous: autonomousOf(taskRun),
+        siblings: allKids,
+        blackboard: rootRun?.blackboard ?? null,
+        nameOf,
+      })
+      : buildLeadPrompt({
+        phase: LEAD_PHASE.plan,
+        taskRun: autonomousOf(taskRun)
+          ? { ...taskRun, flags: { ...(taskRun.flags ?? {}), autonomous: true } }
+          : taskRun,
+        children: allKids,
+        blackboard: rootRun?.blackboard ?? null,
+        nameOf,
+      });
     const prompt = resume ? basePrompt + '\n\n' + resume : basePrompt;
 
     inflight.set(taskRun.id, { attemptId, revision: taskRun.revision });
@@ -1542,8 +1604,12 @@ export function createTaskSupervisor({
     //
     //   一轮推进结束后是否还要继续，由真实事件（子任务交付、用户指令、
     //   到期重试）驱动，而不是自己叫自己。
-    for (const kid of childrenOf(taskRuns, read(taskRun.id) ?? taskRun)) {
-      if (!terminal(kid)) notify(kid.id);
+    const kidsNow = childrenOf(taskRuns, read(taskRun.id) ?? taskRun);
+    for (const kid of kidsNow) {
+      // ★ 只唤醒“现在真能跑”的：依赖未就位 / 等 checkpoint / 上游已死的
+      //   唤了也白唤，而调度器收到唤醒后并不会重新算依赖 ——
+      //   checkpoint 会被这一行绕过，下游在前置刚完成时就抢跑。
+      if (!terminal(kid) && kidRunnableNow(kid, kidsNow)) notify(kid.id);
     }
     return { status: 'ok', didWork };
   }
@@ -1829,10 +1895,123 @@ export function createTaskSupervisor({
     const summary = buildDeliverySummary(taskRun);
     await patch(taskRun.id, { delivery: { summary, at: clock(), revision: taskRun.revision }, nextAction: null });
     log('交付', taskRun.id, summary.slice(0, 60));
+    // ★ 交付事实自动落根任务的共享黑板（纯 mutate，0 次模型调用）。
+    //   后来的人开工时会直接读到“前一个人交了什么东西、在哪里”，
+    //   不必靠负责人在群里转述（转述要再烧一次模型，而且会走样）。
+    await writeBlackboardArtifact(taskRun);
     // 共用交回事件：先按真实证据解除父的依赖门槛，再唤醒父任务
     await releaseParentDependency(taskRun);
     notifyParent(taskRun);
+    // ★ 自动接力：因它而变 `ready` 的下游立刻叫醒 ——
+    //   机械验收通过就开跑，不需要负责人再跑一轮模型去“推进度”。
+    await wakeReadyDownstream(taskRun);
     return summary;
+  }
+
+  /**
+   * 一份交付写进根任务黑板。
+   *
+   * 只写子任务（根自己的交付不是“同级信息”）；`appendEntry` 自带幂等，
+   * 同一份交付重复收口不会写两条。
+   */
+  async function writeBlackboardArtifact(taskRun) {
+    if (!taskRun?.parentTaskId) return false;
+    const rootId = taskRun.rootTaskId ?? taskRun.parentTaskId;
+    const entry = artifactEntryOf(taskRun, { nameOf: (id) => nameOfBot(id), at: clock() });
+    if (!entry) return false;
+    const out = await taskRuns.mutate(rootId, {
+      mutate: (cur) => {
+        if (!cur) return null;
+        const next = appendEntry(cur.blackboard, entry, { now: clock() });
+        if (!next.added) return null;
+        return { ...cur, blackboard: next.blackboard, updatedAt: clock() };
+      },
+    });
+    if (out?.ok && typeof onChanged === 'function') onChanged(rootId);
+    return out?.ok === true;
+  }
+
+  /** 同父里因这份交付而变得可跑的下游，立刻唤醒（自动接力）。 */
+  async function wakeReadyDownstream(child) {
+    const parentId = child?.parentTaskId;
+    if (!parentId) return;
+    const parent = read(parentId);
+    if (!parent) return;
+    const siblings = childrenOf(taskRuns, parent);
+    for (const kid of readyDownstreamOf(child.id, siblings)) {
+      log('下游依赖已满足，自动接力', kid.id);
+      notify(kid.id);
+    }
+  }
+
+  /** 子任务停住时说清楚“为什么停”，交给负责人转述用。 */
+  function kidFailureReason(kid, allKidsNow) {
+    if (permanentlyBlocked(kid)) return String(kid.flags?.blockedReason ?? '未说明');
+    const ups = upstreamFailedIds(kid, allKidsNow);
+    if (!ups.length) return String(kid.flags?.blockedReason ?? '未说明');
+    const who = ups
+      .map((id) => nameOfBot(allKidsNow.find((run) => run.id === id)?.owner?.leadBotId) || id)
+      .join('、');
+    return '上游分工没完成（' + who + '），等不到前置产物';
+  }
+
+  /**
+   * 子任务全部停住了：交回负责人重排，或如实阻塞父任务。
+   *
+   * ## 为什么是一整块而不是三行
+   *
+   * “交回”要同时做三件事：把停住的分工收口（取消 + 写清原因）、把失败原因
+   * 记到父任务上（负责人下一轮才看得见）、把父任务的停滞计数清零（否则
+   * 刚交回一次就被判停滞）。少做任何一件，用户看到的都是「任务卡住了」。
+   *
+   * @returns {Promise<{action:'continue'}|{status:string, why:string}>}
+   */
+  async function handBackBlockedChildren({ parentNow, stuck, allKidsNow }) {
+    // ★ 交回负责人也没用的那些（鉴权/余额/中止/审批/显式 impossible）：
+    //   换人、拆小、重排都还是同一个死因，直接如实阻塞父任务，别空转 2 轮
+    const noHandBack = handBackBlockedBy(stuck.filter(permanentlyBlocked));
+    if (noHandBack) {
+      await block(parentNow.id, '分工卡在不可恢复的问题上（' + noHandBack.kind + '）：'
+        + String(noHandBack.why ?? '').slice(0, 120)
+        + '。已跳过错峰重排，需要你处理后才能继续');
+      return { status: 'blocked', why: 'children_non_retriable' };
+    }
+    const handBacks = Number(parentNow.childHandBacks ?? 0);
+    if (autonomousOf(parentNow) && handBacks < MAX_CHILD_HANDBACKS) {
+      const failures = stuck.map((kid) => ({
+        taskRunId: kid.id,
+        botId: kid.owner?.leadBotId ?? null,
+        name: nameOfBot(kid.owner?.leadBotId) || '成员',
+        requirement: String(kid.goal?.requirement ?? '').slice(0, 160),
+        reason: kidFailureReason(kid, allKidsNow).slice(0, 160),
+        at: clock(),
+      }));
+      for (const kid of stuck) {
+        await settle(kid.id, {
+          type: EVENT.cancelled, revision: kid.revision, at: clock(),
+          // 因上游而死的那份活：说清它不是自己的错，否则负责人会去重派同一个人
+          reason: permanentlyBlocked(kid)
+            ? '成员受阻，交回负责人重新安排'
+            : '上游分工没完成，这份活等不到前置，随上游一并收回',
+        }).catch(() => null);
+      }
+      await patch(parentNow.id, {
+        childHandBacks: handBacks + 1,
+        childFailures: [...(parentNow.childFailures ?? []), ...failures].slice(-6),
+        stall: null,
+      });
+      log('子任务全部停住，交回负责人重新安排', parentNow.id, failures.length);
+      return { action: 'continue' };
+    }
+    const anchor = stuck.find(permanentlyBlocked) ?? stuck[0];
+    const who = nameOfBot(anchor.owner?.leadBotId) || '成员';
+    const downstream = stuck.filter((kid) => upstreamFailedIds(kid, allKidsNow).length);
+    const why = '等在子任务上：' + who + '受阻（'
+      + String(anchor.flags?.blockedReason ?? '未说明').slice(0, 80) + '）'
+      + (downstream.length ? '；另有 ' + downstream.length + ' 份分工因依赖它而无法启动' : '')
+      + (handBacks >= MAX_CHILD_HANDBACKS ? '；已交回负责人重新安排 ' + handBacks + ' 次仍未解决' : '');
+    await block(parentNow.id, why);
+    return { status: 'blocked', why: 'children_blocked' };
   }
 
   /** 子任务进入终态后唤醒父任务；父任务会按自己的判定继续汇总/验收。 */
@@ -1840,6 +2019,27 @@ export function createTaskSupervisor({
     const parentId = taskRun?.parentTaskId;
     if (!parentId) return;
     notify(parentId);
+  }
+
+  /** 这条任务的根记录（自己是根就返回自己）。 */
+  function rootRunOf(taskRun) {
+    const rootId = taskRun?.rootTaskId ?? taskRun?.id;
+    if (!rootId) return null;
+    return rootId === taskRun.id ? taskRun : read(rootId);
+  }
+
+  /** 放行一份等把关的子任务（账本 + 唤醒都在 `task-checkpoint.js`）。 */
+  async function approveCheckpoint(childTaskRunId, opts = {}) {
+    return approveCheckpointIn({
+      taskRuns, childTaskRunId, notify, clock, ...opts,
+    });
+  }
+
+  /** 把一个父任务下所有等把关的子任务一次放行。 */
+  async function approveCheckpointsOf(parentTaskRunId, opts = {}) {
+    return approveCheckpointsOfIn({
+      taskRuns, parentTaskRunId, notify, clock, ...opts,
+    });
   }
 
   async function recordStall(taskRun) {
@@ -2131,6 +2331,7 @@ export function createTaskSupervisor({
 
   return {
     notify, idle, runTask, onControl, cancelTask, bumpRevision, onBudgetExtended, recover, read,
+    approveCheckpoint, approveCheckpointsOf,
     descendants: (id) => descendantsOf(taskRuns, id),
     dispose() { for (const t of timers.values()) clearTimeout(t); timers.clear(); },
   };

@@ -317,6 +317,10 @@ export const TOOL_SPECS = Object.freeze({
   assign_member_task: { action: null, readonly: true, coordination: true },
   task_report: { action: null, readonly: true, coordination: true },
   task_plan: { action: null, coordination: true },
+  // 共享黑板与 checkpoint 放行：只动内部协调状态（不改文件、不对外发送）。
+  // 两者都写账本，所以不能标 readonly（只读档放不出去）。
+  task_blackboard: { action: null, coordination: true },
+  approve_subtask_checkpoint: { action: null, coordination: true },
   task_expert_review: { action: null, readonly: true, coordination: true },
   accept_task: { action: null, readonly: true, coordination: true },
   task_status: { action: null, readonly: true, coordination: true },

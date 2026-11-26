@@ -125,6 +125,10 @@
 | `memory-policy.js` | 记忆摘要的自动触发策略：首次满 10 轮，之后按重要度（决策/口径/纠错/待办/路径）提前触发，琐事攒得更久；纯函数 |
 | `web.js` | 搜索与抓网页 |
 | `util.js` | id/时间/原子写/日志/错误分类 |
+| `tasks/task-dag.js` | 受控子任务 DAG（纯函数）：`normalizeDependsOn()`（去重 / 计划步骤号→真实子任务 id / 跨父与自依赖拒绝）、`detectDependencyCycle()`（DFS 三色环检测，自环与任意长度环 fail-closed）、`dependencyStatus()`（`ready` / `waiting` / `checkpoint` / `upstream_failed` 四态）、`collectUpstreamContext()`（已完成前置压成 ≤1200 字短块）、`readyDownstreamOf()` / `pendingCheckpointKids()` / `isPermanentlyFailed()`。接线在 `task-subtasks.js`（落盘前环检测）、`task-supervisor.js`（选批 + 坑位防死等 + 自动接力）、`task-prompts.js`（注入） |
+| `tasks/task-blackboard.js` | 根任务共享黑板（纯函数，数据在 `root.blackboard`）：`appendEntry()`（最多 24 条、超了先淘汰最旧的非 `constraint`、按 `taskRunId+kind+text` 幂等去重、单条 ≤240 字）、`renderBlackboard()`（≤1200 字、约束优先）、`artifactEntryOf()`（交付自动落一条产物，0 次模型调用）。写入方：`task-supervisor.deliver()`（自动）与 `task-blackboard-tool.js`（显式） |
+| `tasks/task-blackboard-tool.js` | `task_blackboard` 工具：负责人与成员都能记决定/约束/事实；目标根任务**只取受管上下文**，调用方无法指定任务 id（结构上防跨任务串写） |
+| `tasks/task-checkpoint.js` | checkpoint 放行的落地（`approveCheckpoint` / `approveCheckpointsOf` / `needsApprove`）：校验 + 写 `checkpointApprovedAt/By` + 走统一 `notify` 唤醒。不做身份核对（那是工具层）也不自己改 state；`task-supervisor` 只留一行接线 |
 
 新增后端能力的落点：
 
