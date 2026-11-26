@@ -307,12 +307,15 @@ export function createWorktreeManager({
     if (!status.ok) {
       return { ok: false, status: 'error', code: 'status_failed', text: status.error ?? '读 worktree 状态失败' };
     }
+    // ★ commit 与 merge **都**需要提交身份（CI 上常常没配全局 user.name）：
+    //   只在 commit 上兜底、merge 时不兜底，会得到「Committer identity unknown」
+    //   → 被当成冲突 → 白白 abort 一次。所以两份共用一个 identity。
+    const identity = hasIdentity(note.worktreePath)
+      ? []
+      : ['-c', 'user.name=Orbis', '-c', 'user.email=orbis@local'];
     if (String(status.stdout ?? '').trim()) {
       const add = git(note.worktreePath, ['add', '-A']);
       if (!add.ok) return { ok: false, status: 'error', code: 'add_failed', text: add.error ?? 'git add 失败' };
-      const identity = hasIdentity(note.worktreePath)
-        ? []
-        : ['-c', 'user.name=Orbis', '-c', 'user.email=orbis@local'];
       const msg = `orbis(task): ${String(shortTitle || taskRun?.goal?.requirement || taskRun.id).slice(0, 120)}`;
       const commit = git(note.worktreePath, [...identity, 'commit', '-m', msg]);
       if (!commit.ok) {
@@ -352,7 +355,7 @@ export function createWorktreeManager({
     // 4) 干净合入
     const locked = await withLock(layout.commonDir, taskRun.id, () => {
       const before = String(git(layout.root, ['rev-parse', 'HEAD']).stdout ?? '').trim();
-      const merge = git(layout.root, ['merge', '--no-ff', '--no-edit', note.branch]);
+      const merge = git(layout.root, [...identity, 'merge', '--no-ff', '--no-edit', note.branch]);
       if (!merge.ok) {
         // ★ 冲突清单必须在 abort **之前**取：`merge --abort` 会清掉未合并索引，
         //   之后再问 `--diff-filter=U` 只会得到空列表（等于把冲突原因丢了）。

@@ -166,7 +166,10 @@ await test('7. prepareWorktree：真实建树、info/exclude 幂等、主仓 sta
   const out = await manager.prepareWorktree({ taskRun: run });
   assert.equal(out.ok, true, out.text ?? '');
   const note = out.worktree;
-  assert.equal(note.worktreePath, path.join(repoDir, '.orbis-worktrees', 'tr_wt1'));
+  const real = (p) => {
+    try { return fs.realpathSync.native(p); } catch { return path.resolve(p); }
+  };
+  assert.equal(real(note.worktreePath), real(path.join(repoDir, '.orbis-worktrees', 'tr_wt1')));
   assert.equal(fs.existsSync(path.join(note.worktreePath, '.git')), true, 'worktree 目录要真的挂接上');
   assert.equal(note.branch, 'orbis/task/tr_wt1');
   assert.equal(git(repoDir, ['rev-parse', '--verify', 'refs/heads/orbis/task/tr_wt1']).ok, true, '分支应存在');
@@ -582,11 +585,13 @@ await test('14. ★ session-factory 传 workDir：cwd/沙箱都指向 worktree�
     },
   });
   await builder(dm.id, bot.id, { workDir, cloneId: 'tr_session', persist: false });
-  const resolved = fs.realpathSync.native(workDir);
+  const real = (p) => {
+    try { return fs.realpathSync.native(p); } catch { return path.resolve(String(p)); }
+  };
   assert.equal(inMemory >= 1, true, 'worktree 会话必须是内存会话');
   assert.equal(disk, 0, '不得创建/打开磁盘会话');
   const cwd = captured?.agentSession?.cwd ?? captured?.cwd;
-  assert.equal(path.resolve(String(cwd)), resolved, `cwd 应指向 worktree，实际 ${cwd}`);
+  assert.equal(real(cwd), real(workDir), `cwd 应指向 worktree，实际 ${cwd}`);
   assert.equal(store.sessionFileFor(dm.id, bot.id), null, '不得写 store sessionFile');
   void shellWorkDir;
 });
