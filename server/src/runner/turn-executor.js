@@ -37,6 +37,7 @@ import {
   STEP_CAP_GRACE, isBlockingAsk, managedIsAutonomous, runContinuationGuard, scheduleDmContinuation, softDeadlineTimeout,
 } from './turn-slicing.js';
 import { emitContext, summarizeArgs, textOf, throttle } from './runner-utils.js';
+import { settleRunningSteps, applyPendingReseat } from './stream-bubbles.js';
 import { wireModelWait, resolveIdleFailure, onSdkRetryStart } from './model-idle.js';
 import { releaseTurnLane, sessionLaneKey } from './session-lanes.js';
 
@@ -66,6 +67,7 @@ async function runWithLease(
   {
     timeoutMs = runner.config.runTimeoutMs,
     modelIdleMs = undefined, modelOverride = null, cloneId = null, // 阈值 / 临时模型（§4.2 d）/ 分身槽位
+    workDir = null, // C4：worktree 子任务的工作目录（null = config.workspace）
     meta = null,
     skipUserMessage = false,
     attachments = [],
@@ -235,7 +237,9 @@ async function runWithLease(
   let entry;
   let collectedArtifacts = [];
   try {
-    entry = await runner.ensureSession(roomId, botId, (modelOverride || cloneId) ? { modelOverride, cloneId, persist: false } : {});
+    entry = await runner.ensureSession(roomId, botId, (modelOverride || cloneId || workDir)
+      ? { modelOverride, cloneId, workDir, persist: false }
+      : {});
   } catch (err) {
     if (err?.code === 'SESSION_BUSY') {
       return withAttempt({
@@ -1268,82 +1272,8 @@ async function runWithLease(
  * @returns {object|null} 新建的那条消息；没有待换条任务时返回 null
  */
 /**
- * 把残留的 `running` 步骤收敛成 `error`（Mac 实机 UX-1）。
- *
- * 模型报错 / 被中止 / 命中步数上限 / 换条封口时，最后一个工具可能**没有**
- * `tool_execution_end`（SDK 抛错、进程被杀、用户中断）。这些步骤会以
- * `status: 'running'` 落库，客户端就一直显示「正在干活…」—— 用户看到一条
- * 永远不动的气泡，重开历史也还是转圈。
- *
- * @param {Array<object>} steps 就地修改（调用方拿到的就是要落库的那个数组）
- * @param {string} reason 写进 `step.error`
- * @returns {Array<object>}
+ * 气泡收尾/换条的具体实现抽到了 `runner/stream-bubbles.js`（给后续接线留行预算）。
+ * 这里**原样 re-export**，外部 `import { settleRunningSteps } from './turn-executor.js'`
+ * 等写法 100% 不变。
  */
-export function settleRunningSteps(steps, reason = '这一步没有返回结果（本轮已结束）') {
-  if (!Array.isArray(steps)) return steps;
-  const now = Date.now();
-  for (const step of steps) {
-    if (step?.status !== 'running') continue;
-    step.status = 'error';
-    step.error = reason;
-    step.durationMs = Math.max(0, now - Number(step.startedAt ?? now));
-  }
-  return steps;
-}
-
-export function applyPendingReseat({
-  store, roomId, entry, botMsgId, render, meta = null, bot, bus = null, log: logFn = () => {},
-  resetDraft = null,
-  /** 这一轮已产生的工具步骤：封口旧气泡时要一起写进去，否则会被清空丢弃（D1 第 3 条） */
-  steps = null,
-  /** false = 只封口旧气泡，不新建（收尾兜底用，避免复制出第二份内容） */
-  createNext = true,
-} = {}) {
-  const pending = entry?.pendingReseat;
-  if (!pending) return null;
-  entry.pendingReseat = null;
-
-  const sealed = typeof render === 'function' ? render() : '';
-  // 封口旧气泡时，旧的 running 步骤归旧气泡 —— 一起收敛，别让它在历史里转圈
-  if (Array.isArray(steps)) settleRunningSteps(steps, '这条气泡已封口，这一步没有返回结果');
-  const oldMsg = store.getMessage(roomId, botMsgId);
-  try {
-    store.updateMessage(roomId, botMsgId, {
-      text: sealed,
-      status: 'done',
-      // ★ 工具步骤属于这一轮：封口时一并写进去，别让随后的 resetDraft 把它们清丢
-      ...(Array.isArray(steps) ? { steps: [...steps] } : {}),
-      meta: { ...(oldMsg?.meta ?? {}), reseatAfterId: pending.afterId },
-    }, { silent: false });
-  } catch (err) {
-    logFn('封口旧气泡失败：', err?.message || err);
-  }
-
-  if (typeof resetDraft === 'function') resetDraft();
-
-  // 收尾兜底：只封口，不新建 —— 否则调用方接着把同一份 finalText 写进新气泡就是复制
-  if (!createNext) return null;
-
-  let next;
-  try {
-    next = store.appendMessage({
-      roomId,
-      authorType: 'bot',
-      authorId: bot?.id ?? null,
-      authorName: bot?.name ?? '',
-      authorEmoji: bot?.emoji ?? null,
-      text: '',
-      status: 'streaming',
-      meta: { ...(meta ?? {}), continuedFrom: botMsgId },
-    });
-  } catch (err) {
-    logFn('插话后新建气泡失败：', err?.message || err);
-    return null;
-  }
-  store.moveMessageAfter(roomId, next.id, pending.afterId, { touch: true });
-  entry.liveMsgId = next.id;
-  // ★ 不再手动补发 msg.new：store.appendMessage 内部已经发过一次（D3 第 1 条）。
-  //   重复广播会让总线 / SDK 订阅者收到两条同样的新建事件。
-  bus?.emit?.('event', { t: 'typing', roomId, botId: bot?.id ?? null, active: true, lane: 'work', msgId: next.id });
-  return next;
-}
+export { settleRunningSteps, applyPendingReseat } from './stream-bubbles.js';

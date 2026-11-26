@@ -16,6 +16,7 @@
 import { collectUpstreamContext, pendingCheckpointKids } from './task-dag.js';
 import { renderBlackboard } from './task-blackboard.js';
 import { renderCriticFeedback } from './task-critic.js';
+import { worktreePromptNote } from './task-worktree-policy.js';
 export const LEAD_PHASE = Object.freeze({
   plan: 'plan',
   verify: 'verify',
@@ -237,6 +238,10 @@ export function buildMemberPrompt({
   if (unmet.length) {
     lines.push('上一轮还差这些（逐条修掉再交）：\n' + unmet.map((u, i) => `${i + 1}. ${String(u).slice(0, 200)}`).join('\n'));
   }
+  // ★ C4：在独立 worktree 里开发时要说清楚「就在当前目录改、别切分支、别 push」——
+  //   不说的话模型很可能自己 checkout/push，把隔离层绕过去。
+  const worktreeNote = worktreePromptNote(childTaskRun?.worktree);
+  if (worktreeNote) lines.push(worktreeNote);
   // ★ 独立复核未通过：把缺陷清单原文贴进来，下一轮才能精准修而不是重做。
   const rework = criticFeedbackBlock(childTaskRun);
   if (rework) lines.push(rework);

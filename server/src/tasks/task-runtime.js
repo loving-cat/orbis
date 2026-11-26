@@ -33,6 +33,8 @@ import {
 } from './task-model-tier.js';
 import { CRITIC_MODE, resolveCriticMode } from './task-critic.js';
 import { resolveCloneConfig } from './task-worker-pool.js';
+import { createWorktreeManager } from './task-worktree.js';
+import { resolveWorktreeMode, WORKTREE_MODE } from './task-worktree-policy.js';
 
 /**
  * 「结果未知」的只读核验器（可单独测试，不依赖调度器）。
@@ -160,7 +162,7 @@ export function createTaskRuntime({
   if (!runner) throw new Error('运行时需要 runner');
 
   /** 执行器：跑一次受管执行；负责人轮次额外把正文里的 @ 落成子任务。 */
-  const runOne = async ({ taskRun, attemptId, botId, revision, prompt, phase, cloneId = null }) => {
+  const runOne = async ({ taskRun, attemptId, botId, revision, prompt, phase, cloneId = null, workDir = null }) => {
     const route = routeOf(taskRun);
     const managedContext = { taskRunId: taskRun.id, revision, attemptId, botId };
     // ★ 本次难度分档（与分身天然合一：同一条 #clone_<id> 内存会话里执行）
@@ -179,7 +181,9 @@ export function createTaskRuntime({
       const result = await runner.run(route.roomId, route.botId, prompt, {
         managedContext,
         skipUserMessage: true,
-        cloneId,
+        // ★ C4：worktree 子任务在它自己那棵树里执行；带上 cloneId 保证
+        //   用的是独立内存泳道（workDir ≠ workspace 时绝不碰主持久化会话）。
+        ...(workDir ? { workDir, cloneId: cloneId ?? taskRun.id } : { cloneId }),
         ...(modelOverride ? { modelOverride } : {}),
       });
       return withDispatch(result);
@@ -190,7 +194,7 @@ export function createTaskRuntime({
       kickoff: true,
       taskPrompt: prompt,
       managedContext,
-      cloneId,
+      ...(workDir ? { workDir, cloneId: cloneId ?? taskRun.id } : { cloneId }),
       ...(modelOverride ? { modelOverride } : {}),
     });
     const result = withDispatch(raw ?? {});
@@ -473,6 +477,13 @@ export function createTaskRuntime({
    */
   /** 独立评审档位：装配时定下来，与 supervisor 内判定用同一个值。 */
   const criticMode = resolveCriticMode(process.env);
+  /** Worktree 档位（`ORBIS_TASK_WORKTREE`）：`off` 时不注入管理器。 */
+  const worktreeMode = resolveWorktreeMode(process.env);
+  const worktreeManager = worktreeMode === WORKTREE_MODE.off
+    ? null
+    : createWorktreeManager({
+        workspace: runner.config?.workspace ?? process.cwd(), clock, log,
+      });
   /** 分身配额（`ORBIS_WORKER_CLONE` / `ORBIS_MAX_CLONES_PER_BOT`）。 */
   const cloneConfig = resolveCloneConfig(process.env);
   /** 模型分档模式与显式档位模型（装配时读一次环境）。 */
@@ -583,6 +594,7 @@ export function createTaskRuntime({
      *   调度器还会再被「根并发预算」与「上游健康度」压一次。
      */
     maxPerBot: cloneConfig.maxPerBot,
+    worktreeManager,
     abortInflight: async ({ taskRunId }) => {
       // 任务级取消：终止本任务及其有效子树的在途执行，不动同房间其他目标
       const ids = [taskRunId];

@@ -105,6 +105,10 @@ export async function createChildTask({
   criticRequired = undefined,
   /** 难度档位（fast/standard/strong）：不进业务身份指纹，复用时可更新。 */
   modelTier = undefined,
+  /** 显式要求独立 worktree（默认跟随父任务）。 */
+  useWorktree = undefined,
+  /** 目标仓库（相对 workspace）。 */
+  worktreeRepo = undefined,
   /** 计划步骤号 → 真实子任务 id（负责人只记得住“第 2 条”）。 */
   stepIds = null,
 }) {
@@ -167,6 +171,13 @@ export async function createChildTask({
     modelTier: modelTier === undefined
       ? (parentTaskRun.flags?.modelTier ?? null)
       : modelTier,
+    // worktree 隔离：显式优先，否则跟随父任务
+    useWorktree: useWorktree === undefined
+      ? parentTaskRun.flags?.useWorktree === true
+      : useWorktree === true,
+    worktreeRepo: worktreeRepo === undefined
+      ? (parentTaskRun.flags?.worktreeRepo ?? null)
+      : (worktreeRepo ? String(worktreeRepo) : null),
   });
   if (!built.ok) return { ok: false, code: 'bad_child', text: built.text };
 
@@ -204,7 +215,7 @@ export async function createChildTask({
       }
       await mergeClaims(existing?.id, claims.files, taskRuns, clock);
       const linkedA = await mergeChildLinks(taskRuns, existing?.id, {
-        dependsOn: deps.ids, checkpointBeforeRun, modelTier, siblings, clock,
+        dependsOn: deps.ids, checkpointBeforeRun, modelTier, useWorktree, worktreeRepo, siblings, clock,
       });
       if (!linkedA.ok) return linkedA;
       return { ok: true, child: existing, reused: true };
@@ -220,7 +231,7 @@ export async function createChildTask({
     }
     await mergeClaims(child?.id, claims.files, taskRuns, clock);
     const linkedB = await mergeChildLinks(taskRuns, child?.id, {
-      dependsOn: deps.ids, checkpointBeforeRun, modelTier, siblings, clock,
+      dependsOn: deps.ids, checkpointBeforeRun, modelTier, useWorktree, worktreeRepo, siblings, clock,
     });
     if (!linkedB.ok) return linkedB;
     return { ok: true, child, reused: true };
@@ -240,7 +251,8 @@ export async function createChildTask({
  * 依赖并集同样要过环检测：两份重派各自只合法，合起来可能就成环了。
  */
 async function mergeChildLinks(taskRuns, childId, {
-  dependsOn = [], checkpointBeforeRun = false, modelTier = undefined, siblings = [], clock = () => Date.now(),
+  dependsOn = [], checkpointBeforeRun = false, modelTier = undefined,
+  useWorktree = undefined, worktreeRepo = undefined, siblings = [], clock = () => Date.now(),
 } = {}) {
   if (!childId) return { ok: true };
   const others = siblings.filter((run) => run.id !== childId).map((run) => run.id);
@@ -264,12 +276,24 @@ async function mergeChildLinks(taskRuns, childId, {
         ? String(modelTier).trim().toLowerCase()
         : null;
       const tierChanged = wantTier !== null && (cur.flags?.modelTier ?? null) !== wantTier;
-      if (sameDeps && gate === (cur.checkpointBeforeRun === true) && !tierChanged) return null;
+      // worktree 意图同样是「显式才更新，未指定就保持」
+      const wantWorktree = useWorktree === undefined ? null : useWorktree === true;
+      const wantRepo = worktreeRepo === undefined ? null : (worktreeRepo ? String(worktreeRepo) : null);
+      const worktreeChanged = (wantWorktree !== null && (cur.flags?.useWorktree === true) !== wantWorktree)
+        || (wantRepo !== null && (cur.flags?.worktreeRepo ?? null) !== wantRepo);
+      if (sameDeps && gate === (cur.checkpointBeforeRun === true) && !tierChanged && !worktreeChanged) return null;
       return {
         ...cur,
         dependsOn: mergedDeps.ids,
         checkpointBeforeRun: gate,
-        ...(tierChanged ? { flags: { ...(cur.flags ?? {}), modelTier: wantTier } } : {}),
+        ...(tierChanged || worktreeChanged ? {
+          flags: {
+            ...(cur.flags ?? {}),
+            ...(tierChanged ? { modelTier: wantTier } : {}),
+            ...(wantWorktree !== null ? { useWorktree: wantWorktree } : {}),
+            ...(wantRepo !== null ? { worktreeRepo: wantRepo } : {}),
+          },
+        } : {}),
         updatedAt: clock(),
       };
     },

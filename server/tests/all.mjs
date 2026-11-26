@@ -205,6 +205,8 @@ const TESTS = [
   'long-task-critic',
   // 同角色临时分身 + 任务难度模型分档（2.0 集群 C3）
   'long-task-clone-tier',
+  // 并发编码的 Git worktree 隔离与合入（2.0 集群 C4）
+  'long-task-worktree',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',

@@ -170,6 +170,14 @@ export function createSessionBuilder({
      *   同一个 Bot 的两个并发分身如果都按 `roomId:botId` 查，
      *   A 的 `apply_completion` 会打进 B 的收集器，A 的黑板写入会落到 B 的账上。
      */
+    /**
+     * 这个会话的工作目录。
+     *
+     * ★ C4：worktree 子任务的开发/评审都必须在**它自己那棵树**里跑，
+     *   否则 read/ls/grep 看到的是主仓（没有它刚写的文件），
+     *   沙箱 shell 也会在错误目录里执行。默认仍是 `config.workspace`。
+     */
+    const effectiveWorkDir = opts.workDir ? path.resolve(String(opts.workDir)) : config.workspace;
     const laneKey = sessionLaneKey({
       roomId, botId, cloneId: opts.cloneId ?? null, modelOverride: opts.modelOverride ? 'v' : null,
     });
@@ -251,7 +259,7 @@ export function createSessionBuilder({
     //   能力边界在 git-ops.js 的白名单里（只有 status/diff/log/show/branches/add/commit），
     //   push/merge/reset/clean 在那张表里根本没有。
     const gitTools = !isolatedLane && (isChief || isDeptLead)
-      ? buildGitTools({ runner, store, roomId, botId, config })
+      ? buildGitTools({ runner, store, roomId, botId, config, workDir: effectiveWorkDir })
       : [];
 
     // ★ 接单与任务进度工具：结合宿主实例开关决定是否注册（SDK 轻量模式默认关）。
@@ -312,7 +320,7 @@ export function createSessionBuilder({
       ? []
       : buildSandboxedShellTools({
           bot,
-          workDir: config.workspace,
+          workDir: effectiveWorkDir,
           dataDir: config.dataDir,
           tools: baseTools,
           mcpCount: store.mcpServersFor(botId).length,
@@ -373,7 +381,7 @@ export function createSessionBuilder({
      *   · `(d) => fakeLoader` —— 测试里彻底不读盘（reload 仍然会被调用）。
      */
     const loaderDefaults = {
-      cwd: config.workspace,
+      cwd: effectiveWorkDir,
       agentDir: getAgentDir(),
       // 旁路 Talk 不挂载 MCP，保留策略钩子兜底只读
       extensionFactories: [
@@ -431,7 +439,7 @@ export function createSessionBuilder({
     }
 
     const options = {
-      cwd: config.workspace,
+      cwd: effectiveWorkDir,
       sessionManager,
       resourceLoader,
       // 沙箱版 shell 工具与内置同名，放在后面即可覆盖
@@ -449,7 +457,9 @@ export function createSessionBuilder({
 
     applyCompactionBudget(session, bot);
 
-    if (!isolatedLane && session.sessionFile && session.sessionFile !== savedFile) {
+    // ★ 内存会话（旁路/评审/分身/worktree/临时模型）绝不登记 sessionFile：
+    //   一旦登记，下一轮就会拿它当"主会话文件"去读一个不存在的路径。
+    if (!inMemorySession && session.sessionFile && session.sessionFile !== savedFile) {
       store.setSessionFile(roomId, botId, session.sessionFile);
     }
     log(

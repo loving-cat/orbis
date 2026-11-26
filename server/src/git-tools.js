@@ -72,7 +72,7 @@ function describeStatus(parsed) {
  * @param {string} p.roomId
  * @param {string} p.botId
  */
-export function buildGitTools({ runner, store, roomId, botId, config: scopedConfig = null }) {
+export function buildGitTools({ runner, store, roomId, botId, config: scopedConfig = null, workDir = null }) {
   const config = scopedConfig ?? runner?.config ?? defaultConfig;
   const actorRole = (() => {
     const me = store?.getBot?.(botId) ?? null;
@@ -83,7 +83,10 @@ export function buildGitTools({ runner, store, roomId, botId, config: scopedConf
   })();
 
   const allowOutsideWorkspace = actorRole === 'main' && config.jarvisMode !== false;
-  const resolveTarget = (repoDir) => resolveRepo(repoDir, { allowOutsideWorkspace, workspace: config.workspace });
+  // ★ C4：worktree 会话里的 git 工具要认**这棵树**（它自己就是一个合法仓库），
+  //   默认仍然是 config.workspace。
+  const effectiveWorkspace = workDir ? String(workDir) : config.workspace;
+  const resolveTarget = (repoDir) => resolveRepo(repoDir, { allowOutsideWorkspace, workspace: effectiveWorkspace });
 
   /**
    * 统一入口：跑一次 git，失败就说清原因。

@@ -67,8 +67,11 @@ test('空 / 非数组不炸（落库路径会在各种奇怪状态下调用它�
 
 test('★ 四个落库出口 + 封口都调了 settleRunningSteps（源码守卫，防以后加出口忘了它）', () => {
   // 出口是"改完状态就落库"的几处；新增出口时必须一起收敛，否则又会出现转圈气泡。
-  const file = path.join(import.meta.dirname, '..', 'src', 'runner', 'turn-executor.js');
-  const srcText = fs.readFileSync(file, 'utf8');
+  // ★ C4 起：气泡收尾/换条（含"这条气泡已封口"那处）搬到了 `runner/stream-bubbles.js`，
+  //   所以**两个文件一起看**才算完整 —— 只数 turn-executor 会把搬走的那处漏掉。
+  const dir = path.join(import.meta.dirname, '..', 'src', 'runner');
+  const files = ['turn-executor.js', 'stream-bubbles.js'];
+  const srcText = files.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
   const calls = srcText.match(/settleRunningSteps\(/g) ?? [];
   assert.ok(calls.length >= 5, `期望至少 5 处调用（4 个出口 + 封口），实际 ${calls.length}`);
   for (const marker of ['模型没有返回内容', '本轮结束，这一步没有返回结果', '步数到上限', '本轮要在重试', '这条气泡已封口']) {
