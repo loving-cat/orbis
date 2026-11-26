@@ -28,6 +28,50 @@ class TaskRunMerge {
 
   TaskRun? byId(String id) => _byId[id];
 
+  /// 写回一份**详情**快照（含瀑布流/遥测/黑板）。
+  ///
+  /// 三种情形必须分开处理，混在一起会出两类真事故：
+  ///   · 详情请求比列表推送**慢**：回来的 storeVersion 更旧，此时拿它整个覆盖
+  ///     会把用户刚看到的状态回退（例如已完成的又变回执行中）；
+  ///   · 同一份数据重复拉取：同版本要收（否则点开详情永远刷不出瀑布流）；
+  ///   · 任务改版（revision 变了）：旧版本的 waterfall/telemetry/黑板说的
+  ///     是另一件事，绝不能挂到新版本上。
+  void applyDetail(TaskRun detail) {
+    if (detail.id.isEmpty) return;
+    final current = _byId[detail.id];
+
+    // 1) 老快照：只在"当前还没有明细 + 同版本"时补挂明细，其余一律不动
+    if (current != null && detail.storeVersion < current.storeVersion) {
+      if (!current.hasDetail && detail.revision == current.revision) {
+        _byId[detail.id] = current.withDetail(
+          waterfall: detail.waterfall,
+          telemetry: detail.telemetry,
+          blackboard: detail.blackboard,
+        );
+      }
+      return;
+    }
+
+    // 2) 新快照：直接信任它带来的明细（它是最全的那一份）
+    _byId[detail.id] = detail;
+    if (detail.storeVersion > _cursor) _cursor = detail.storeVersion;
+  }
+
+  /// 轻量快照（列表/WS）合并时**保留已有明细**。
+  ///
+  /// ★ 不这么做的话，用户正看着瀑布流时来一条 WS 增量，
+  ///   `waterfall` 就变成 null，面板当场空白。
+  TaskRun _keepDetail(TaskRun next, TaskRun? current) {
+    if (current == null || next.hasDetail || !current.hasDetail) return next;
+    // ★ 改版之后不能沿用旧版本的明细：那份 waterfall/黑板说的是另一版目标
+    if (current.revision != next.revision) return next;
+    return next.withDetail(
+      waterfall: current.waterfall,
+      telemetry: current.telemetry,
+      blackboard: current.blackboard,
+    );
+  }
+
   void clear() {
     _byId.clear();
     _cursor = 0;
@@ -42,7 +86,7 @@ class TaskRunMerge {
       if (next.id.isEmpty) continue;
       final current = _byId[next.id];
       if (current != null && next.storeVersion <= current.storeVersion) continue;
-      _byId[next.id] = next;
+      _byId[next.id] = _keepDetail(next, current);
       if (next.storeVersion > _cursor) _cursor = next.storeVersion;
       changed = true;
     }
@@ -71,7 +115,7 @@ class TaskRunMerge {
       }
     }
     final gap = current != null && next.storeVersion > current.storeVersion + 1;
-    _byId[next.id] = next;
+    _byId[next.id] = _keepDetail(next, current);
     if (next.storeVersion > _cursor) _cursor = next.storeVersion;
     return TaskRunMergeResult(changed: true, gap: gap);
   }

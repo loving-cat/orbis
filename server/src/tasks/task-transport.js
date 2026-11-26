@@ -4,6 +4,9 @@
  * revision/sequence/storeVersion 原样保留；根预算统一在这里解析。
  */
 import { remainingRuns } from './task-budget.js';
+import {
+  budgetTokensView, buildTaskWaterfall, projectBlackboard, telemetrySummaryOf,
+} from './task-waterfall.js';
 
 const TRANSPORT_STATE_TEXT = Object.freeze({
   queued: '准备中', running: '执行中', verifying: '验收中',
@@ -106,7 +109,14 @@ export function userPhaseOf(state) {
   return PHASE_OF_STATE[state] ?? USER_PHASE.active;
 }
 
-export function projectTaskRun(taskRun, { root = null, children = null, nameOf = null } = {}) {
+export function projectTaskRun(taskRun, {
+  root = null, children = null, nameOf = null,
+  /** 详情接口传 true：额外投影 waterfall / telemetry / blackboard（列表接口不要带）。 */
+  includeDetail = false,
+  /** 估算费用（可选）：`({model,botId,inputTokens,outputTokens}) => number|null` */
+  costOf = null,
+  now = Date.now(),
+} = {}) {
   if (!taskRun) return null;
   const childrenSummary = summarizeChildren(children, { nameOf });
   const leadBotId = taskRun.owner?.leadBotId ?? null;
@@ -146,7 +156,12 @@ export function projectTaskRun(taskRun, { root = null, children = null, nameOf =
       usedRuns: budgetRoot?.budget?.usedRuns ?? null,
       extraRuns: budgetRoot?.budget?.extraRuns ?? 0,
       remaining,
+      // ★ C5：Token 维度也要投影 —— 只给次数的话 App 的「追加额度」
+      //   根本不知道还有 token 这一维（旧版只支持 extraRuns）。
+      ...budgetTokensView(budgetRoot?.budget ?? null),
     },
+    // ★ C5：列表也要的一个极小摘要（几个标量，不拖慢列表接口）
+    telemetrySummary: telemetrySummaryOf(budgetRoot ?? taskRun, children ?? []),
     // 结果已准备 = 服务端验收通过并有交付摘要；送达确认由客户端回执另行处理
     result: taskRun.delivery
       ? { prepared: true, delivered: false, summary: String(taskRun.delivery.summary ?? '').slice(0, 500), at: taskRun.delivery.at ?? null }
@@ -200,6 +215,26 @@ export function projectTaskRun(taskRun, { root = null, children = null, nameOf =
         }
       : null,
     updatedAt: taskRun.updatedAt ?? null,
+    // ★ C5 详情：完整瀑布流 + 遥测 + 黑板（列表接口不投影，避免每次列表都算一遍）
+    ...(includeDetail
+      ? (() => {
+          const waterfall = buildTaskWaterfall({
+            rootRun: budgetRoot ?? taskRun, children: children ?? [], nameOf, costOf, now,
+          });
+          return {
+            waterfall: {
+              originAt: waterfall.originAt,
+              endAt: waterfall.endAt,
+              durationMs: waterfall.durationMs,
+              items: waterfall.items,
+              total: waterfall.total,
+              truncated: waterfall.truncated,
+            },
+            telemetry: waterfall.telemetry,
+            blackboard: projectBlackboard((budgetRoot ?? taskRun)?.blackboard ?? null, { limit: 10 }),
+          };
+        })()
+      : {}),
   };
 }
 

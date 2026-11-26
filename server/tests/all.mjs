@@ -207,6 +207,8 @@ const TESTS = [
   'long-task-clone-tier',
   // 并发编码的 Git worktree 隔离与合入（2.0 集群 C4）
   'long-task-worktree',
+  // 集群全景投影 + 候选经验通知（2.0 集群 C5）
+  'long-task-waterfall-lessons',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',
