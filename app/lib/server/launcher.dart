@@ -15,7 +15,7 @@ import 'supervisor.dart';
 ///   1. `/health` 有应答 → 直接复用（已有服务端时不再启动新进程）；
 ///   2. 定位服务端入口：用户设置 → `ORBIS_SERVER` → exe 同级 → 上层目录；
 ///   3. 定位 node：用户设置 → `ORBIS_NODE` → exe 同级 → Program Files → PATH，
-///      并校验版本（需 22+）；
+///      并校验版本（SDK 要求 >=22.19.0）；
 ///   4. `node_modules` 缺失时执行 `npm install`（并发/重试共享同一个 Future）；
 ///   5. 启动进程（stdout/stderr 由操作系统重定向到日志文件），轮询 `/health`。
 /// 状态目录名的两条来源：新版品牌名与旧版。
@@ -463,14 +463,14 @@ class LocalServerLauncher {
       return ServerLaunchResult(
         ok: false,
         alreadyRunning: false,
-        error: '找到了 node（${_nodePath!}）但跑不起来，可能是装坏了。重装一个 Node 22+ 试试。',
+        error: '找到了 node（${_nodePath!}）但跑不起来，可能是装坏了。重装一个 Node 22.19+ 试试。',
       );
     }
-    if (!versionAtLeast(_nodeVersion!, 22)) {
+    if (!versionAtLeast(_nodeVersion!, 22, 19)) {
       return ServerLaunchResult(
         ok: false,
         alreadyRunning: false,
-        error: 'node 版本太旧（v$_nodeVersion），服务端要 22 或更新。装新的之后这里会自动用上。',
+        error: 'node 版本太旧（v$_nodeVersion），服务端要 22.19 或更新（SDK 要求 >=22.19.0）。装新的之后这里会自动用上。',
       );
     }
     return null;
@@ -497,7 +497,7 @@ class LocalServerLauncher {
     final npm = npmCommand(_nodePath!);
     if (npm.isEmpty) {
       return '服务端缺依赖（$serverDirectory${Platform.pathSeparator}node_modules 不存在），也没找到 npm。\n'
-          '· 装上带 npm 的 Node 22+；\n'
+          '· 装上带 npm 的 Node 22.19+；\n'
           '· 或者在下面这个目录里手动跑一次 npm install：\n  $serverDirectory';
     }
 

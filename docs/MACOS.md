@@ -6,7 +6,7 @@
 ## 构建与打包
 
 准备完整 Xcode 并完成首次启动、许可与组件安装；只有 Xcode 命令行工具不足以完成
-Flutter 原生构建。另需 Flutter macOS desktop、Node 22+ 和 npm：
+Flutter 原生构建。另需 Flutter macOS desktop、Node 22.19+ 和 npm：
 
 ```bash
 flutter config --enable-macos-desktop
@@ -378,7 +378,7 @@ flag **逐步累加**，然后按主键、再倒序松开修饰键。
 
 ## 已知限制
 
-- 目标机器需自行安装 Node 22+；安装包不包含 Node。
+- 目标机器需自行安装 Node 22.19+（SDK 的 `engines` 就是 `>=22.19.0`）；安装包不包含 Node。
 - 当前为 ad-hoc 签名，未做 Developer ID 签名与公证。对外分发需另行配置证书与公证流程；
   清除隔离属性不等于完成公证。
 - 本地通知目前仅在 Android/iOS 启用；macOS 不初始化该插件，暂不提供本地通知。

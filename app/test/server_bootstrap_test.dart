@@ -313,6 +313,19 @@ void main() {
       expect(versionAtLeast('', 22), isFalse);
     });
 
+    // ★ SDK 的 engines 是 >=22.19.0：只看大版本会把 22.0–22.18 放进去，
+    //   然后在服务端启动阶段抛一脸 ESM/API 错（用户看到的是「服务端起不来」）。
+    test('node 版本门槛：SDK 要 >=22.19.0（22.0–22.18 必须拦）', () {
+      expect(versionAtLeast('22.19.0', 22, 19), isTrue);
+      expect(versionAtLeast('22.19', 22, 19), isTrue);
+      expect(versionAtLeast('22.20.1', 22, 19), isTrue);
+      expect(versionAtLeast('23.0.0', 22, 19), isTrue);
+      expect(versionAtLeast('22.18.9', 22, 19), isFalse);
+      expect(versionAtLeast('22.0.0', 22, 19), isFalse);
+      expect(versionAtLeast('22', 22, 19), isFalse);
+      expect(versionAtLeast('20.19.0', 22, 19), isFalse);
+    });
+
     test('npm 在旁边（普通安装）', () {
       final node = File(
         '${tmp.path}${Platform.pathSeparator}node${Platform.isWindows ? '.exe' : ''}',
