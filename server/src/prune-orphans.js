@@ -72,8 +72,16 @@ function sessionKeyOf(file) {
 export function findOrphans({ dataDir, olderThanMs = 0, now = Date.now() } = {}) {
   const roomsDir = path.join(dataDir, 'rooms');
   const sessionsDir = path.join(dataDir, 'sessions');
-  const state = readJson(path.join(dataDir, 'state.json')) ?? {};
-  const liveRooms = state.rooms && typeof state.rooms === 'object' ? Object.keys(state.rooms) : [];
+  // ★ 安全阀：state.json 是「谁是活的」的唯一判据。
+  //   它损坏（非法 JSON）/ 缺 rooms / rooms 是数组时，`readJson` 会静默退化成 `{}` ——
+  //   那样**所有活着**的房间与会话都会被当成孤儿挪走。宁可拒绝执行，也不能猜。
+  const parsed = readJson(path.join(dataDir, 'state.json'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || !parsed.rooms || typeof parsed.rooms !== 'object' || Array.isArray(parsed.rooms)) {
+    throw new Error('state.json 无法解析或格式异常，拒绝判定孤儿文件');
+  }
+  const state = parsed;
+  const liveRooms = Object.keys(state.rooms);
   const liveSessions = new Set(
     Object.values(state.sessions ?? {}).map((v) => sessionKeyOf(v)).filter(Boolean),
   );

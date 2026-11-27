@@ -109,11 +109,18 @@ export async function runPruneOrphansCli(argv = []) {
     return 1;
   }
 
-  const result = pruneOrphans({
-    dataDir,
-    apply: opts.apply,
-    olderThanMs: opts.olderThanMs,
-  });
+  let result;
+  try {
+    result = pruneOrphans({
+      dataDir,
+      apply: opts.apply,
+      olderThanMs: opts.olderThanMs,
+    });
+  } catch (err) {
+    // 判定不了就明说，退出码 1；此时**一个字节都没写**，也没建备份目录
+    process.stderr.write(`✗ ${err?.message || err}${String.fromCharCode(10)}`);
+    return 1;
+  }
 
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

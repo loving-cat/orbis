@@ -140,6 +140,56 @@ await test('⑥ 没有 state.json 的目录：CLI 必须拒绝（返回 1）', a
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+await test('⑥b state.json 损坏/格式异常：拒绝判定，活文件零触碰、CLI 返回 1', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-prune-broken-'));
+  fs.mkdirSync(path.join(dir, 'rooms'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+  // 这些在 state.json 里本来都是“活着”的（内容一旦读不出来就不能猜）
+  fs.writeFileSync(path.join(dir, 'rooms', 'r_live.json'), '[]');
+  fs.writeFileSync(path.join(dir, 'sessions', 'live-1.jsonl'), '{"a":1}\n');
+
+  const shapes = [
+    '{broken',                     // illegal JSON
+    '{}',                          // no rooms
+    '{"rooms":[]}',               // rooms is an array
+    '{"sessions":{}}',             // rooms missing
+  ];
+  for (const raw of shapes) {
+    fs.writeFileSync(path.join(dir, 'state.json'), raw);
+    assert.throws(
+      () => findOrphans({ dataDir: dir }),
+      /state\.json \u65e0\u6cd5\u89e3\u6790\u6216\u683c\u5f0f\u5f02\u5e38/,
+      `state.json = ${raw} \u65f6\u5fc5\u987b\u62d2\u7edd\uff0c\u4e0d\u80fd\u9000\u5316\u6210\u300c\u5168\u90fd\u662f\u5b64\u513f\u300d`,
+    );
+  }
+
+  // CLI \u5c42\uff1a\u660e\u786e\u62a5\u9519 + \u9000\u51fa\u7801 1\uff0c\u4e14\u4e00\u4e2a\u5b57\u8282\u90fd\u6ca1\u5199\uff08\u6ca1\u5efa\u5907\u4efd\u76ee\u5f55\uff09
+  const { runPruneOrphansCli } = await import('../src/prune-orphans-cli.js');
+  const writes = [];
+  const origErr = process.stderr.write.bind(process.stderr);
+  const origOut = process.stdout.write.bind(process.stdout);
+  process.stderr.write = (s) => { writes.push(String(s)); return true; };
+  process.stdout.write = () => true;
+  let code;
+  try {
+    code = await runPruneOrphansCli(['--data', dir, '--apply']);
+  } finally {
+    process.stderr.write = origErr;
+    process.stdout.write = origOut;
+  }
+  assert.equal(code, 1, '\u635f\u574f\u7684 state.json \u5fc5\u987b\u8fd4\u56de 1');
+  assert.ok(writes.join('').includes('\u62d2\u7edd\u5224\u5b9a\u5b64\u513f\u6587\u4ef6'), `\u62d2\u7edd\u7406\u7531\u7f3a\u5931\uff1a${writes.join('')}`);
+
+  assert.ok(fs.existsSync(path.join(dir, 'rooms', 'r_live.json')), '\u6d3b\u623f\u95f4\u6587\u4ef6\u4e0d\u8bb8\u88ab\u632a\u8d70');
+  assert.ok(fs.existsSync(path.join(dir, 'sessions', 'live-1.jsonl')), '\u6d3b\u4f1a\u8bdd\u6587\u4ef6\u4e0d\u8bb8\u88ab\u632a\u8d70');
+  assert.equal(
+    fs.readdirSync(dir).filter((n) => n.startsWith(BACKUP_PREFIX)).length,
+    0,
+    '--apply \u4e5f\u4e0d\u80fd\u5efa\u5907\u4efd\u76ee\u5f55\uff08\u96f6\u5199\u76d8\uff09',
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 await test('⑦ 参数解析：--older-than 支持 d/h/m，看不懂的要报错', () => {
   assert.equal(parseDuration('7d'), 7 * 86400000);
   assert.equal(parseDuration('36h'), 36 * 3600000);
