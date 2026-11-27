@@ -79,6 +79,15 @@ half-open —— 放一个请求探路
   成功 → closed；失败 → 重新 open
 ```
 
+> **⚠️ 已按真机教训收窄粒度（2026-11-27）**：实际落地的是**按模型**（key = `groupId/modelId`），
+> 不再是按组。理由：组里只要有一个模型 404 下线，按组熔断会把同组**活着的**模型一起判死、
+> 还连带把端点轮转走 —— 用户看到的就是「换个模型还行，但一起挂了」。
+> 404 = 模型不存在/已下线是**确定事实**（`kind: 'model-not-found'`）：`retry-policy` 不再原地
+> 重试、`circuit-breaker` 一次即 open 且按 auth 档冷却 60s（短冷却只会反复撞同一面墙），
+> 端点轮转**跳过**它，`group-orchestrator` 当轮 0 等待切到健康备用。
+> 见 `server/src/circuit-breaker.js`（`breakerKeyOf` / `clearBreakersForGroup`）、
+> `server/tests/model-breaker-scope.mjs`。
+
 效果对比：
 
 | | 现在 | 加熔断 |

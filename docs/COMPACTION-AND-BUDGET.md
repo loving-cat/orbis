@@ -21,6 +21,8 @@
 | 6 | 群聊压缩期间 `entry.busy=true`，用户一说话就 `#interruptRoundForUser` 把全群 abort | 已修 `776f350` |
 | 7 | 记忆摘要**不进上下文**，纯 UI 展示 | 待做（阶段 2，见下） |
 | 7b | 每轮 finally 跑一次 400 条全量扫描 | **不成立** — 实测 0.0093ms/次，读内存 Map |
+| 8 | 刚压缩完 `getContextUsage().percent` 是 **null** → 阈值判定直接放过；小窗口里只数正文的粗估把 117k / 128k 报成 45% | 已修（§1.4） |
+| 9 | 被长度上限截断（`stopReason: 'length'`、正文为空）时，工具前那句过渡话被标成 `done`：不报错、不压缩、不重试 | 已修（§1.4） |
 
 ### 1.2 分阶段落地
 
@@ -108,6 +110,27 @@
 | 长上下文基准 | LongBench: A Bilingual, Multitask Benchmark for Long Context | arXiv 2308.14508 |
 | 产品实现 | Letta (原 MemGPT) 官方文档 | docs.letta.com |
 | 离线计算 | Sleep-time Compute（编号未核实） | 未核实 |
+
+### 1.4 小上下文窗口（≤128k）的补盲与截断止血
+
+**真机现场**（`nemotron-3.5-super-vl`，128k 窗口）：老会话残留 5 篇技能全文 + 工具定义 +
+摘要已占 ~117k。轮内连调 3 次工具后，第 4 次请求到 **124,339 / 128,000（97.1%）**，
+模型返回 `output: 1 / stopReason: 'length' / 正文为空`；而工具调用前它顺口吐过的过渡话
+已在 `committed` 里 —— 旧代码只看「有没有正文」，把那半句话标成 `done` 收尾。
+
+四处改动（`server/src/context-budget.js`、`runner/turn-length-recovery.js`、
+`runner/memory-compactor.js`、`skills.js`）：
+
+| 位置 | 做法 |
+|---|---|
+| 占用估计 | `estimateUsagePercent`：`fixedOverheadOf`（system + 工具定义，每轮都发）+ 逐条消息保守估算。中文按 **1 token/字**（`chars/4` 会把中文占用低估到四分之一，这正是「实际 117k、界面 45%」的来源），与框架估计取较大值；拿不到窗口返回 `null`，不拿 0 冒充「很空」 |
+| 压缩阈值 | `percent` 为 null 或小窗口时用估算兜底，且**只往上抬**（`Math.max`）—— 绝不用更小的估算盖掉可信真实读数（abort-placeholder 回归）。`planCompaction({ force })` 用于「本轮已被截断」时跳过阈值与失败冷却 |
+| 截断抢救 | 判 → 强制压缩一次 → 让它基于工具结果续答一次；压完仍截断 / 压不了则返回 `notice`，正文末尾追加「这不是完整结论」。上游已有明确错误时不先强压（压完照样错）。**不抛异常**：抢救失败只是「这轮没完整结论」，不该把整轮升级成失败 |
+| 技能注入 | 小窗口收到 **2 条 / 6,000 字**（大窗口维持 5 条）。技能是**参考**不是必需输入 —— 少给两条比整轮被截断划算 |
+
+判定本身是纯函数 `lengthTruncationOf`：取消 / 步数上限 / 请求超时（abort 后 `stopReason`
+也可能是 `length`）都不算截断，不拿它们去强压续答。
+用例见 `server/tests/turn-length-truncation.mjs`（15 项）与 `skill-injection-live.mjs`。
 
 ## 二、群聊轮次预算
 

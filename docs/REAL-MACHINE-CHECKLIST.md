@@ -20,7 +20,7 @@
 
 ```bash
 cd D:/Orbis/server
-node tests/all.mjs | tail -2        # 期望 157/157
+node tests/all.mjs | tail -2        # 期望 208/208
 ```
 
 - 关闭或至少知道：本机装了远程控制软件（`GameViewer` / UU 远程那一类）时，
