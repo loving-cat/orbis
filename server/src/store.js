@@ -3442,41 +3442,110 @@ export class Store {
     return null;
   }
 
+  /**
+   * 把一条还在 `streaming` / `retrying` 的消息收尾成 error。
+   *
+   * 抽出来是因为有**两个来源**要收（内存态 + 磁盘上的孤儿房间文件），两边
+   * 的文案必须一致 —— 用户在看同一个现象，两条路说出两种解释只会更乱。
+   *
+   * @returns {boolean} 有没有真的改到东西
+   */
+  #settleStaleMessage(msg, { reason }) {
+    let touched = false;
+    if (msg.status === 'streaming' || msg.status === 'retrying') {
+      const wasRetrying = msg.status === 'retrying';
+      msg.status = 'error';
+      msg.error = wasRetrying ? `${reason}，重试中断（重新发起即可）` : reason;
+      msg.meta = { ...(msg.meta ?? {}), retrying: false, retryPlaceholder: false };
+      msg.updatedAt = now();
+      touched = true;
+    }
+    // ★ 工具行也要收尾。
+    //
+    //   只把消息标成 done 是不够的：那条消息里的工具步骤会一直停在
+    //   status='running' —— 客户端把它画成转圈的图标，于是群里永远显示
+    //   "正在调用工具…"，圈一直转但什么也没发生（用户报的）。
+    if (Array.isArray(msg.steps) && msg.steps.some((s) => s?.status === 'running')) {
+      msg.steps = msg.steps.map((s) =>
+        s?.status === 'running' ? { ...s, status: 'error', error: `${reason}，这一步中断` } : s,
+      );
+      msg.updatedAt = now();
+      touched = true;
+    }
+    return touched;
+  }
+
+  /**
+   * 启动时收掉上一进程留下的 `streaming` 消息。
+   *
+   * ★ 必须**同时扫磁盘**，不能只遍历 `this.messages`。
+   *
+   *   内存里的消息只从 `state.rooms` 装载，而房间被删之后对应的
+   *   `rooms/<id>.json` 曾经不回收（老版本不 unlink，现在删房间会删，但历史上已经
+   *   堆下的孤儿文件还在）。这些孤儿房间里的 `streaming` 消息**永远收不掉**：
+   *   它不在 state 里 → 不进 `this.messages` → 这段代码够不着 → 客户端下次
+   *   万一读到（诊断工具、手工恢复、把房间找回来）就是一条永转的气泡。
+   *
+   *   实测现场：`dm_5834660d1c3b7f4f`（自检（临时））和 `r_x` 各挂着一条，
+   *   两个都不在 `state.rooms` 里。
+   *
+   * @returns {number} 收拾了多少条
+   */
   reapStaleStreaming() {
     let n = 0;
+    // ① 内存里那些（= state.rooms 里的房间）
     for (const [roomId, list] of this.messages) {
       for (const msg of list) {
-        // 进行中的消息保留部分输出，但进程退出不能证明任务完成。
-        if (msg.status === 'streaming' || msg.status === 'retrying') {
-          const wasRetrying = msg.status === 'retrying';
-          msg.status = 'error';
-          msg.error = wasRetrying
-              ? '服务端重启，重试中断（重新发起即可）'
-              : '服务端重启，本轮中断';
-          msg.meta = { ...(msg.meta ?? {}), retrying: false, retryPlaceholder: false };
-          msg.updatedAt = now();
-          this.dirtyRooms.add(roomId);
-          n++;
-        }
-        // ★ 工具行也要收尾。
-        //
-        //   只把消息标成 done 是不够的：那条消息里的工具步骤会一直停在
-        //   status='running' —— 客户端把它画成转圈的图标，于是群里永远显示
-        //   "正在调用工具…"，圈一直转但什么也没发生。
-        //   服务端重启打断的那一步，就明说被打断了。
-        if (Array.isArray(msg.steps) && msg.steps.some((s) => s?.status === 'running')) {
-          msg.steps = msg.steps.map((s) =>
-            s?.status === 'running'
-              ? { ...s, status: 'error', error: '服务端重启，这一步中断' }
-              : s,
-          );
-          msg.updatedAt = now();
+        if (this.#settleStaleMessage(msg, { reason: '服务端重启，本轮中断' })) {
           this.dirtyRooms.add(roomId);
           n++;
         }
       }
     }
+    // ② 磁盘上的孤儿房间文件（房间已不在 state 里，但文件还在）
+    n += this.#reapOrphanRoomFiles();
     if (n) this.saveNow();
+    return n;
+  }
+
+  /**
+   * 扫 `rooms/` 目录，把**不在 state 里**的房间文件里的残留 streaming 收掉。
+   *
+   * 只改文件、不加载进 `this.messages`：这些房间已经不属于这个实例了，
+   * 硬塞进内存会让它们重新出现在界面上（用户明明删过）。
+   * 也不删文件 —— 删数据是不可逆的，收尾只是把"正在转圈"改成"已中断"。
+   */
+  #reapOrphanRoomFiles() {
+    if (this.memory) return 0;
+    let names = [];
+    try {
+      names = fs.readdirSync(this.roomsDir);
+    } catch {
+      return 0;
+    }
+    let n = 0;
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const roomId = name.slice(0, -'.json'.length);
+      if (this.state.rooms[roomId]) continue; // 活房间走 ① 那条路
+      const file = path.join(this.roomsDir, name);
+      const list = readJson(file, null);
+      if (!Array.isArray(list)) continue;
+      let touched = false;
+      for (const msg of list) {
+        if (this.#settleStaleMessage(msg, { reason: '服务端重启（房间已删除），本轮中断' })) {
+          touched = true;
+          n++;
+        }
+      }
+      if (!touched) continue;
+      try {
+        writeJsonAtomic(file, list);
+      } catch (err) {
+        log(`⚠️  收尾孤儿房间 ${roomId} 失败：`, err?.message || err);
+      }
+    }
+    if (n) log(`收拾了 ${n} 条残留的 streaming 消息（在已删除房间的文件里）`);
     return n;
   }
 
