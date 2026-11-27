@@ -263,8 +263,11 @@ export function buildCommonTools({
     let result = null;
     let waitedMs = 0;
     let lastWhy = '';
+    /** 实际跑了几次。回执里写的次数必须数真的，不能写死 3。 */
+    let attemptsTried = 0;
     const startedAt = Date.now();
     for (let attempt = 1; attempt <= 3; attempt++) {
+      attemptsTried = attempt;
       result = await runner.runBotOnce({
         roomId: dm.id,
         botId: target.id,
@@ -294,10 +297,12 @@ export function buildCommonTools({
         targetName: target.name,
         task,
         reason,
-        attempts: 3,
+        // ★ 以前写死 3：第 1 次就因超时/终止退出时，回执会自相矛盾地说
+        //   「（试了 3 次，不是排队问题，重试没用）」。数实际跑过的次数。
+        attempts: attemptsTried,
         why: lastWhy,
       });
-      return { ok: false, reason, lastWhy };
+      return { ok: false, reason, lastWhy, attempts: attemptsTried };
     }
 
     const mirrored = mirrorDelegatedResult({
@@ -946,7 +951,7 @@ export function buildCommonTools({
         });
         if (!out.ok) {
           return fail(
-            `${target.name} 没跑成：${out.reason}（已重试 3 次：${out.lastWhy}）。` +
+            `${target.name} 没跑成：${out.reason}（试了 ${out.attempts} 次：${out.lastWhy}）。` +
               '我已经把这件事报给主控了，**你不用自己上手** —— 主控会重新派人。',
           );
         }

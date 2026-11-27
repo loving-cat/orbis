@@ -173,6 +173,18 @@ try {
     assert.match(calls[0][2], /你自己上/, '负责人没人能接时要自己上');
     assert.match(calls[0][2], /接手了/, '接手要公开说明');
     assert.doesNotMatch(calls[0][2], /等待用户决定，不自行执行/);
+    // ★ 给模型的那份必须是**完整内部指令**（重派步骤 + 不许悄悄兜底）
+    assert.match(calls[0][2], /请按这个顺序处理/, '内部指令的步骤不能丢');
+    assert.match(calls[0][2], /不要悄悄把活接下/, '内部禁令不能丢');
+    // ★ 而写进房间里（用户看得见）那条必须是**给人看的一行回执**，
+    //   真机上这里曾把整段内部提示词原样弹出来（600 字原任务 + 1/2/3 步骤 + ★ 禁令）。
+    const receipt = store.listMessages(room.id).find((m) => m.meta?.via === 'escalate');
+    assert.ok(receipt, '要往房间写一条中断回执');
+    assert.match(receipt.text, /已转交/, '回执要说清现在谁接');
+    assert.ok(receipt.text.length < 120, `用户可见回执要短（实际 ${receipt.text.length} 字）：${receipt.text}`);
+    for (const leaked of ['不要悄悄把活接下', '请按这个顺序处理', '原任务：', '你自己上']) {
+      assert.ok(!receipt.text.includes(leaked), `内部提示词泄漏到聊天窗：${leaked}`);
+    }
     const elevated = await escalate({ roomId: room.id, fromBotId: lead.id, reason: 'fixture failure' });
     assert.equal(elevated.hostId, store.mainBot().id);
     assert.equal(store.getRoom(calls[1][0]).kind, 'dm');

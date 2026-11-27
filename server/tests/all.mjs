@@ -110,6 +110,7 @@ const TESTS = [
   'room-lock',
   'group-cursor',
   'abort-placeholder',
+  'reap-orphan-streaming',
   'data-migration',
   'server-mode',
   'model-health',

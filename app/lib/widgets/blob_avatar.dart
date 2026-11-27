@@ -146,6 +146,9 @@ class _BlobAvatarState extends State<BlobAvatar> with TickerProviderStateMixin {
 
   bool _following = false;
 
+  /// 已经为“帧末再算一次视线”排过队（防止同一帧里重复排）
+  bool _deferFollowScheduled = false;
+
   bool _followHovered = false;
 
   final ValueNotifier<Offset> _gaze = ValueNotifier(Offset.zero);
@@ -252,6 +255,37 @@ class _BlobAvatarState extends State<BlobAvatar> with TickerProviderStateMixin {
   void _followPointer() {
     final p = AvatarLife.pointer.value;
     if (!mounted || !BlobAvatar.animationsEnabled || p == null) return;
+
+    // ★★ 先看“现在是什么阶段”—— 这一条是 rc.2 新增的入口，rc.1 的守卫拦不住。
+    //
+    //   `localToGlobal` 不只是“读一下坐标”，它会沿祖先链调 `applyPaintTransform`。
+    //   如果现在处在 build / layout 阶段，祖先可能还没准备好：
+    //     · 祖先 sliver 还没给子节点写 `layoutOffset`
+    //         → `childMainAxisPosition` 里的 `childScrollOffset(child)!` 空断言
+    //           (sliver_multi_box_adaptor.dart:660，日志里那条 rc.2 新崩溃)
+    //     · 祖先 RenderTransform 还没 size → `box.dart:2251 'hasSize'` 断言
+    //
+    //   而 `_syncFollow` 就是从 `didUpdateWidget` / `didChangeDependencies` 里
+    //   同步调过来的 —— 那时正处在 `SliverMultiBoxAdaptor._createOrObtainChild
+    //   → invokeLayoutCallback → buildScope` 的 layout 中间（日志栈 #55~#63）。
+    //
+    //   所以这里**不在当前阶段硬算，推到帧末再算**：
+    //   post-frame 时 layout 已完成、`layoutOffset` 已写，算出来的坐标才是对的；
+    //   而“这一帧眼睛慢一步”根本看不出来（本来就有 9/s 的指数阻尼）。
+    //
+    //   ★ 不用 try/catch 吞异常：那只盖住症状，而且会静默算出一个错坐标。
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.persistentCallbacks ||
+        phase == SchedulerPhase.midFrameMicrotasks) {
+      if (_deferFollowScheduled) return;
+      _deferFollowScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _deferFollowScheduled = false;
+        if (mounted) _followPointer();
+      });
+      return;
+    }
+
     final box = context.findRenderObject() as RenderBox?;
     // ★ 四个条件缺一不可 —— 任何一个不满足时「这一帧算不出全局坐标」。
     //

@@ -1035,7 +1035,7 @@ async function runWithLease(
     }
 
     if (!finalText) finalText = '（在群里动手步数到上限，先收住）';
-    if (emptyRecovered) finalText = `${finalText}\n\n_（原模型首次没出内容，已自动重试）_`;
+    if (emptyRecovered) log(`[${bot.name}] 首次空回复已由兜底重试补齐（不写进正文：那句尾巴会污染后续上下文）`);
 
     // ★ 这一段是「让出待续」还是「做完了」：
     //   · 受管：软截止后自己收住、又没申请完成 → 让出（推进器排下一段，不是失败）；
@@ -1065,7 +1065,7 @@ async function runWithLease(
         steps,
         usage,
         attachments: produced,
-        meta: { ...(botMsg.meta ?? {}), ...(changed ? { changed } : {}), ...(continuing ? { continuing: true } : {}) },
+        meta: { ...(botMsg.meta ?? {}), ...(changed ? { changed } : {}), ...(continuing ? { continuing: true } : {}), ...(emptyRecovered ? { emptyRecovered: true } : {}) },
       },
       { silent: true },
     );
