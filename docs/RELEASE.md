@@ -291,12 +291,13 @@ gh pr ready <N> && gh pr merge <N> --merge
 node scripts/check-consistency.mjs
 
 # 2. 全量门禁（rc.1 与 GA 各跑一次，结果贴进 release notes）
-cd server && node tests/all.mjs            # 期望 212/212（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试、
+cd server && node tests/all.mjs            # 期望 213/213（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试、
+#            compaction-wait 压缩期间续跑、
 #            reap-orphan-streaming 孤儿房间回收）
 cargo test --release --manifest-path ../native/orbis-desktop-win/Cargo.toml   # 期望 29/29
 cd .. && node scripts/check-style.mjs && node scripts/check-legacy.mjs --strict   && node scripts/check-spec-progress.mjs && node scripts/check-secrets.mjs   && node scripts/check-licenses.mjs --check
 cd server && node scripts/check-consistency.mjs && node scripts/check-capability-drift.mjs
-cd ../app && flutter analyze && flutter test        # 期望 1091 通过 / 3 跳过
+cd ../app && flutter analyze && flutter test        # 期望 1094 通过 / 3 跳过
 
 # 3. 原生助手产物（阶段 B：常驻 serve + 原生截图）
 powershell -File scripts/build-desktop-win.ps1          # → resources/orbis-desktop-win.exe + .sha256

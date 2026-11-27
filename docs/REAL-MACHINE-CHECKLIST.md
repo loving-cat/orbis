@@ -20,7 +20,7 @@
 
 ```bash
 cd D:/Orbis/server
-node tests/all.mjs | tail -2        # 期望 212/212（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试）
+node tests/all.mjs | tail -2        # 期望 213/213（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试）
 ```
 
 - 关闭或至少知道：本机装了远程控制软件（`GameViewer` / UU 远程那一类）时，
