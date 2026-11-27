@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f));
 const {
   classifyTurnEnding, shouldNudge, wantsAskFirst, claimsCompleted, extractContinuation,
-  nudgePrompt, wrapUpPrompt, continuationPrompt, CONTINUE_MARKER,
+  nudgePrompt, wrapUpPrompt, continuationPrompt, CONTINUE_MARKER, isPureQuestion,
 } = await import(src('turn-continuation.js'));
 
 const results = [];
@@ -78,6 +78,62 @@ test('★ shouldNudge：干活回合问「要不要继续」→ 催；纯聊天 
   const ask = '改了一半。要不要我继续？';
   assert.equal(shouldNudge({ text: ask, workTurn: true }).nudge, true);
   assert.equal(shouldNudge({ text: ask, workTurn: false }).nudge, false);
+});
+
+// 这些用例里要拼多行正文：用 NL 常量避免源码里出现转义序列（写盘时会被吃掉）
+const NL = String.fromCharCode(10);
+
+test('★ 真机现场：只查资料的纯问答，结尾说「删数据不可逆，我不擅自动手」→ 不许催', () => {
+  // 用户只问「孤儿房间文件是什么？」，Bot 用只读工具查完完整作答，并善意补充
+  // 「删数据不可逆，我不擅自动手，等你确认后再派人做」→ 以前被当成"半路停下来问"，
+  // 注入「继续执行，不要停下来问」，逼它自己写代码补测试。
+  const text = [
+    '孤儿房间文件是 state.json 里已经没有、但磁盘上还在的 rooms/*.json。',
+    '它们不会出现在界面上，启动回收也只改内容不删文件。',
+    '',
+    '清理它们要删数据，不可逆；我不擅自动手，等你确认后再派人做。',
+  ].join(NL);
+  const v = shouldNudge({ text, workTurn: true, userPrompt: '孤儿房间文件是什么？' });
+  assert.equal(v.nudge, false, `不该催：${JSON.stringify(v)}`);
+  assert.equal(v.kind, 'irreversible');
+});
+
+test('★ 纯提问：用户问「为什么会超时？」，Bot 给原因并提「要不要我帮你改」→ 不许催', () => {
+  const text = [
+    '超时是因为上游网关 30s 就把连接断了，我们这边还在等完整响应。',
+    '加上 15s 的兜底超时就能避开。',
+    '要不要我帮你改一下，等你确认？',
+  ].join(NL);
+  for (const userPrompt of ['为什么会超时？', '为什么会超时', '超时是怎么回事？']) {
+    const v = shouldNudge({ text, workTurn: true, userPrompt });
+    assert.equal(v.nudge, false, `「${userPrompt}」只是提问，不该催：${JSON.stringify(v)}`);
+  }
+  // 但用户明确让动手时，同样的结尾仍然要催（不破坏长任务续跑）
+  const v2 = shouldNudge({ text, workTurn: true, userPrompt: '帮我把超时改成 15s 并跑测试' });
+  assert.equal(v2.nudge, true, `用户让动手时该催：${JSON.stringify(v2)}`);
+});
+
+test('★ 只是提议「你确认后我再派给某某」→ 不催；但「要不要继续改下一份」仍催', () => {
+  const propose = [
+    'a.js 查过了，问题在缓存没失效。',
+    '要动它得删掉旧缓存目录，不可逆；等你确认后我再派给运维动手。',
+  ].join(NL);
+  const v = shouldNudge({ text: propose, workTurn: true, userPrompt: '看下 a.js 为什么没生效' });
+  assert.equal(v.nudge, false, `只是提议，不该催：${JSON.stringify(v)}`);
+
+  // ★ 反向保护：明确动手任务、只改了一半、结尾问「要不要继续改下一个」→ 仍要催
+  const half = '第一份文件改好了。要不要我继续改下一个文件？';
+  const v2 = shouldNudge({ text: half, workTurn: true, userPrompt: '帮我把 X 模块改掉并跑测试' });
+  assert.equal(v2.nudge, true, `长任务续跑不能被这次修复弄坏：${JSON.stringify(v2)}`);
+});
+
+test('isPureQuestion：问句/概念解释为真，带动手指令为假', () => {
+  for (const t of ['孤儿房间文件是什么？', '为什么会超时？', '这两个的区别是什么', '这玩意有啥用？', '超时怎么回事？']) {
+    assert.equal(isPureQuestion(t), true, t);
+  }
+  for (const t of ['帮我把 X 改掉', '为什么会超时？帮我改一下', '把缓存清了再跑一遍', '']) {
+    assert.equal(isPureQuestion(t), false, t);
+  }
 });
 
 test('★ shouldNudge：退出条件（完成/等待/先问我/次数/催了仍只回文字）', () => {

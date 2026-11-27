@@ -84,18 +84,18 @@ export function interruptRoundForUser(runner, roomId) {
     for (const msg of runner.store.listMessages(roomId, { limit: 200 })) {
       if (msg.status !== 'streaming') continue;
       if (!botIds.includes(msg.authorId)) continue;
-      runner.store.updateMessage(
-        roomId,
-        msg.id,
-        {
-          status: 'aborted',
-          error: '已按你的要求终止',
-          steps: (msg.steps ?? []).map((s) =>
-            s?.status === 'running' ? { ...s, status: 'error', error: '已终止' } : s,
-          ),
-        },
-        { silent: false },
+      const steps = (msg.steps ?? []).map((s) =>
+        s?.status === 'running' ? { ...s, status: 'error', error: '已终止' } : s,
       );
+      // ★ 已经吐出来的正文不许跟着气泡一起消失（真机：用户插话后整条回复当场不见）。
+      //   从会话拿 liveDraft：pushDelta 有 80ms 节流，最后几个字可能还没落库。
+      const lane = [...runner.sessions].find(([key]) =>
+        key.startsWith(`${roomId}:`) && baseBotIdOfKey(roomId, key) === msg.authorId)?.[1] ?? null;
+      const draft = typeof lane?.liveDraft === 'function' ? lane.liveDraft() : '';
+      const savedText = String(draft || msg.text || '').trim();
+      runner.store.updateMessage(roomId, msg.id, savedText
+        ? { text: savedText, status: 'done', error: null, steps, meta: { ...(msg.meta ?? {}), interrupted: true } }
+        : { status: 'aborted', error: '已按你的要求终止', steps }, { silent: false });
     }
     for (const id of botIds) {
       runner.bus.emit('event', { t: 'typing', roomId, botId: id, active: false });
@@ -763,6 +763,7 @@ export async function executeGroupRound(
             res = overrideModel ? await runner.run(roomId, bot.id, prompt, {
               groupTurn: true, retryManaged: true, taskRunId, attemptIndex: 1,
               attachments, managedContext: itemManaged, modelOverride: overrideModel,
+              meta: { text: item.fromText || openerText },
             }) : {
               ok: false,
               text: '',
@@ -782,6 +783,7 @@ export async function executeGroupRound(
               attachments,
               managedContext: itemManaged,
               human: !item.fromId && isUserInitiatedRound({ openerBotId }),
+              meta: { text: item.fromText || openerText },
             });
           }
           if (res.ok) {
@@ -843,6 +845,7 @@ export async function executeGroupRound(
                     attachments,
                     managedContext: itemManaged,
                     ...(overrideModel ? { modelOverride: overrideModel } : {}),
+                    meta: { text: item.fromText || openerText },
                   });
                   if (res.ok) {
                     runner.markGroupHealthy(bot.id, overrideModel);
@@ -930,6 +933,7 @@ export async function executeGroupRound(
               attachments,
               managedContext: itemManaged,
               ...(overrideModel ? { modelOverride: overrideModel } : {}),
+              meta: { text: item.fromText || openerText },
             });
             if (!res.ok) {
               lastError = String(res.error ?? '未知原因');

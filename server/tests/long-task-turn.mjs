@@ -158,7 +158,30 @@ await test('★ 干活回合以「需要我继续吗」收尾 → 自动继续�
   assert.match(session.calls[1], /继续执行/);
   const text = lastBotText(room);
   assert.ok(text.includes('第二部分也改好了'), text);
-  assert.ok(text.includes(NUDGE_NOTE), '气泡里要看得见是系统让它继续的');
+  assert.ok(!text.includes(NUDGE_NOTE), '系统尾巴不再拼进正文（用户看到的是一条正常回复）');
+});
+
+await test('★ 群聊：prompt 是几千字规则模板，但 meta.text 才是用户原话 —— 纯提问不许催', async () => {
+  // 真机：群里问「孤儿房间文件是什么？」，turn-executor 收到的 prompt 是 composeGroupPrompt
+  // 拼出来的长模板（满是「修/改/写/做/跑」），isPureQuestion(prompt) 永远 false ——
+  // 于是只查资料的人被「继续执行，不要停下来问」逼着去改代码。改成读 meta.text。
+  const groupTemplate = [
+    '【你是部门老大】默认先派活：拆解需求 → @同事派活 → 核对交付 → 汇总。',
+    '改代码 / 写测试 / 跑全量验证 都拆给专职成员做；实在没人能接你自己上。',
+  ].join(String.fromCharCode(10)).repeat(20);
+  const { runner, room, bot, session } = setup([
+    async ({ emit }) => {
+      begin(emit);
+      await work(emit, { name: 'read' });
+      reply(emit, '孤儿房间文件是 state.json 里没有、磁盘上还在的那些。要不要我顺手清一下，等你确认？');
+    },
+  ]);
+  const res = await runner.run(room.id, bot.id, groupTemplate, {
+    groupTurn: true,
+    meta: { text: '孤儿房间文件是什么？' },
+  });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(session.calls.length, 1, '纯提问不该被续跑守卫催第二遍');
 });
 
 await test('★ 只报了计划没动手（「接下来我会…」）→ 催它去做', async () => {

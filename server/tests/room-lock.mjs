@@ -383,7 +383,7 @@ await test('★ 轮次代数变了 → shouldStopRound 立即收手（旧队列�
   assert.equal(shouldStopRound({ queueLen: 3, pendingLen: 1, maxRuns: 20 }).stop, false);
 });
 
-await test('★ 用户插话：正在写的消息当场标 aborted（前端不画气泡）', async () => {
+await test('★ 用户插话：已写出的正文保留（done+interrupted），空壳才标 aborted', async () => {
   const { room, member } = makeDept('I');
   const runner = new PiRunner();
 
@@ -406,9 +406,26 @@ await test('★ 用户插话：正在写的消息当场标 aborted（前端不�
 
   await runner.send(room.id, '改个需求');
 
+  // ★ 已写出正文 → done + interrupted（App 只隐藏“空壳”的 aborted，品质不能丢）
   const after = store.getMessage(room.id, streaming.id);
-  assert.equal(after.status, 'aborted', `必须标成 aborted，实际 ${after.status}`);
-  assert.equal(after.error, '已按你的要求终止');
+  assert.equal(after.status, 'done', `有正文就别标 aborted（前端会整条藏掉），实际 ${after.status}`);
+  assert.equal(after.meta?.interrupted, true, '要标明这是被打断的结论');
+  assert.equal(after.text, '正在写…', '已吐出的正文不能丢');
+  assert.equal(after.error, null);
+
+  // 空壳（只有占位、一字未写）照旧标 aborted，App 会隐藏
+  const emptyShell = store.appendMessage({
+    roomId: room.id,
+    authorType: 'bot',
+    authorId: member.id,
+    authorName: member.name,
+    text: '',
+    status: 'streaming',
+  });
+  runner.roundEpochs.set(room.id, (runner.roundEpochs.get(room.id) ?? 0) + 1);
+  await runner.send(room.id, '再插一句');
+  const shell = store.getMessage(room.id, emptyShell.id);
+  assert.equal(shell.status, 'aborted', `空壳要标 aborted，实际 ${shell.status}`);
 
   // 清理：这轮没人来 drain，别把锁和队列留给后面的用例
   runner.roundLocks.delete(room.id);

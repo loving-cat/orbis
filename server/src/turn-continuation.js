@@ -79,6 +79,55 @@ const PLAN_ONLY_TAIL = [
   /\b(?:next|now),? i(?:'ll| will| am going to)\b[^.!?\n]{0,80}[.!]?\s*$/i,
 ];
 
+/**
+ * 结尾明确说明「因为不可逆 / 高风险而停下」。
+ *
+ * ★ 必须和 `nudgePrompt` 自己的规则对齐：那边写着「只有遇到不可逆的操作（删数据、
+ *   对外发布、花钱）才停下来说明原因」，这边却把「删数据不可逆，我不擅自动手，
+ *   等你确认」当成"半途停下来问"去催 —— 自相矛盾，真机上就是因此让一个只查资料的
+ *   Bot 突然开始写代码、补测试。
+ */
+const IRREVERSIBLE_STOP = [
+  /不可逆/,
+  /删(?:除|掉)?数据/,
+  /不擅自动手/,
+  /高风险/,
+  /需要(?:你|您)(?:授权|拍板|确认再)/,
+];
+
+/** 结尾在「等你确认后我再派活 / 再动手」—— 只是提议，不是干到一半撂挑子。 */
+const DEFER_TO_USER = [
+  /(?:你|您)(?:确认|同意|拍板)[^。！？]{0,12}(?:再|才|之后|以后|后)(?:派|动手|执行|开始|安排|处理)/,
+  /再派给/,
+  /待(?:你|您)(?:确认|同意)(?:后|之后)/,
+];
+
+/** 纯提问 / 概念解释的句式（结尾）。 */
+const QUESTION_TAIL = /(?:是什么|什么意思|啥意思|为什么|为啥|怎么回事|区别是什么|有啥用)[？?\s]*$/;
+/** 句首就是疑问词（「为什么会超时」这种不带问号的也算纯提问）。 */
+const QUESTION_START = /^(?:为什么|为啥|是什么|什么意思|啥意思|怎么回事|区别是什么|有啥用|有什么(?:用|区别))/;
+/** 明确的「动手」动词：出现任何一个就说明用户不只是问问。 */
+const ACTION_WORDS = /修|改|写|做|加|删|清|跑|建|实现|优化|帮我/;
+
+/**
+ * 用户原话只是提问 / 要解释，还是明确让干活？
+ *
+ * ★ 为什么需要：非受管会话里 `workTurn: true`（它查过资料）就足以让守卫催它「继续执行」。
+ *   用户问「孤儿房间文件是什么？」，Bot 查完文件给了完整解释、顺口提了句「要不要顺手
+ *   清理，等你确认」—— 守卫把后半句当"停下来问"，逼它自己动手改代码补测试。
+ *
+ * @param {string} userText 用户这一轮的原话
+ * @returns {boolean}
+ */
+export function isPureQuestion(userText) {
+  const text = String(userText ?? '').trim();
+  if (!text) return false;
+  if (QUESTION_TAIL.test(text)) return true;
+  // 「为什么会超时」没写问号也算提问；但同一句里出现「帮我改」就不算
+  if (QUESTION_START.test(text) && !ACTION_WORDS.test(text)) return true;
+  return /[？?]\s*$/.test(text) && !ACTION_WORDS.test(text);
+}
+
 /** 用户明确要先确认、或者叫它先停一下。 */
 const HOLD = [
   /先别(?:动|做|改|跑|继续)/,
@@ -141,6 +190,7 @@ export function claimsCompleted(text) {
  *
  * @param {object} p
  * @param {string} p.text 最后一条回复正文
+ * @param {string} [p.userPrompt] 用户这一轮的原话（判「纯提问」用）
  * @param {boolean} p.managed 受管任务执行（有任务账本）
  * @param {boolean} p.workTurn 这一轮动过工具（在干活，而不是聊天）
  * @param {boolean} [p.completed] 已申请完成（受管 apply_completion）
@@ -152,7 +202,7 @@ export function claimsCompleted(text) {
  * @returns {{nudge:boolean, kind:string, why:string}}
  */
 export function shouldNudge({
-  text = '', managed = false, workTurn = false, completed = false, waiting = false,
+  text = '', userPrompt = '', managed = false, workTurn = false, completed = false, waiting = false,
   askFirst = false, nudges = 0, max = 2, actedSinceNudge = true,
 } = {}) {
   const no = (why, kind = 'none') => ({ nudge: false, kind, why });
@@ -162,6 +212,20 @@ export function shouldNudge({
   if (nudges >= Math.max(0, Number(max) || 0)) return no('催促次数已用完');
   if (nudges > 0 && !actedSinceNudge) return no('催了以后仍只回文字：它是真的需要用户');
   if (!managed && !workTurn) return no('纯聊天回合：提问原样留着');
+
+  // ★ 结尾自己说了「不可逆 / 高风险 / 等你授权」：它就是该停在这儿（与 nudgePrompt 对齐）
+  const tail = String(text ?? '').slice(-160);
+  if (IRREVERSIBLE_STOP.some((re) => re.test(tail))) {
+    return no('结尾说明是不可逆/高风险，等用户确认', 'irreversible');
+  }
+  if (!managed) {
+    // ★ 用户只是在问「是什么 / 为什么」：查完资料给出解释就是完成，不许硬逼它动手
+    if (isPureQuestion(userPrompt)) return no('用户原话是提问，不该被催成动手', 'pure_question');
+    // ★ 只是提议「你确认后我再派给某某」：没有未完成的执行动作，不催
+    if (DEFER_TO_USER.some((re) => re.test(tail))) {
+      return no('结尾在等用户确认后再派活/动手', 'defer_to_user');
+    }
+  }
 
   const ending = classifyTurnEnding(text);
   if (ending.kind === 'continue_permission' || ending.kind === 'plan_only') {

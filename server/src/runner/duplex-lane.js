@@ -711,18 +711,16 @@ export async function sendUserMessage(
         if (liveMsgId) {
           const cur = runner.store.getMessage(roomId, liveMsgId);
           if (cur?.status === 'streaming') {
-            runner.store.updateMessage(
-              roomId,
-              liveMsgId,
-              {
-                status: 'aborted',
-                error: '已按你的要求终止',
-                steps: (cur.steps ?? []).map((s) =>
-                  s?.status === 'running' ? { ...s, status: 'error', error: '已终止' } : s,
-                ),
-              },
-              { silent: false },
+            const steps = (cur.steps ?? []).map((s) =>
+              s?.status === 'running' ? { ...s, status: 'error', error: '已终止' } : s,
             );
+            // ★ 已吐出的正文不跟着气泡一起消失：从 liveDraft 取最完整的一份
+            //   （pushDelta 有 80ms 节流，最后几个字可能还没落库）。
+            const draft = typeof entry?.liveDraft === 'function' ? entry.liveDraft() : '';
+            const savedText = String(draft || cur.text || '').trim();
+            runner.store.updateMessage(roomId, liveMsgId, savedText
+              ? { text: savedText, status: 'done', error: null, steps, meta: { ...(cur.meta ?? {}), interrupted: true } }
+              : { status: 'aborted', error: '已按你的要求终止', steps }, { silent: false });
           }
         }
         entry?.turnController?.abort(Object.assign(new Error('已按你的要求终止'), { name: 'AbortError' }));

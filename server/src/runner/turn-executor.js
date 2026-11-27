@@ -31,7 +31,7 @@ import { createReportCollector } from '../tasks/task-report.js';
 import { STOP } from '../tasks/task-contract.js';
 import { autonomyByDefault } from '../tasks/task-autonomy.js';
 import {
-  CONTINUE_NOTE, NUDGE_NOTE, extractContinuation, wantsAskFirst, wrapUpPrompt,
+  CONTINUE_NOTE, extractContinuation, wantsAskFirst, wrapUpPrompt,
 } from '../turn-continuation.js';
 import {
   STEP_CAP_GRACE, isBlockingAsk, managedIsAutonomous, runContinuationGuard, scheduleDmContinuation, softDeadlineTimeout,
@@ -833,6 +833,8 @@ async function runWithLease(
           managed: isManaged,
           workTurn: toolCalls > 0,
           toolCalls,
+          // 用户原话：纯提问（「这是啥？为什么？」）不该被硬逼成动手（真机：查完资料张去做代码）
+          userPrompt: String(meta?.text ?? (groupTurn ? '' : prompt)),
           completed: reports?.appliedCompletion?.() === true,
           waiting: Boolean(
             reportWaiting('need_approval') || reportWaiting('need_input')
@@ -842,10 +844,8 @@ async function runWithLease(
           askFirst: askFirstAtStart || wantsAskFirst(entry.turnAmends ?? []),
         }),
         onNudge: (verdict, n) => {
+          // 只记日志：以前往正文拼「（自动继续：不用等确认）」，用户看到的是系统口吻的尾巴
           log(`${bot.name} 收尾时在「${verdict.kind}」（${String(verdict.why).slice(0, 40)}）→ 自动继续（第 ${n} 次）`);
-          // 气泡里留一句：用户看得见这里是系统让它接着做，不是它自说自话
-          committed.push(NUDGE_NOTE);
-          pushDelta();
         },
         nudge: (text) => runner.providerUpdates.withLease(() => entry.session.prompt(text), providerScope),
       });
@@ -1095,12 +1095,13 @@ async function runWithLease(
       : responseFailure ?? modelFailure(err);
     failure = resolveIdleFailure(idle, cancelled(), failure) ?? failure;
     const current = runner.store.getMessage(roomId, botMsg.id);
-    const previousError = current?.error;
-    const message = failure.aborted && previousError === '已按你的要求终止'
-      ? previousError
+    const message = failure.aborted && current?.error === '已按你的要求终止'
+      ? current.error
       : withModelHint(failure.error, runner.store.getBot(botId)?.model || runner.modelLabel?.() || '');
-    const keepAborted = cancelled() && current?.status === 'aborted';
     const partial = render().trim();
+    // ★ 已保留正文（meta.interrupted）或取消时已有正文：绝不覆写回 aborted/清空（否则气泡当场消失）
+    const preserved = current?.meta?.interrupted === true || (cancelled() && partial !== '');
+    const keepAborted = cancelled() && current?.status === 'aborted';
     if (stepCapHit) {
       settleRunningSteps(steps, '步数到上限，这一步没有返回结果');
       // 步数硬上限：受管由推进器按「让出」续跑；非受管（没关续段的）自动接着跑下一段
@@ -1152,13 +1153,11 @@ async function runWithLease(
       roomId,
       botMsg.id,
       {
-        text: recoverable
-          ? (partial || '接口临时不稳定，正在重试…')
-          : partial,
-        status: keepAborted
-          ? 'aborted'
-          : (recoverable ? 'retrying' : 'error'),
-        error: recoverable ? null : message,
+        text: preserved
+          ? (partial || current?.text || '')
+          : recoverable ? (partial || '接口临时不稳定，正在重试…') : partial,
+        status: preserved ? 'done' : keepAborted ? 'aborted' : (recoverable ? 'retrying' : 'error'),
+        error: preserved || recoverable ? null : message,
         steps,
         usage,
         meta: {
@@ -1166,6 +1165,7 @@ async function runWithLease(
           ...(changedOnce ? { changed: changedOnce } : {}),
           ...(recoverable ? { retrying: true } : {}),
           ...(recoverable ? { retryPlaceholder: !partial } : {}),
+          ...(preserved ? { interrupted: true } : {}),
         },
       },
       { silent: true },
