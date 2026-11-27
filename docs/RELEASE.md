@@ -282,10 +282,16 @@ gh pr ready <N> && gh pr merge <N> --merge
 #    app/pubspec.yaml    → 2.0.0-rc.1+NN
 #    ★ 但 tag 一直没切：rc.1 必须从**合完上面所有分支之后的 main HEAD** 切，
 #      不能拿改版本号那次提交切（那份代码不含 C1–C5 与复审修复，也就不是要验收的代码）。
+#    ★ 依赖锁版本：SDK 整族（pi-coding-agent / pi-agent-core / pi-ai / pi-codemode / pi-mcp /
+#      pi-telemetry / pi-tui）与 typebox 在 server/package.json 里**精确**锁定，与真机安装一致。
+#      仓库不提交 package-lock.json，写 `^` 会让 CI / 干净构建 / `npm i <tgz>` 拉到更新的 SDK
+#      （rc.1 时就是：本机与真机 1.2.0，CI 1.6.1）。SDK 自己对兄弟包写的也是 `^`，所以只锁
+#      pi-coding-agent 不够，会装出「1.2.0 + 兄弟包 1.6.1」的混搭。升级必须整族一起改，
+#      并重跑 `node tests/real-sdk-lanes.mjs` 与真机 4e。
 node scripts/check-consistency.mjs
 
 # 2. 全量门禁（rc.1 与 GA 各跑一次，结果贴进 release notes）
-cd server && node tests/all.mjs            # 期望 208/208
+cd server && node tests/all.mjs            # 期望 211/211（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试）
 cargo test --release --manifest-path ../native/orbis-desktop-win/Cargo.toml   # 期望 29/29
 cd .. && node scripts/check-style.mjs && node scripts/check-legacy.mjs --strict   && node scripts/check-spec-progress.mjs && node scripts/check-secrets.mjs   && node scripts/check-licenses.mjs --check
 cd server && node scripts/check-consistency.mjs && node scripts/check-capability-drift.mjs
@@ -298,7 +304,7 @@ cd server && node tests/perf-stall.mjs --impl=native    # 指标写进 release n
 node tools/desktop-parity.mjs                           # 必须「口径一致 ✅ / 0px」
 
 # 4. 真机验收门禁（**rc.1 必须全绿才允许切 GA**）
-#    docs/REAL-MACHINE-CHECKLIST.md → 4b 进程清理 / 4c 阶段 A / 4d 阶段 B
+#    docs/REAL-MACHINE-CHECKLIST.md → 4b 进程清理 / 4c 阶段 A / 4d 阶段 B / 4e 集群泳道（Talk / 复核 / 分档）
 #    重点三项：① 停机后无 orbis-desktop-win.exe 残留；② 连点连截 200 次 GDI 对象回到基线；
 #             ③ 多显示器负原点全屏截图区域正确
 #    另：#43 的 T6 护栏在真机上跑一次 401（应 1 次即停，不空转 3 轮）
