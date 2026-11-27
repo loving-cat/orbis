@@ -176,7 +176,11 @@ check(
   !botMsgs.some((m) => (m.text ?? '').includes('没有返回文本')),
 );
 const errCount = botMsgs.filter((m) => m.status === 'error').length;
-const recovered = botMsgs.some((m) => m.text?.includes('已自动重试'));
+// ★ 兜底重试补齐过只记 meta：正文里不该再有「已自动重试」那句尾巴（用户无感才是对的）
+check(
+  '中途重试不在正文里留痕迹',
+  !botMsgs.some((m) => /已自动重试|原模型首次没出内容/.test(m.text ?? '')),
+);
 check('报错消息不超过 1 条（模型偶发吐空，靠兜底+下一轮自愈）', errCount <= 1, `${errCount} 条`);
 check('成员确实产出了内容', memberMsgs.filter((m) => (m.text ?? '').trim().length > 10).length > 0);
 

@@ -1762,7 +1762,7 @@ await test('建会话：没设思考等级就不传（听 pi 的默认）', () =
 // ---------------------------------------------------------------------------
 // 上报回执（escalation.js）：该带的信息一样不能少
 // ---------------------------------------------------------------------------
-const { buildEscalationNote } = await import('../src/escalation.js');
+const { buildEscalationNote, buildEscalationSummary } = await import('../src/escalation.js');
 
 const noteStore = {
   getBot: (id) => (id === 'b1' ? { id: 'b1', name: '优化工程师' } : null),
@@ -1823,6 +1823,49 @@ await test('回执：查不到 bot 就用 id 兜底（别出现 undefined 的残
   const n = buildEscalationNote({ store: { getBot: () => null }, fromBotId: 'b_unknown', reason: '断了' });
   assert.match(n, /b_unknown/);
   assert.ok(!/undefined/.test(n));
+});
+
+// ---------------------------------------------------------------------------
+// 给人看的中断回执（buildEscalationSummary）：一行说清谁断、为何、谁接
+//
+// ★ 真机：以前房间里的消息直接用 `buildEscalationNote` 的全文，用户会看到
+//   600 字原任务、1/2/3 处理步骤、「不要悄悄把活接下」这些**写给 Bot 的提示词**。
+//   下面的断言是反向的：内部提示词一个字都不能出现在人类文案里。
+// ---------------------------------------------------------------------------
+await test('中断回执（人看）：谁断的 / 为何断 / 转给谁，全在一行里', () => {
+  const s = buildEscalationSummary({
+    store: noteStore, fromBotId: 'b1', hostName: '项目总管', reason: '心跳断了：600 秒没动静',
+  });
+  assert.match(s, /「优化工程师」/, '要写清是谁的活断了');
+  assert.match(s, /心跳断了：600 秒没动静/, '要给出原因摘要');
+  assert.match(s, /已转交「项目总管」重新处理/, '要告诉用户现在谁接');
+  assert.ok(!s.includes('\n'), '人看的回执必须是一行，不能把整段指令吐出来');
+});
+
+await test('中断回执（人看）：绝不磊内部提示词（原任务 / 步骤 / 不要悄悄把活接下）', () => {
+  const s = buildEscalationSummary({
+    store: noteStore, fromBotId: 'b1', hostName: '项目总管', reason: '超时',
+    task: '把三个季度的报表合成一份，用 xlsx 交回，验收标准是数字对得上',
+  });
+  for (const forbidden of ['不要悄悄把活接下', '请按这个顺序处理', '原任务：', '你自己上', '1. 先 @']) {
+    assert.ok(!s.includes(forbidden), `用户可见的回执里不能出现「${forbidden}」：${s}`);
+  }
+  assert.ok(s.length < 120, `回执要短（实际 ${s.length} 字）：${s}`);
+});
+
+await test('中断回执（人看）：超长原因只取一行短摘要，不把整堆日志倒进聊天窗', () => {
+  const noisy = `Traceback:\n${'at foo (bar.js:1)\n'.repeat(50)}`;
+  const s = buildEscalationSummary({ store: noteStore, fromBotId: 'b1', hostName: '项目总管', reason: noisy });
+  assert.ok(s.length < 120, `回执要截断（实际 ${s.length} 字）`);
+  assert.ok(!s.includes('\n'), '换行要被压成一行');
+  assert.match(s, /…/, '截断处给省略号，别看起来像完整原因');
+});
+
+await test('中断回执（人看）：没给接手名字也不能出现 undefined 残句', () => {
+  const s = buildEscalationSummary({ store: { getBot: () => null }, fromBotId: 'b_x', reason: '' });
+  assert.match(s, /b_x/);
+  assert.match(s, /已转交/, '至少要说清已经转交出去');
+  assert.ok(!/undefined|null/.test(s), `残句：${s}`);
 });
 
 

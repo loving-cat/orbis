@@ -262,6 +262,12 @@ await test('★ turn-executor 接线：message_end 记录 stopReason，收尾调
   assert.match(srcText, /max: skillBudget\.max/, '挑几条要用预算里的 max，不能再写死 5');
   assert.match(srcText, /maxChars: skillBudget\.maxChars/, '截断字数要用预算里的 maxChars');
   assert.equal(/selectSkillsFor\(library, task, \{ max: 5 \}\)/.test(srcText), false, '写死 5 的老写法必须消失');
+  // ★ 真机 UX：偶尔空回复被兜底重试补齐后，以前会往正文末尾拼一句
+  //   「_（原模型首次没出内容，已自动重试）_」—— 既违背「中途重试尽量无感」，
+  //   又会把这句痕迹写进后续上下文。现在只记日志与 meta。
+  assert.doesNotMatch(srcText, /原模型首次没出内容/, '不能再往正文里拼「已自动重试」的尾巴');
+  assert.doesNotMatch(srcText, /已自动重试）_/, '「已自动重试」正文必须消失');
+  assert.match(srcText, /emptyRecovered \? \{ emptyRecovered: true \}/, '兜底重试补齐过要记进 meta（界面可据此打点，不改正文）');
   // ★ 复审 P1：兜底已经补齐结论（emptyRecovered）时不能再挂"本轮被截断"
   assert.match(srcText, /if \(lengthNotice && !emptyRecovered\)/, 'LENGTH_NOTICE 要排除"已恢复出完整结论"');
   // ★ 复审 P1：明确的上游错误优先抛出（不先强压续答）

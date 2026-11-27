@@ -425,6 +425,39 @@ await test('FD-2 dispatch_bot 异步派活立刻返回，后台完成后交付�
   runner.runBotOnce = originalRunBotOnce;
 });
 
+await test('FD-2b 派活第 1 次非排队失败就退出：回执次数必须写 1，不能写死 3', async () => {
+  // 现场：`executeDelegatedRun` 里超时/终止在第一轮就 break，但上报时硬编码 `attempts: 3`，
+  // 于是用户看到自相矛盾的「（试了 3 次，不是排队问题，重试没用）」—— 它其实只跑了一次。
+  const chief = store.mainBot();
+  const worker = store.createBot({ name: '助理F' });
+  const dmChief = store.ensureDm(chief.id);
+  const runner = makeRunner();
+  let ran = 0;
+  runner.runBotOnce = async () => {
+    ran += 1;
+    // 非排队错误：planDispatchRetry 会立刻说「不是排队问题，重试没用」
+    return { ok: false, error: '被用户终止', ms: 5 };
+  };
+  const escalated = [];
+  runner.escalate = async (args) => {
+    escalated.push(args);
+    return { hostId: chief.id, roomId: dmChief.id };
+  };
+
+  const tool = buildCommonTools({
+    runner, roomId: dmChief.id, botId: chief.id, isMain: true,
+  }).find((t) => t.name === 'message_bot');
+  assert.ok(tool, '必须注册 message_bot 工具');
+
+  const res = await tool.execute('call_mb', { botId: worker.id, task: '整理一份总结' });
+  assert.equal(ran, 1, '非排队错误只该跑 1 次');
+  assert.equal(escalated.length, 1, '失败要上报一次');
+  assert.equal(escalated[0].attempts, 1, '上报的次数必须是实际次数 1，不能写死 3');
+  const text = String(res?.content?.[0]?.text ?? '');
+  assert.match(text, /试了 1 次/, `工具回执要如实写次数：${text}`);
+  assert.ok(!/3 次/.test(text), `不能出现写死的「3 次」：${text}`);
+});
+
 await test('FD-4 群聊忙时问负责人进度（负责人没在跑）：走旁路问答，不把问题塞给在跑的成员', async () => {
   const lead = store.createBot({ name: '主管E', persona: '统筹' });
   const a = store.createBot({ name: '执行E1', persona: '写代码' });

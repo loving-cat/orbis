@@ -47,12 +47,16 @@ export function createEscalator({ store, run, onError = () => {} }) {
       store, fromBotId, reason, task, attempts, why,
       delegateOnly: isDelegatingLead(store.getRoom(inRoom), host),
     });
+    // ★ 两条文案必须分开（真机）：以前同一份 `note` 既写进用户能看见的房间消息，
+    //   又当 prompt 喂给模型 —— 于是写给 Bot 的内部指令（600 字原任务、处理步骤、
+    //   「不要悄悄把活接下…」）原样弹在聊天窗口里。人只看“谁断了 / 为什么 / 谁接”。
+    const summary = buildEscalationSummary({ store, fromBotId, hostName: host.name, reason });
     store.appendMessage({
       roomId: inRoom,
       authorType: 'system',
       authorId: host.id,
       authorName: '中断回执',
-      text: note,
+      text: summary,
       status: 'done',
       meta: { via: 'escalate', aboutBotId: fromBotId },
     });
@@ -93,4 +97,31 @@ export function buildEscalationNote({ store, fromBotId, reason, task = '', attem
     '★ 不要悄悄把活接下：用户会以为全员都交付了，掉链子的事故就被掩盖了。',
   );
   return lines.join('\n');
+}
+
+/**
+ * 构造**给人看**的中断回执（一行）。
+ *
+ * ★ 为什么必须和 `buildEscalationNote` 拆开：那份 note 是写给主控/负责人看的内部指令
+ *   （原任务全文、1/2/3 处理步骤、「不要悄悄把活接下」），以前它同时被当成房间消息
+ *   写进用户能看见的群/私聊 —— 用户会直接看到一整段写给 Bot 的提示词，
+ *   看上去像系统故障，也看不出“现在到底谁在处理”。
+ *
+ *   人只需要三个事实：谁的活断了、为什么断（压成一行短原因）、现在转给谁。
+ *   具体怎么重派是给模型看的，不进正文。
+ *
+ * @param {object} p
+ * @param {object} p.store
+ * @param {string} p.fromBotId 活断在谁身上
+ * @param {string} [p.hostName] 接手的人
+ * @param {string} [p.reason] 中断原因（可含长文本，这里只取一行短摘要）
+ * @returns {string} 一行人类可读的状态提示
+ */
+export function buildEscalationSummary({ store, fromBotId, hostName = '', reason = '' }) {
+  const fromName = store?.getBot?.(fromBotId)?.name ?? fromBotId;
+  // 压成一行：换行/连续空白折叠，超过 60 字截断 —— 完整原因在模型那边的 note 里
+  const flat = String(reason ?? '').replace(/\s+/g, ' ').trim();
+  const short = flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+  const host = String(hostName ?? '').trim();
+  return `「${fromName}」的任务中断${short ? `（${short}）` : ''}，已转交${host ? `「${host}」` : '给负责人'}重新处理。`;
 }
