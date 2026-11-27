@@ -57,7 +57,11 @@ function statSize(file) {
  * 按全路径比会把活会话误判成孤儿 —— 那才是最坏的结果。
  */
 function sessionKeyOf(file) {
-  return path.basename(String(file));
+  // ★ state.json 里存的是**写入时那台机器**的绝对路径：Windows 写的反斜杠路径
+  //   在 Linux/macOS 上 `path.basename` 切不开（POSIX 只认 `/`），
+  //   于是活会话被当成孤儿挪走。先把反斜杠归一成 `/` 再取最后一段。
+  const normalized = String(file ?? '').split(String.fromCharCode(92)).join('/');
+  return normalized.slice(normalized.lastIndexOf('/') + 1);
 }
 
 /**
