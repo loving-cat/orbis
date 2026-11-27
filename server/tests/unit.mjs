@@ -862,6 +862,34 @@ await test('ref: 同一个同事重复私信 → 去重，不出现两个同名�
 // ---------------------------------------------------------------------------
 const { buildAppendSystemPrompt } = await import('../src/system-prompt.js');
 
+await test('prompt: 多人部门负责人不注入「简单的事自己做，别派」（派活边界只由 group-prompt 说）', () => {
+  const deptLead = buildAppendSystemPrompt({ persona: '你是负责人' }, { isDeptLead: true }).join(String.fromCharCode(10));
+  assert.ok(!deptLead.includes('这件事要不要两个人在同一时间干'), '负责人的系统提示不能再和群聊派活规则打架');
+  assert.ok(!deptLead.includes('简单的事自己做，别派'));
+  // 主控 / 普通成员保持原样
+  for (const opts of [{}, { isDeptLead: false }]) {
+    const other = buildAppendSystemPrompt({ persona: '你是执行者' }, opts).join(String.fromCharCode(10));
+    assert.ok(other.includes('这件事要不要两个人在同一时间干'), '非负责人那段必须还在');
+  }
+});
+
+await test('prompt: 多人部门负责人的派活边界 + git 提交纪律写死在群聊提示里', async () => {
+  const { composeGroupPrompt } = await import('../src/group-prompt.js');
+  const room = { id: 'r_x', name: '测试部门', kind: 'group', botIds: ['b_lead', 'b_m1', 'b_m2'], leadBotId: 'b_lead' };
+  const lead = { id: 'b_lead', name: '负责人', role: 'lead' };
+  const m1 = { id: 'b_m1', name: '开发', role: 'member' };
+  const m2 = { id: 'b_m2', name: '测试', role: 'member' };
+  const prompt = composeGroupPrompt(room, lead, '', {
+    isLead: true, members: [m2, m1], leadId: lead.id,
+  });
+  assert.match(prompt, /哪怕只需 1 个人/, '默认派给专职成员（哪怕只需一个人）');
+  assert.match(prompt, /派给对应的专职成员/, '默认动作是派人，不是自己上');
+  assert.match(prompt, /不得擅自 `git commit`/, 'git 提交必须先问用户');
+  assert.match(prompt, /留在工作区等验收/, '要说清改动留在工作区');
+  // 负责人仍然"有手"：兜底路径不能被写没
+  assert.match(prompt, /成员失败无人可接时的兜底/);
+});
+
 await test('prompt: 人设排在最前面', () => {
   const p = buildAppendSystemPrompt({ persona: '你是资深设计师' });
   assert.equal(p[0], '你是资深设计师');
