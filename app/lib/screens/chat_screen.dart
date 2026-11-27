@@ -71,6 +71,14 @@ bool isGhostThinkingPlaceholder(Msg m) =>
 List<Msg> displayOrderMsgs(List<Msg> msgs) =>
     msgs.where((m) => !isGhostThinkingPlaceholder(m)).toList(growable: false);
 
+/// 终止的气泡要不要整条隐藏。
+///
+/// ★ 只有**彻底没出正文**的空壳才隐藏（那是用户按 Esc 留下的占位）。
+///   一旦它已经吐出过正文（服务端会在打断时把正文保住并标 `meta.interrupted`），
+///   这条就是用户唯一能看到的产物 —— 绝不能因为 `status: 'aborted'` 就整条抹掉
+///   （真机：用户补一句话，Bot 刚写的一大段回复当场消失）。
+bool hidesAbortedMessage(Msg m) => m.isAborted && m.text.trim().isEmpty;
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
@@ -3054,7 +3062,7 @@ class _MessageRow extends StatelessWidget {
     //   跟 pi agent 里的体验对齐：终止就是终止，聊天记录里不留痕。
     //   不画"已按你的要求终止"的灰气泡 —— 看起来像程序出错了，
     //   而那是用户自己的操作，不需要被告知。
-    if (msg.isAborted) return const SizedBox.shrink();
+    if (hidesAbortedMessage(msg)) return const SizedBox.shrink();
 
     // ★ 系统消息（叫停回执 / 调度提示 / 中断回执 / 等待压缩提示 / 失败回执）单独画。
     //   `authorType == 'system'` 的消息**不是任何 Bot 说的** —— 套上 Bot 气泡就会拿

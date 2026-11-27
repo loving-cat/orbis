@@ -23,6 +23,8 @@ class StreamingMarkdownView extends StatefulWidget {
     this.onLinkTap,
     this.linkColor,
     this.mentionOf,
+    /// 流式输出期间也允许拖选复制（真机反馈：没出完就选不了，想贴一半给同事做不到）
+    this.selectable = true,
     @visibleForTesting this.forcePacing = false,
   });
 
@@ -35,6 +37,7 @@ class StreamingMarkdownView extends StatefulWidget {
   final void Function(String url)? onLinkTap;
   final Color? linkColor;
   final MentionInfo? Function(String name)? mentionOf;
+  final bool selectable;
   final bool forcePacing;
 
   @visibleForTesting
@@ -189,7 +192,7 @@ class _StreamingMarkdownViewState extends State<StreamingMarkdownView>
     if (pulse == null || !_shouldPace) {
       return MdText(
         visible,
-        selectable: false,
+        selectable: widget.selectable,
         style: widget.style,
         mono: widget.mono,
         mentions: widget.mentions,
@@ -206,7 +209,7 @@ class _StreamingMarkdownViewState extends State<StreamingMarkdownView>
     //   MdText 内部的末尾光标叶节点，正文一帧都不重建。
     return MdText(
       visible,
-      selectable: false,
+      selectable: widget.selectable,
       style: widget.style,
       mono: widget.mono,
       mentions: widget.mentions,
