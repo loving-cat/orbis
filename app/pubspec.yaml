@@ -1,7 +1,7 @@
 name: pi_bot
 description: "Orbis 手机端：连自己的 pi agent，群聊、多 Bot、流式输出。"
 publish_to: 'none'
-version: 2.0.0-rc.1+26
+version: 2.0.0-rc.2+27
 
 environment:
   sdk: ^3.13.0
