@@ -70,3 +70,36 @@ test('拿不到占用时不猜', () => {
   const plan = PiRunner.planCompaction({ percent: null, threshold: 40 });
   assert.equal(plan.compact, false);
 });
+// ---------------------------------------------------------------------------
+// 强制压缩（force）与「高水位补盲」
+//
+// 真机：128k 窗口的模型上一轮压缩过之后 `getContextUsage().percent` 是 null，
+// 按阈值判会直接放过；而"只数消息正文"的粗估把 117k/128k 报成 45%。
+// 于是会话一路顶到 97% 被截断（stopReason: 'length'），谁都没压过。
+// ---------------------------------------------------------------------------
+
+test('★ force 跳过阈值判定（上下文确实撑满但 percent 为 null 时也要能压）', () => {
+  const plan = PiRunner.planCompaction({ percent: 10, threshold: 60, force: true });
+  assert.equal(plan.compact, true);
+  assert.match(plan.why, /强制压缩/);
+
+  const fromNull = PiRunner.planCompaction({ percent: null, threshold: 60, force: true });
+  assert.equal(fromNull.compact, true, '拿不到占用也要能强制压');
+});
+
+test('force 也要守用户意图与状态：关掉自动压缩 / 正在压缩时仍然不压', () => {
+  assert.equal(PiRunner.planCompaction({ force: true, autoCompact: false }).compact, false);
+  assert.equal(PiRunner.planCompaction({ force: true, compacting: true }).compact, false);
+});
+
+test('force 跳过失败冷却（上一轮压缩刚失败过，这一轮被截断时仍要重试压）', () => {
+  const now = 1_000_000;
+  const cooling = PiRunner.planCompaction({
+    percent: 95, threshold: 60, now, retryAfter: now + 30_000, force: false,
+  });
+  assert.equal(cooling.compact, false, '普通路径要尊重冷却');
+  const forced = PiRunner.planCompaction({
+    percent: 95, threshold: 60, now, retryAfter: now + 30_000, force: true,
+  });
+  assert.equal(forced.compact, true, '强制路径不受冷却限制');
+});

@@ -334,3 +334,142 @@ export function readContext(session) {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// 小上下文窗口（≤ 128k）的补盲：占用估计 + 截断判定
+//
+// ★ 真机复现（`nemotron-3.5-super-vl`，128k 窗口）：上一轮压缩过一次之后
+//   `getContextUsage().percent` 是 **null**（还没有新的 assistant usage），
+//   于是 `compactIfNeeded` 直接放过；界面按 `chars/4` 粗估只显示 45%，
+//   而老会话残留的 5 篇技能全文 + 工具定义 + 历史摘要其实已占 ~117k。
+//   轮内连调 3 次工具后第 4 次请求就到了 124,339 / 128,000（97.1%），
+//   模型返回 `output: 1, stopReason: 'length'`、正文为空 —— 静默中断。
+//
+//   所以这里补两件事：一个**保守**的占用估计（把固定开销算进去），
+//   和一个纯的"这一轮是不是被长度上限截断了"的判定。
+// ---------------------------------------------------------------------------
+
+/** ≤ 这个值就算「小上下文窗口」：压缩与技能注入都要收紧。 */
+export const SMALL_CONTEXT_WINDOW = 128_000;
+
+/** 被长度上限截断后追加在正文末尾的提示（用户必须知道这不是完整结论）。 */
+export const LENGTH_NOTICE =
+  '\n\n_（本轮输出因达到模型上下文/长度上限被中断，建议重置当前会话或切换更大上下文模型后重试）_';
+
+/** 最近一条 assistant 消息的提示 token（input + cacheRead）。拿不到返回 null。 */
+export function latestPromptTokens(session) {
+  try {
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m?.role !== 'assistant' || !m.usage) continue;
+      if (m.stopReason === 'aborted' || m.stopReason === 'error') continue;
+      const u = m.usage;
+      const input = Number(u.input ?? u.inputTokens ?? u.input_tokens ?? 0) || 0;
+      const cacheRead = Number(u.cacheRead ?? u.cache_read_input_tokens ?? 0) || 0;
+      const total = input + cacheRead;
+      if (Number.isFinite(total) && total > 0) return total;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 保守的上下文占用（0..100）。拿不到窗口时返回 null。
+ *
+ * 口径：`fixedOverheadOf`（system prompt + 工具定义，每轮都发）+ 逐条非 system
+ * 消息的 `estimateTokens`（pi 的 chars/4）。**故意偏保守**：
+ *   · 工具定义与技能注入占的是一大块，界面那个只数消息正文的估算法会漏掉它
+ *     （117k 被显示成 45% 就是漏了这块）；
+ *   · 真 window 未知时不做猜测（返回 null），不拿 0 假装"很空"。
+ */
+/**
+ * 单条消息的**保守** token 估计。
+ *
+ * ★ 为什么不用现成的 `estimateTokens`（chars/4）：
+ *   中文一个字约等于 1 token，而 chars/4 会把它算成 0.25 —— 中文会话的占用
+ *   会被**低估到四分之一**，正是真机上「实际 117k、界面显示 45%」的来源。
+ *   这里按「CJK/全角按 1 token/字 + 其余按 4 字符/token」，再与框架估计取较大值，
+ *   宁可高估（提前压缩）也不要低估（撑爆后被截断）。
+ */
+function conservativeMessageTokens(message) {
+  const base = estimateTokens(message);
+  try {
+    const parts = Array.isArray(message?.content) ? message.content : [message?.content];
+    const text = parts
+      .map((p) => (typeof p === 'string' ? p : (typeof p?.text === 'string' ? p.text : '')))
+      .join('\n');
+    if (!text) return base;
+    const cjk = (text.match(/[㐀-鿿豈-﫿＀-￯　-〿]/g) ?? []).length;
+    const rest = text.length - cjk;
+    return Math.max(base, Math.ceil(cjk + rest / 4));
+  } catch {
+    return base;
+  }
+}
+
+export function estimateUsagePercent(session) {
+  try {
+    const cw = Number(session?.model?.contextWindow ?? 0);
+    if (!Number.isFinite(cw) || cw <= 0) return null;
+    const overhead = fixedOverheadOf(session);
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    let tokens = overhead;
+    for (const m of messages) {
+      // system 已经在 fixedOverheadOf 里算过，不重复计
+      if (m?.role === 'system') continue;
+      tokens += conservativeMessageTokens(m);
+    }
+    // ★ 一条数据都没有（没有消息、也没有 system/工具开销）时返回 null：
+    //   拿 0% 冒充"很空"会把真实读数（例如 usage.percent = 90）覆盖掉，
+    //   压缩反而被跳过 —— 这正是 abort-placeholder 那条回归抓到的坑。
+    if (!messages.length && !overhead) return null;
+    return Math.min(100, Math.max(0, (tokens / cw) * 100));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 这一轮是不是被「长度上限」截断了（纯判定）。
+ *
+ * 典型现场：工具调用前模型顺口吐了一句过渡话（进 `committed`），工具回来后
+ * 剩下 3% 窗口，模型只吐了 1 个 thinking token 就被截断
+ * （`stopReason: 'length'`、正文为空）。这时 `render()` 非空，
+ * 旧代码直接把那句过渡话标成 `done` —— 不报错、不压缩、不重试。
+ *
+ * @param {object} p
+ * @param {string|null} p.stopReason
+ * @param {boolean} p.hadText 最后一条 assistant 是否有正文
+ * @param {number|null} [p.promptTokens] 最近一次请求的 input + cacheRead
+ * @param {number} [p.contextWindow]
+ * @param {number|null} [p.percent] `getContextUsage().percent`（可能为 null）
+ * @param {boolean} [p.cancelled]
+ * @param {boolean} [p.stepCapHit]
+ * @returns {{truncated:boolean, nearLimit:boolean, promptTokens:number|null, percent:number|null}}
+ */
+export function lengthTruncationOf({
+  stopReason = null,
+  hadText = false,
+  promptTokens = null,
+  contextWindow = 0,
+  percent = null,
+  cancelled = false,
+  stepCapHit = false,
+  timedOut = false,
+} = {}) {
+  const cw = Number(contextWindow);
+  const tokens = Number.isFinite(Number(promptTokens)) && Number(promptTokens) > 0
+    ? Number(promptTokens)
+    : null;
+  const byTokens = Number.isFinite(cw) && cw > 0 && tokens != null ? (tokens / cw) * 100 : null;
+  const usage = typeof percent === 'number' && Number.isFinite(percent) ? percent : byTokens;
+  const nearLimit = (tokens != null && Number.isFinite(cw) && cw > 0 && tokens >= cw * 0.85)
+    || (usage != null && usage >= 85);
+  // 取消 / 步数上限 / 请求超时都属于"本来就要停"，不该被当成需要抢救的截断
+  // （超时被 abort 后 stopReason 也会是 'length' 或空，不能拿它去强压续答）
+  const truncated = stopReason === 'length' && !hadText && !cancelled && !stepCapHit && !timedOut;
+  return { truncated, nearLimit, promptTokens: tokens, percent: usage };
+}

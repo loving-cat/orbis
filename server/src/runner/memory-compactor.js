@@ -15,6 +15,8 @@ import {
   capRecentTokens,
   estimateTokenRatio,
   fixedOverheadOf,
+  estimateUsagePercent,
+  SMALL_CONTEXT_WINDOW,
 } from '../context-budget.js';
 import { buildMemoryDigest, buildSummarizePrompt, memoryProgress } from '../memory-digest.js';
 import { sanitizeMemoryText } from '../memory-sanitize.js';
@@ -41,9 +43,20 @@ export function planCompaction({
   retryAfter = 0,
   compacting = false,
   autoCompact = true,
+  /**
+   * 强制压缩：跳过"未到阈值"与失败冷却。
+   *
+   * ★ 什么时候需要它：这一轮已经被模型以 `stopReason: 'length'` 截断过 ——
+   *   说明上下文确实撑满了，可 `getContextUsage().percent` 可能还是 null
+   *   （刚压缩过、还没有新的 assistant usage）。这时候按阈值判会把"撑爆"
+   *   当成"还没到线"直接放过，续答必然再撞一次同样的墙。
+   *   `autoCompact === false` / `session.isCompacting` 仍然拦（那是用户意图与状态）。
+   */
+  force = false,
 } = {}) {
   if (!autoCompact) return { compact: false, why: '自动压缩已关闭' };
   if (compacting) return { compact: false, why: '已在压缩中' };
+  if (force) return { compact: true, why: '强制压缩（本轮被长度上限截断）' };
   if (typeof percent !== 'number') return { compact: false, why: '拿不到上下文占用' };
   if (percent < threshold) return { compact: false, why: `未到阈值 ${threshold}%` };
   if (retryAfter > now) {
@@ -221,19 +234,38 @@ async function summarizeMemoryNow(runner, roomId, botId, { force = false, lease 
 }
 
 /** 主动压缩：上下文到达阈值即收成摘要（成功后清理已注入技能缓存标记） */
-export async function compactIfNeeded(runner, entry, bot, roomId = null, { signal = null, deadline = 0 } = {}) {
+export async function compactIfNeeded(runner, entry, bot, roomId = null, {
+  signal = null, deadline = 0, force = false,
+} = {}) {
   const session = entry?.session;
   if (!session) return { compacted: false, failed: false, attempts: 0, why: '没有会话' };
 
   const usage = session.getContextUsage?.();
   const threshold = Math.min(0.95, Math.max(0.2, runner.config.compactAtPercent || 0.6)) * 100;
   const planner = runner?.constructor?.planCompaction ?? planCompaction;
+  const cw = Number(session?.model?.contextWindow ?? 0);
+  const rawPercent = typeof usage?.percent === 'number' ? usage.percent : null;
+  // ★ 高水位补盲（真机教训）：
+  //   1) 刚压缩过时 `getContextUsage().percent` 是 null —— 以前直接放过；
+  //   2) 小上下文模型（≤128k）里，技能全文 + 工具定义是一大块，只数消息正文
+  //      的粗估会把 117k / 128k 报成 45%。
+  //   所以「拿不到真实占用」或「小窗口」时，用 fixedOverheadOf + 消息估算兜底。
+  // ★ 补盲只**往上抬**：估算器可能比真实读数高（中文按 1 token/字、把工具定义算进去），
+  //   取两者较大值；但绝不能拿一个更小的估算值盖掉可信的真实读数
+  //   （那会让本该压缩的会话被放过 —— abort-placeholder 的回归就是这类）。
+  const estimated = (rawPercent == null || (cw > 0 && cw <= SMALL_CONTEXT_WINDOW))
+    ? estimateUsagePercent(session)
+    : null;
+  const percent = rawPercent == null
+    ? estimated
+    : (typeof estimated === 'number' ? Math.max(rawPercent, estimated) : rawPercent);
   const plan = planner({
-    percent: typeof usage?.percent === 'number' ? usage.percent : null,
+    percent,
     threshold,
     retryAfter: entry.compactRetryAfter ?? 0,
     compacting: Boolean(session.isCompacting),
     autoCompact: runner.config.autoCompact,
+    force,
   });
   if (!plan.compact) {
     if (entry.compactRetryAfter > Date.now()) {
