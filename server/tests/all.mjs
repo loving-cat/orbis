@@ -111,6 +111,8 @@ const TESTS = [
   'group-cursor',
   'abort-placeholder',
   'reap-orphan-streaming',
+  // 孤儿文件清理（orbis prune-orphans）：默认预览、apply 挪进备份、有引用的不碰
+  'prune-orphans',
   'data-migration',
   'server-mode',
   'model-health',
@@ -176,6 +178,7 @@ const TESTS = [
   'config-no-dirs',
   'turn-step-settle',
   'group-round-dispatch',
+  'compaction-wait',
   'diagnostics-log',
   'group-stream-order',
   'talk-failure-diagnostics',

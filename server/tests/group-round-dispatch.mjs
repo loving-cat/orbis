@@ -21,7 +21,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f));
-const { dispatchGroupRound } = await import(src('runner/group-orchestrator.js'));
+const { dispatchGroupRound, interruptRoundForUser } = await import(src('runner/group-orchestrator.js'));
 
 const results = [];
 let tests = Promise.resolve();
@@ -117,6 +117,45 @@ test('★ 旧会话 80ms 后才释放 busy → 新消息等它退出再跑，不
   assert.ok(ran.length >= 1, '旧会话退出后要真的跑');
   assert.equal(ran[0].text, '这条要等旧会话退出', '先跑的是第一条真实消息');
   assert.equal(runner.roundLocks.has(roomId), false, '跑完要放锁（含异常路径）');
+});
+
+test('★ 插话打断流式气泡：已吐正文保留（含 liveDraft 未落库那截），空壳才标 aborted', () => {
+  const { runner, roomId, messages } = makeRunner({ busy: true });
+  // 两个 bot 各一条 streaming：一个已经写了正文（最后一句还在 liveDraft 里没落库），一个只有空壳
+  runner.sessions.set(`${roomId}:b_full`, {
+    session: {}, busy: true, turnController: { abort() {} }, liveDraft: () => '最后刚吐出来的一句',
+  });
+  runner.sessions.set(`${roomId}:b_empty`, {
+    session: {}, busy: true, turnController: { abort() {} }, liveDraft: () => '',
+  });
+  const full = {
+    id: 'm_full', roomId, authorType: 'bot', authorId: 'b_full', authorName: 'A',
+    text: '已经写出来的正文', status: 'streaming', steps: [{ tool: 'read', status: 'running' }],
+  };
+  const empty = {
+    id: 'm_empty', roomId, authorType: 'bot', authorId: 'b_empty', authorName: 'B',
+    text: '', status: 'streaming', steps: [{ tool: 'read', status: 'running' }],
+  };
+  messages.push(full, empty);
+
+  interruptRoundForUser(runner, roomId);
+
+  assert.equal(full.status, 'done', '已吐正文的气泡不许被标成 aborted（App 会把 aborted 整条藏掉）');
+  assert.equal(full.meta?.interrupted, true, '要标明这是被打断的结论');
+  assert.equal(full.text, '最后刚吐出来的一句', 'liveDraft 里未落库的最后几个字也要保住');
+  assert.equal(full.error, null, '保留正文时不该挂「已终止」的红字');
+  assert.equal(full.steps[0].status, 'error', '在跑的工具步骤要收尾，不能一直转');
+
+  assert.equal(empty.status, 'aborted', '空壳照旧标 aborted（App 端隐藏）');
+});
+
+test('★ 打断保留正文：另外两条路径（abortReplace / 收尾 catch）也守住了', () => {
+  const dl = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'runner', 'duplex-lane.js'), 'utf8');
+  assert.match(dl, /interrupted: true/, 'abortReplace 要把已吐正文保住并标 interrupted');
+  assert.match(dl, /entry\.liveDraft/, '要从 liveDraft 取最后未落库的那截');
+  const te = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'runner', 'turn-executor.js'), 'utf8');
+  assert.match(te, /const preserved =/, '收尾 catch 要认已保留的正文');
+  assert.match(te, /preserved \? 'done'/, '已保留正文时不许覆写回 aborted');
 });
 
 test('★ 旁路 Talk：上游 AbortError 必须标 error（不能当用户取消整条藏掉）', () => {

@@ -291,12 +291,13 @@ gh pr ready <N> && gh pr merge <N> --merge
 node scripts/check-consistency.mjs
 
 # 2. 全量门禁（rc.1 与 GA 各跑一次，结果贴进 release notes）
-cd server && node tests/all.mjs            # 期望 212/212（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试、
+cd server && node tests/all.mjs            # 期望 214/214（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试、
+#            compaction-wait 压缩期间续跑、
 #            reap-orphan-streaming 孤儿房间回收）
 cargo test --release --manifest-path ../native/orbis-desktop-win/Cargo.toml   # 期望 29/29
 cd .. && node scripts/check-style.mjs && node scripts/check-legacy.mjs --strict   && node scripts/check-spec-progress.mjs && node scripts/check-secrets.mjs   && node scripts/check-licenses.mjs --check
 cd server && node scripts/check-consistency.mjs && node scripts/check-capability-drift.mjs
-cd ../app && flutter analyze && flutter test        # 期望 1091 通过 / 3 跳过
+cd ../app && flutter analyze && flutter test        # 期望 1101 通过 / 3 跳过
 
 # 3. 原生助手产物（阶段 B：常驻 serve + 原生截图）
 powershell -File scripts/build-desktop-win.ps1          # → resources/orbis-desktop-win.exe + .sha256
@@ -365,6 +366,29 @@ orbis migrate             # 只复制、不删除
 
 跳过 1.7.1 直接装 2.0 也能起来，但要自己记得跑迁移；否则界面是空的
 （旧数据还在原处，只是 2.0 不认那个目录）。
+
+### `orbis prune-orphans`：清掉孤儿房间 / 会话文件
+
+删房间时早期版本只删索引不删文件，于是磁盘上会留一批「`state.json` 里已经没有、
+但文件还在」的残骸（`rooms/<id>.json`、`sessions/*.jsonl`）。它们不出现在界面上，
+用户也删不掉，只会让备份变大。
+
+```bash
+orbis prune-orphans                  # 只列出会清什么（默认，不动文件）
+orbis prune-orphans --older-than 7d  # 只清 7 天前就没动过的
+orbis prune-orphans --apply          # 真的挪走
+```
+
+三条硬规矩：
+
+- **默认不写盘**：先看清单再决定，比事后从备份里找回便宜；
+- **`--apply` 不删除，是挪到 `<数据目录>/orphans-backup-<时间戳>/`**：同盘 rename，
+  可逆、不额外占空间，确认后自己删那个目录；
+- **判据只有「`state.json` 里有没有它」**：活房间、活会话一个都不碰。会话按**文件名**
+  比对（数据目录改过名 / 迁移过的机器上 state 存的是旧绝对路径）。
+
+启动时只做**收尾**（把孤儿文件里卡在 streaming 的消息改成「已中断」，见 `store.js`
+的 `#reapOrphanRoomFiles`），**不删文件** —— 删数据必须由用户显式触发。
 
 ### `orbis migrate` 的细节
 

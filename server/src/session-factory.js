@@ -349,6 +349,8 @@ export function createSessionBuilder({
         : '',
 
       modelLines: !isolatedLane && isChief ? modelCatalogSection(menuEntries(modelGroups ?? undefined), health) : '',
+      // 多人部门负责人：不注入「简单的事自己做，别派」（派活边界由 group-prompt 说）
+      isDeptLead,
     });
 
     /**

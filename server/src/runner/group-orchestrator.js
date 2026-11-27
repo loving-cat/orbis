@@ -84,18 +84,18 @@ export function interruptRoundForUser(runner, roomId) {
     for (const msg of runner.store.listMessages(roomId, { limit: 200 })) {
       if (msg.status !== 'streaming') continue;
       if (!botIds.includes(msg.authorId)) continue;
-      runner.store.updateMessage(
-        roomId,
-        msg.id,
-        {
-          status: 'aborted',
-          error: '已按你的要求终止',
-          steps: (msg.steps ?? []).map((s) =>
-            s?.status === 'running' ? { ...s, status: 'error', error: '已终止' } : s,
-          ),
-        },
-        { silent: false },
+      const steps = (msg.steps ?? []).map((s) =>
+        s?.status === 'running' ? { ...s, status: 'error', error: '已终止' } : s,
       );
+      // ★ 已经吐出来的正文不许跟着气泡一起消失（真机：用户插话后整条回复当场不见）。
+      //   从会话拿 liveDraft：pushDelta 有 80ms 节流，最后几个字可能还没落库。
+      const lane = [...runner.sessions].find(([key]) =>
+        key.startsWith(`${roomId}:`) && baseBotIdOfKey(roomId, key) === msg.authorId)?.[1] ?? null;
+      const draft = typeof lane?.liveDraft === 'function' ? lane.liveDraft() : '';
+      const savedText = String(draft || msg.text || '').trim();
+      runner.store.updateMessage(roomId, msg.id, savedText
+        ? { text: savedText, status: 'done', error: null, steps, meta: { ...(msg.meta ?? {}), interrupted: true } }
+        : { status: 'aborted', error: '已按你的要求终止', steps }, { silent: false });
     }
     for (const id of botIds) {
       runner.bus.emit('event', { t: 'typing', roomId, botId: id, active: false });
@@ -523,7 +523,75 @@ export async function executeGroupRound(
     }
     if (plan.kind === 'interrupt' || plan.kind === 'queue') {
       const entry = runner.sessions.get(sessionKey(roomId, bot.id));
-      if (plan.kind === 'interrupt' && entry?.session) {
+      /**
+       * ★ 压缩期间追发消息**必须等，不能改叫停**（Mac 实机复现）。
+       *
+       * 现场：Bot 正在 `compactIfNeeded`（649k 上下文要 30~60s，`entry.busy &&
+       * `entry.compactingOnly`）。用户补发一条 → 旧轮被 abort、新轮入队；新轮跑到这里时
+       * 压缩还在跑，旧代码走 `plan.kind === 'interrupt'` 对**正在压缩的会话** `steer()`，
+       * 写一句「已让 XXX 停下，按你的新要求重来」就 `continue` 结束本轮。而压缩结束时
+       * `memory-compactor` 的 finally 会 `session.abort()` —— 刚 steer 进去的新要求连同这一轮
+       * 一起没了，用户必须人工重发。
+       *
+       * 所以：压缩期间**绝不调 steer / followUp**，发一条系统提示 → 轮询等压缩完 →
+       * 不 `continue`，落到下面正常派发，用压缩后的干净上下文直接跑用户最新要求。
+       */
+      const waitingCompaction = entry?.compactingOnly === true;
+      if (waitingCompaction) {
+        // 已经有一条更新的用户消息把这一轮顶掉了：连提示都不发，直接让位
+        if (stale() || runner.aborting.has(roomId)) {
+          log(`【${room.name}】${bot.name} 压缩等待还没开始就被更新的消息/终止操作接管 → 本次不派`);
+          continue;
+        }
+        // 与压缩自己的 5 分钟超时对齐；config 里配得更长就以它为准
+        const waitMs = Math.max(Number(runner.config.groupBusyWaitMs) || 0, 5 * 60 * 1000);
+        const waitDeadline = Date.now() + waitMs;
+        runner.store.appendMessage(
+          {
+            roomId,
+            authorType: 'system',
+            authorName: '系统提示',
+            text: `${bot.name} 正在整理上下文，压缩完成后会自动按你的新要求继续，无需重复发送。`,
+            status: 'done',
+            // ★ 不填 authorId：这条不是 Bot 本人说的（App 靠 authorType 分辨）
+            meta: { via: 'waiting_compaction', botId: bot.id, fromId: item.fromId ?? null },
+          },
+          { beforeStreaming: true },
+        );
+        log(
+          `【${room.name}】${bot.name} 正在压缩上下文 → 等它压完再派（最多 ${Math.round(waitMs / 1000)}s）`,
+        );
+        let superseded = false;
+        while (
+          (entry.compactingOnly || runner.isBusy(roomId, bot.id)) && Date.now() < waitDeadline
+        ) {
+          // 期间用户又插了一句 / 整轮被终止：立刻让出，不抢跑
+          if (stale() || runner.aborting.has(roomId)) {
+            superseded = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        // 循环里没抓到（例如压缩恰好在检查那一瞬间结束）也要再确认一次
+        if (!superseded && (stale() || runner.aborting.has(roomId))) superseded = true;
+        if (superseded) {
+          log(`【${room.name}】${bot.name} 压缩等待被更新的消息/终止操作接管 → 本次不派`);
+          continue;
+        }
+        if (entry.compactingOnly || runner.isBusy(roomId, bot.id)) {
+          log(`【${room.name}】${bot.name} 压缩后仍忙（超过 ${Math.round(waitMs / 1000)}s）→ 上报`);
+          runner.escalate({
+            roomId,
+            fromBotId: bot.id,
+            reason: `要派给${bot.name}的活等了 ${Math.round(waitMs / 1000)} 秒仍在压缩/忙，没能派出去`,
+            prefer: 'lead',
+          }).catch((err) => log('上报失败：', err?.message || err));
+          continue;
+        }
+        // ★ 不 continue：压缩完、忙态已释放 → 落到下面正常派发
+        log(`【${room.name}】${bot.name} 压缩完成 → 接着派发用户的新要求`);
+      }
+      if (!waitingCompaction && plan.kind === 'interrupt' && entry?.session) {
         const userRound = isUserInitiatedRound({ openerBotId });
         const from = item.fromName || '上级';
         const steered = userRound
@@ -547,7 +615,7 @@ export async function executeGroupRound(
             {
               roomId,
               authorType: 'system',
-              authorId: bot.id,
+              // ★ 不填 authorId：系统回执不能冒充 Bot 本人发言（App 靠 authorType 分辨）
               authorName: '叫停回执',
               text: userRound
                 ? `已让${bot.name}停下，按你的新要求重来。`
@@ -555,6 +623,7 @@ export async function executeGroupRound(
               status: 'done',
               meta: {
                 via: userRound ? 'steer_by_user' : 'steer_by_superior',
+                botId: bot.id,
                 fromId: item.fromId ?? null,
               },
             },
@@ -566,7 +635,7 @@ export async function executeGroupRound(
         }
       }
       log(`【${room.name}】${bot.name} 还在忙 → 等它空下来再派（${item.reason}）`);
-      if (entry?.session?.followUp) {
+      if (!waitingCompaction && entry?.session?.followUp) {
         try {
           await entry.session.followUp(
             `【${item.fromName || '同事'} 找你】${item.fromName || '同事'} 刚在群里说：\n` +
@@ -578,11 +647,10 @@ export async function executeGroupRound(
             {
               roomId,
               authorType: 'system',
-              authorId: bot.id,
               authorName: '投递回执',
               text: `${bot.name} 正在忙：这句已经放进它的待办，忙完会看到。`,
               status: 'done',
-              meta: { via: 'queued_for_busy', fromId: item.fromId ?? null },
+              meta: { via: 'queued_for_busy', botId: bot.id, fromId: item.fromId ?? null },
             },
             { beforeStreaming: true },
           );
@@ -695,6 +763,7 @@ export async function executeGroupRound(
             res = overrideModel ? await runner.run(roomId, bot.id, prompt, {
               groupTurn: true, retryManaged: true, taskRunId, attemptIndex: 1,
               attachments, managedContext: itemManaged, modelOverride: overrideModel,
+              meta: { text: item.fromText || openerText },
             }) : {
               ok: false,
               text: '',
@@ -714,6 +783,7 @@ export async function executeGroupRound(
               attachments,
               managedContext: itemManaged,
               human: !item.fromId && isUserInitiatedRound({ openerBotId }),
+              meta: { text: item.fromText || openerText },
             });
           }
           if (res.ok) {
@@ -775,6 +845,7 @@ export async function executeGroupRound(
                     attachments,
                     managedContext: itemManaged,
                     ...(overrideModel ? { modelOverride: overrideModel } : {}),
+                    meta: { text: item.fromText || openerText },
                   });
                   if (res.ok) {
                     runner.markGroupHealthy(bot.id, overrideModel);
@@ -862,6 +933,7 @@ export async function executeGroupRound(
               attachments,
               managedContext: itemManaged,
               ...(overrideModel ? { modelOverride: overrideModel } : {}),
+              meta: { text: item.fromText || openerText },
             });
             if (!res.ok) {
               lastError = String(res.error ?? '未知原因');
@@ -974,7 +1046,6 @@ export async function executeGroupRound(
                   runner.store.appendMessage({
                     roomId,
                     authorType: 'system',
-                    authorId: bot.id,
                     authorName: '续派提示',
                     text: `上游恢复了，接着做（第 ${nth} 次重派）。`,
                     status: 'done',
@@ -991,7 +1062,6 @@ export async function executeGroupRound(
                 runner.store.appendMessage({
                   roomId,
                   authorType: 'system',
-                  authorId: bot.id,
                   authorName: '排期提示',
                   text:
                     `上游限流/波动（${String(lastError || lastKind || '暂时不可用').slice(0, 80)}），` +
@@ -1013,7 +1083,6 @@ export async function executeGroupRound(
             runner.store.appendMessage({
               roomId,
               authorType: 'system',
-              authorId: bot.id,
               authorName: '失败回执',
               text: failureNote({
                 botName: bot.name,
@@ -1023,7 +1092,7 @@ export async function executeGroupRound(
                 kind: lastKind,
               }),
               status: 'done',
-              meta: { via: 'failed', attempts: attempt },
+              meta: { via: 'failed', botId: bot.id, attempts: attempt },
             });
 
             if (leadId && bot.id !== leadId && !runner.aborting.has(roomId)) {
