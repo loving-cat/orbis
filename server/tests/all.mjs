@@ -159,6 +159,7 @@ const TESTS = [
   'duplex-router',
   'live-work-snapshot',
   'full-duplex',
+  'session-append-array',
   'jarvis-mode',
   'sdk-runtime',
   'sdk-errors',
