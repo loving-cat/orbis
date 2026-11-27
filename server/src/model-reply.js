@@ -52,6 +52,16 @@ function classifyFailure(error) {
     return { status: 403, auth: true, error: '模型请求被拒绝（HTTP 403），请检查账号及模型访问权限。' };
   }
   if (status === 429) return { status, auth: false, error: '模型请求被限流（HTTP 429），请稍后重试。' };
+  // ★ 404 = 模型不存在 / 已下线。这不是“等会儿就好”，原地重试多少次都一样：
+  //   单独给 `kind: 'model-not-found'`，上层据此**一次就熔断**并当轮换健康模型。
+  if (status === 404 || /model.{0,20}not[ _-]?found|no such model|model.{0,12}(?:does not exist|deprecated|下线|不存在)/i.test(raw)) {
+    return {
+      status: status || 404,
+      auth: false,
+      kind: 'model-not-found',
+      error: '模型不存在或已下线（HTTP 404），请检查模型 ID 或切换其它模型。',
+    };
+  }
   if (/context.?length|context.?window|maximum.?context|too many tokens/i.test(raw)) {
     return { status, auth: false, error: '模型接口报告上下文超限，请核实容量配置或压缩会话。' };
   }

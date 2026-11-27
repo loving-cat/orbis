@@ -534,7 +534,11 @@ export function createTaskRuntime({
       isBreakerOpen: (slug, groupId) => {
         try {
           const found = runner.breakerFor?.(botId, slug) ?? null;
-          const breaker = runner.breakers?.get?.(found?.groupId ?? groupId) ?? found?.breaker ?? null;
+          // ★ 优先读模型级熔断：同组内 A 熔断 / B 健康时要能选中 B
+          const breaker = found?.breaker
+            ?? runner.breakers?.get?.(slug)
+            ?? runner.breakers?.get?.(found?.groupId ?? groupId)
+            ?? null;
           return breaker?.state === 'open';
         } catch {
           return false;

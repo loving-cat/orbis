@@ -196,8 +196,11 @@ export function createCriticReviewer({
       isBreakerOpen: (slug, groupId) => {
         try {
           const found = runner.breakerFor?.(botId, slug) ?? null;
-          const group = found?.groupId ?? groupId;
-          const breaker = runner.breakers?.get?.(group) ?? found?.breaker ?? null;
+          // ★ 优先读模型级熔断（同组里 dead 熔断、healthy 未熔断必须区分得开）
+          const breaker = found?.breaker
+            ?? runner.breakers?.get?.(slug)
+            ?? runner.breakers?.get?.(found?.groupId ?? groupId)
+            ?? null;
           return breaker?.state === 'open';
         } catch {
           return false;

@@ -41,6 +41,7 @@ import { availableThinkingLevels } from './model-thinking.js';
 import { createLessonReflector } from './lesson-reflect.js';
 import { chiefTurnKey, createChiefSummaryRunner } from './runner/chief-summary-runner.js';
 import {
+  breakerKeyOf, clearBreakersForGroup,
   createBreaker, isCircuitFailure, recordFailure as breakerFail,
   recordSuccess as breakerOk, settleAfterCooldown, BREAKER_STATE,
 } from './circuit-breaker.js';
@@ -301,7 +302,7 @@ export class PiRunner {
           this.registeredGroups?.delete(id);
         }
         this.endpointCursors.delete(id);
-        this.breakers.delete(id);
+        clearBreakersForGroup(this.breakers, id); // 改配置 = 该组所有模型的熔断全清
         this.health?.forgetProvider?.(id);
         this.refreshDefaultModel();
       });
@@ -477,33 +478,24 @@ export class PiRunner {
 
   breakerFor(botId, modelOverride = null) {
     const bot = this.store.getBot(botId);
-    // ★ 临时切到别的模型时，熔断要记在**真的在跑的**那个组上（§4.2 d）
-    const slug = String(modelOverride ?? bot?.model ?? '').trim();
-    if (!slug.includes('/')) return null;
-    const groupId = slug.slice(0, slug.indexOf('/'));
-    if (!groupId) return null;
-    let cb = this.breakers.get(groupId);
-    if (!cb) {
-      cb = createBreaker();
-      this.breakers.set(groupId, cb);
-    }
+    // ★ 熔断粒度是「模型」而非「组」：key = 完整 slug，组里一个 404 不连坐同组活模型
+    const { key, groupId } = breakerKeyOf(String(modelOverride ?? bot?.model ?? '').trim());
+    if (!key) return null;
+    const cb = this.breakers.get(key) ?? createBreaker();
+    this.breakers.set(key, cb);
     const settled = settleAfterCooldown(cb, Date.now());
-    if (settled !== cb) {
-      this.breakers.set(groupId, settled);
-      cb = settled;
-    }
-    return { groupId, breaker: cb };
+    if (settled !== cb) this.breakers.set(key, settled);
+    // groupId 保留：调用方用它查组名与端点轮转
+    return { key, groupId, breaker: settled };
   }
 
   markGroupHealthy(botId, modelOverride = null) {
     const found = this.breakerFor(botId, modelOverride);
     if (!found) return;
+    this.breakers.set(found.key, breakerOk(found.breaker));
     if (found.breaker.state !== BREAKER_STATE.closed || (found.breaker.fails ?? 0) > 0) {
-      this.breakers.set(found.groupId, breakerOk(found.breaker));
-      log(`✅ 模型组 ${found.groupId} 恢复正常`);
-      return;
+      log(`✅ 模型 ${found.key} 恢复正常`);
     }
-    this.breakers.set(found.groupId, breakerOk(found.breaker));
   }
 
   markGroupFailed(botId, { kind, status, model = null } = {}) {
@@ -511,15 +503,21 @@ export class PiRunner {
     if (!found) return null;
     if (!isCircuitFailure({ kind, status })) return found.breaker;
     const next = breakerFail(found.breaker, { kind, status, now: Date.now() });
-    this.breakers.set(found.groupId, next);
+    this.breakers.set(found.key, next);
     if (next.state === BREAKER_STATE.open) {
       const group = this.modelGroups.get(found.groupId);
       const name = group?.name ?? found.groupId;
-      const switched = this.#tryRotateEndpoint(found.groupId);
+      // ★ 单个模型 404 下线绝不把整组端点轮转走（同组其它模型可能是好的）
+      const modelGone = kind === 'model-not-found' || Number(status) === 404;
+      const switched = modelGone ? null : this.#tryRotateEndpoint(found.groupId);
       if (switched) {
         log(`🔁 模型组「${name}」${next.fails} 次通路失败，已切到备用通路 ${switched.index + 1}`);
-        this.breakers.set(found.groupId, createBreaker());
+        clearBreakersForGroup(this.breakers, found.groupId);
         return { ...next, switchedTo: switched.index };
+      }
+      if (modelGone) {
+        log(`⛔ 模型 ${found.key} 不存在或已下线（404），不再向它发请求`);
+        return next;
       }
       log(
         `⛔ 模型组「${name}」连续 ${next.fails} 次通路失败，熔断 ` +
@@ -543,7 +541,7 @@ export class PiRunner {
       const applied = this.providerUpdates.request(groupId, () => {
         this.modelRuntime.registerProvider(groupId, cfg);
         this.endpointCursors.set(groupId, nextIdx);
-        this.breakers.set(groupId, createBreaker());
+        clearBreakersForGroup(this.breakers, groupId); // 换端点 = 全组改走新接口，熔断全作废
         this.health?.forgetProvider?.(groupId);
         this.refreshDefaultModel();
       });

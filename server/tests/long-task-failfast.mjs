@@ -701,6 +701,92 @@ await test('★ 7b. 同样的失败不触发 T6 不可恢复快停；真中止�
   assert.equal(classifyNonRetriableFailure({ error: '已按你的要求终止' })?.kind, 'aborted');
 });
 
+// ---------------------------------------------------------------------------
+// 0h. 404 死模型：一次即熔断 + 当轮切健康备用（不再每轮空转 2 次）
+//
+// 真机：模型组里留着一个已下线的 ID。旧行为是「首发失败 → decideRetry 说别重试 →
+// 直接 break」，于是**每一轮**都要先白撞一次死模型再报错，用户看到
+// 「这个 bot 每轮都失败，但换个模型就好了」。
+// ---------------------------------------------------------------------------
+
+await test('★ 0h. 404：当轮直接切到健康备用，且只碰死模型一次', async () => {
+  const deadHits = [];
+  const h = groupHarness({
+    primary: 'a/dead',
+    alternate: 'c/good',
+    script: ({ model, emit }) => {
+      if (model !== 'c/good') {
+        deadHits.push(model);
+        return Promise.reject(Object.assign(new Error('模型不存在或已下线（HTTP 404）'), {
+          status: 404,
+          message: '模型不存在或已下线（HTTP 404），请检查模型 ID 或切换其它模型。',
+        }));
+      }
+      return okBody(emit);
+    },
+  });
+
+  await h.run();
+
+  assert.equal(deadHits.length, 1, '死模型只能碰一次（旧行为是每轮白撞）');
+  const overrides = h.builds.filter((b) => b.modelOverride === 'c/good');
+  assert.equal(overrides.length, 1, '要当轮切过去跑一次：' + JSON.stringify(h.builds));
+  assert.equal(h.stats.find((r) => r.ok === true)?.model, 'c/good', '这一轮真的跑通了');
+  assert.equal(store.getBot(h.bot.id).model, 'a/dead', 'bot.model 不能被偷偷改掉');
+  // 死模型的熔断立刻打开（一次即开），备用模型是健康的
+  const deadBreaker = h.runner.breakerFor(h.bot.id, 'a/dead');
+  assert.equal(deadBreaker?.breaker.state, 'open', '404 要一次就熔断');
+  assert.ok(deadBreaker?.breaker.cooldownMs >= 5 * 60_000, '下线模型给长冷却');
+  const retryEvent = emitRetrying(h.events).find((e) => e.kind === 'model-not-found');
+  assert.ok(retryEvent, '要有 bot.retrying（kind=model-not-found）让用户看见换模型了');
+  assert.equal(retryEvent.delayMs, 0, '换模型不该先等退避');
+  assert.ok(retryEvent.switchedTo);
+});
+
+await test('★ 0h-2. 404 + lockModel:true → 不切换（用户的明确选择）', async () => {
+  const h = groupHarness({
+    primary: 'a/dead',
+    alternate: 'c/good',
+    script: ({ model }) => (model === 'c/good'
+      ? Promise.resolve(null)
+      : Promise.reject(Object.assign(new Error('模型不存在或已下线（HTTP 404）'), { status: 404 }))),
+  });
+  // `lockModel` 是内部字段（store.updateBot 不管它，现有用例都是直接写状态）
+  store.state.bots[h.bot.id].lockModel = true;
+
+  await h.run();
+
+  assert.equal(h.builds.filter((b) => b.modelOverride).length, 0, '锁了模型就绝不换');
+  assert.equal(h.stats.every((r) => r.ok !== true), true, '这一轮确实失败了（但不该偷偷换模型跑）');
+  const failedMsgs = store.listMessages(h.room.id, { limit: 50 })
+    .filter((m) => m?.meta?.via === 'failed' || m?.status === 'error');
+  assert.ok(failedMsgs.length >= 1, '要给用户一条明确的失败回执');
+});
+
+await test('★ 0h-3. 切过去的备用模型失败时，按它自己的失败类型记账（不继承 404）', async () => {
+  // 旧写法把上一个模型的 kind 记到新模型头上：备用模型只是抖一下（503），
+  // 也会被当成「已下线」一次熔断 —— 一次误伤就把唯一健康的模型也关了。
+  const h = groupHarness({
+    primary: 'a/dead',
+    alternate: 'c/good',
+    script: ({ model }) => {
+      if (model === 'c/good') {
+        return Promise.reject(Object.assign(new Error('upstream boom'), { status: 503 }));
+      }
+      return Promise.reject(Object.assign(new Error('模型不存在或已下线（HTTP 404）'), { status: 404 }));
+    },
+  });
+
+  await h.run();
+
+  const healthyBreaker = h.runner.breakerFor(h.bot.id, 'c/good')?.breaker;
+  assert.ok(healthyBreaker, '备用模型要有自己的熔断器');
+  assert.equal(healthyBreaker.state, 'closed', '一次 503 不该直接熔断备用模型');
+  // 503 会先按 transient 记；系统随后还会再试原模型（备用失败后回原模型），
+  // 这里只要求：state 仍是 closed 且记过失败数（不是 404 的那种"一次即开"）
+  assert.ok(healthyBreaker.fails >= 1, '要按这一次的失败记数');
+});
+
 for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' —— ' + r.err}`);
 }

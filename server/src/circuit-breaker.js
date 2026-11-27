@@ -59,11 +59,13 @@ export const BREAKER_STATE = Object.freeze({
  *   · 用户终止 —— 不是故障
  *   · 模型说这活干不了 —— 不是通路问题
  *   · 参数错误（400/422）—— 是我们的 bug，重试和熔断都救不了
+ *   · 404 单独处理：**模型不存在/已下线**是确定的，不属“这一刻没排上”，要立即熔断。
  */
 export function isCircuitFailure({ kind = '', status = null } = {}) {
   if (kind === 'aborted' || kind === 'busy') return false;
-  if (kind === 'auth' || kind === 'quota') return true;
+  if (kind === 'auth' || kind === 'quota' || kind === 'model-not-found') return true;
   const code = Number(status) || 0;
+  if (code === 404) return true;
   if (code === 400 || code === 422) return false;
   if (code === 401 || code === 402 || code === 403) return true;
   if (code === 429 || code >= 500) return true;
@@ -73,6 +75,8 @@ export function isCircuitFailure({ kind = '', status = null } = {}) {
 /** 这个失败对应的冷却时长。 */
 export function cooldownFor({ kind = '', status = null } = {}) {
   const code = Number(status) || 0;
+  // 404 = 模型下线：60 秒后不会复活，别拿短冷却反复撞（同 auth 档）
+  if (code === 404 || kind === 'model-not-found') return COOLDOWN_AUTH_MS;
   if (code === 401 || code === 403 || kind === 'auth') return COOLDOWN_AUTH_MS;
   if (code === 402 || kind === 'quota') return COOLDOWN_QUOTA_MS;
   return COOLDOWN_TRANSIENT_MS;
@@ -139,7 +143,8 @@ export function recordFailure(breaker, { kind = '', status = null, now = Date.no
   const fails = (base.fails ?? 0) + 1;
   const cooldownMs = cooldownFor({ kind, status });
   const code = Number(status) || 0;
-  const immediate = kind === 'auth' || kind === 'quota' || code === 401 || code === 402 || code === 403;
+  const immediate = kind === 'auth' || kind === 'quota' || kind === 'model-not-found'
+    || code === 401 || code === 402 || code === 403 || code === 404;
   const threshold = immediate ? 1 : OPEN_AFTER_FAILS;
   // 凭证/额度错误或 halfOpen 探路失败 → 立刻打开（不用再等攒够 3 次）
   if (base.state === BREAKER_STATE.halfOpen || fails >= threshold) {
@@ -167,4 +172,46 @@ export function breakerNote(breaker, { groupName = '', now = Date.now() } = {}) 
   const left = Math.max(0, Math.ceil((until - now) / 1000));
   const who = groupName ? '模型组「' + groupName + '」' : '当前模型';
   return who + '的接口暂时连不上，本次请求未执行。请在 ' + left + ' 秒后重试。';
+}
+
+// ---------------------------------------------------------------------------
+// 按「模型」而不是「模型组」隔离熔断状态的关键字工具
+//
+// ★ 为什么：以前 `this.breakers` 的 key 是**组**。组里只要有一个模型 404 下线，
+//   整组（包括同组其它活模型）一起被熔断，还会连带把端点轮转走 ——
+//   用户看到的是「换个模型还行，但一起挂了」。现在 key 用完整 slug
+//   (`groupId/modelId`)，这两个纯函数负责在 key 与组之间换算。
+// ---------------------------------------------------------------------------
+
+/**
+ * 把模型 slug 拆成熔断器 key 与组 id。
+ *
+ * @param {string} slug 形如 `g1/model-a`；不合法（没有组/模型）时 key = groupId = ''
+ * @returns {{key:string, groupId:string}}
+ */
+export function breakerKeyOf(slug) {
+  const raw = String(slug ?? '').trim();
+  const cut = raw.indexOf('/');
+  if (cut <= 0 || cut === raw.length - 1) return { key: '', groupId: '' };
+  return { key: raw, groupId: raw.slice(0, cut) };
+}
+
+/**
+ * 清掉一个模型组下**所有模型**的熔断器（改配置 / 端点轮转后调用）。
+ *
+ * @param {Map<string, object>} breakersMap
+ * @param {string} groupId
+ * @returns {number} 清掉的条数
+ */
+export function clearBreakersForGroup(breakersMap, groupId) {
+  const gid = String(groupId ?? '').trim();
+  if (!gid || !breakersMap || typeof breakersMap.keys !== 'function') return 0;
+  let cleared = 0;
+  for (const key of [...breakersMap.keys()]) {
+    if (key === gid || key.startsWith(gid + '/')) {
+      breakersMap.delete(key);
+      cleared += 1;
+    }
+  }
+  return cleared;
 }
