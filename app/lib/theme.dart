@@ -46,6 +46,17 @@ class PB {
   /// 文件卡片底。浅色纯白、深色比气泡亮一档 —— 两端都不跟内容抢视线。
   static Color get bgFileCard =>
       isLightMode ? PBNeutral.lightBgFileCard : PBNeutral.bgActive;
+
+  /// 行内代码的底色：**必须半透明**。
+  ///
+  /// ★ Flutter 的 `RenderParagraph` 绘制顺序是「选区高亮 → TextStyle 背景 →
+  ///   文字」。行内代码如果用一个 100% 不透明的实色底（原来的 `bgActive`），
+  ///   会把底下的选区高亮整块盖死 —— 用户拖选跨过行内代码时，看不出那一段
+  ///   到底有没有被选中（真机反馈：「拖到代码上蓝色就断了」）。
+  ///   半透明既保留"这是代码"的淡底，又让蓝色选区透出来。
+  static Color get bgInlineCode => isLightMode
+      ? const Color(0x12000000) // 浅色：淡灰底，不遮挡浅色选区
+      : const Color(0x1EFFFFFF); // 深色：近似原来的灰底，选区（0x668AA6FF）清晰透出
   static Color get bgInput =>
       isLightMode ? PBNeutral.lightBgInput : PBNeutral.bgInput;
 

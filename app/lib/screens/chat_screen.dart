@@ -116,7 +116,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   /// 三个点按钮的锚点：更多菜单要贴着它弹出。
   final _moreAnchor = GlobalKey();
 
-  final _scroll = ScrollController();
+  /// ★ 用同帧贴底的控制器：并发多 Bot 流式换行时，气泡长高会在**本帧布局期**
+  ///   就把偏移贴到新的底部，不再出现「第 N 帧下顶、第 N+1 帧才上拽」的锯齿
+  ///   （真机表现是整块聊天区上下抽搐）。`reverse: false` 与锚点坐标语义不变。
+  late final StickyBottomScrollController _scroll = StickyBottomScrollController(
+    shouldStickToBottom: _shouldStickToBottom,
+  );
 
   /// 右侧滚动滑块。滚动通知只能从包着 ListView 的那层转给它 ——
   /// 它在 Stack 里是 ListView 的兄弟节点，自己收不到 Scroll 通知。
@@ -148,6 +153,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   AppState? _state;
   late final ChatScrollFollow _scrollFollow;
   bool get _stick => _scrollFollow.following;
+
+  /// 同帧纠偏的判据：与 `ChatScrollFollow` 的「追底状态机」完全同源 ——
+  /// 用户上翻 / 拖滚动条 / 有动画在跑 / 拖拽后待恢复，一律不贴底。
+  /// （`_scrollFollow` 在 initState 里创建；布局期它一定已经存在。）
+  bool _shouldStickToBottom() {
+    if (!mounted) return false;
+    return _scrollFollow.stickToBottom;
+  }
 
   /// 往上翻的时候又来了几条新消息 —— 显示在"回到底部"那个按钮上。
   /// 这样用户知道"下面有多少没看"，而不是只看到一个箭头。

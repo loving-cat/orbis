@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_bot/app_state.dart';
+import 'package:pi_bot/chat_scroll_follow.dart';
 import 'package:pi_bot/models.dart';
 import 'package:pi_bot/scope.dart';
 import 'package:pi_bot/screens/chat_screen.dart';
@@ -76,6 +77,31 @@ ScrollController _controller(WidgetTester tester) =>
 void _expectAtBottom(WidgetTester tester) {
   final position = _controller(tester).position;
   expect(position.maxScrollExtent - position.pixels, lessThanOrEqualTo(1));
+}
+
+
+/// 一条流式中的 bot 消息（并发吐字用的是它）。
+Msg _streaming(int index, String text) => Msg(
+  id: 'stream-$index',
+  roomId: _room.id,
+  authorType: 'bot',
+  authorId: 'bot-$index',
+  authorName: '成员 $index',
+  text: text,
+  status: 'streaming',
+  createdAt: 1000 + index,
+);
+
+/// 把某条流式消息换成长一点的内容（模拟"换行 → 气泡长高"）。
+void _grow(_ChatState state, int index, int round) {
+  final list = state.messages[_room.id]!;
+  state.replace(_room.id, [
+    for (final m in list)
+      if (m.id == 'stream-$index')
+        _streaming(index, '${m.text}\n第 $round 行：${'内容' * 14}')
+      else
+        m,
+  ]);
 }
 
 _ChatState _cached() =>
@@ -361,5 +387,88 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await _frames(tester);
     expect(tester.takeException(), isNull);
+  });
+
+  // -------------------------------------------------------------------------
+  // 同帧贴底（真机：并发多 Bot 流式时整块聊天区上下抽搐）
+  // -------------------------------------------------------------------------
+
+  testWidgets('★ 两路并发流式交替增高：单次 pump 之后底部零滞后（不是先下顶、下一帧才上拽）', (tester) async {
+    final state = _cached();
+    addTearDown(state.dispose);
+    await _showChat(tester, state);
+    await _frames(tester);
+    _expectAtBottom(tester);
+
+    // 两路并发吐字（各自一条 streaming 气泡）
+    state.replace(_room.id, [
+      ...state.messages[_room.id]!,
+      _streaming(0, '甲：正在整理数据'),
+      _streaming(1, '乙：正在核对口径'),
+    ]);
+    await _frames(tester, 3);
+    _expectAtBottom(tester);
+
+    // ★ 必须是"同帧贴底"的控制器：普通 ScrollController 只能靠下一帧
+    //   post-frame 的 jumpTo 补，那一帧里内容是下顶的（真机就是那个锯齿）。
+    final controller = _controller(tester);
+    expect(controller, isA<StickyBottomScrollController>(),
+        reason: '聊天列表必须用同帧贴底的控制器');
+    final sticky = controller as StickyBottomScrollController;
+    final before = sticky.corrections;
+
+    // 交替长高：每次只 pump **一帧**，就必须已经贴底
+    for (var round = 0; round < 8; round++) {
+      _grow(state, round.isEven ? 0 : 1, round);
+      await tester.pump();
+      final position = _controller(tester).position;
+      expect(
+        position.maxScrollExtent - position.pixels,
+        lessThanOrEqualTo(1),
+        reason: '第 $round 次增高后单帧内没有贴底：还差 '
+            '${(position.maxScrollExtent - position.pixels).toStringAsFixed(1)}px',
+      );
+    }
+    // 布局期真的纠偏过（不是靠下一帧 jumpTo 凑出来的 0）
+    expect(sticky.corrections, greaterThan(before),
+        reason: '这 8 次增高里应当至少有一次是布局期贴底的');
+  });
+
+  testWidgets('★ 用户上翻离开底部后，两路流式继续增高绝不把人拽回底部', (tester) async {
+    final state = _cached();
+    addTearDown(state.dispose);
+    await _showChat(tester, state);
+    await _frames(tester);
+    _expectAtBottom(tester);
+
+    state.replace(_room.id, [
+      ...state.messages[_room.id]!,
+      _streaming(0, '甲：正在整理数据'),
+      _streaming(1, '乙：正在核对口径'),
+    ]);
+    await _frames(tester, 3);
+
+    // 用户往上翻（内容往下走 = pixels 变小）
+    await tester.drag(find.byType(ListView).first, const Offset(0, 400));
+    await _frames(tester, 3);
+    final before = _controller(tester).position.pixels;
+    expect(
+      _controller(tester).position.maxScrollExtent - before,
+      greaterThan(1),
+      reason: '这一步要真的离开底部，否则用例没有意义',
+    );
+
+    // 两路继续交替长高：绝不能触发同帧纠偏把人拽下去
+    for (var round = 0; round < 8; round++) {
+      _grow(state, round.isEven ? 0 : 1, round);
+      await tester.pump();
+      final position = _controller(tester).position;
+      expect(
+        (position.pixels - before).abs(),
+        lessThanOrEqualTo(1),
+        reason: '用户上翻后位置被抢走了 ${(position.pixels - before).toStringAsFixed(1)}px',
+      );
+    }
+    expect(find.byTooltip('回到最新'), findsOneWidget, reason: '离开底部应显示回到最新');
   });
 }
