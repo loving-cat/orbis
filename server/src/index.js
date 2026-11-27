@@ -4,8 +4,10 @@
  * 服务端真正的启动逻辑在 server-main.js；这里保持入口很小，
  * 免得以后又有人在入口里堆业务。
  *
- * 目前只有一条子命令：`migrate`（1.7 数据目录 → 2.0 新目录，只复制不删除）。
- * 它要排在 `isPiInvocation` **之前**判：`migrate` 不是 pi 的旗标，
+ * 目前只有两条子命令：
+ *   · `migrate`（1.7 数据目录 → 2.0 新目录，只复制不删除）；
+ *   · `prune-orphans`（清掉 state 里已无引用的房间/会话文件，默认只预览）。
+ * 它们要排在 `isPiInvocation` **之前**判：这些不是 pi 的旗标，
  * 但被当成 pi CLI 透传出去会让用户看到一堆莫名其妙的帮助。
  */
 import { installChildEnvScrub } from './child-env.js';
@@ -20,6 +22,9 @@ const argv = process.argv.slice(2);
 if (argv[0] === 'migrate') {
   const { runMigrateCli } = await import('./migrate-cli.js');
   process.exit(await runMigrateCli(argv.slice(1)));
+} else if (argv[0] === 'prune-orphans') {
+  const { runPruneOrphansCli } = await import('./prune-orphans-cli.js');
+  process.exit(await runPruneOrphansCli(argv.slice(1)));
 } else if (isPiInvocation(argv)) {
   process.exit(await runPiCli(argv));
 } else {
