@@ -324,7 +324,8 @@ v1 草案把它改成「蒸馏即自动注入 + 事后点『记错了』」，�
 | ✅ **2.0.0-alpha.1**（已发布 2026-11-21） | Phase 0 完成 + lessons v2 字段与边骨架（**蒸馏仍产 candidate**） | 现有 lessons 测试全绿 + 契约快照上线 |
 | **2.0.0-alpha.2** | SIM-Lite 全链路（族归因 + 边 + 推荐排序 + `runtime.lessons`），**评审门禁仍是 candidate→active，默认关闭自动晋升** | 五条红线（I0–I5）+ 新增 e2e |
 | ✅ **2.0.0-beta.1**（已发布 2026-11-22） | Phase 2 基座化收口（types / 注入点 / 发布 / examples / 稳定性文档）；**分发只走 tarball**：`orbis-agent-2.0.0-beta.1.tgz` 与各平台产物一起挂 Pre-release，**不发 npmjs.org**（D5：2.1 再公开） | `npm pack` 干净安装可跑（`check:pack-install`）；tgz sha256 写进 release notes |
-| **2.0.0-rc.1**（版本号已改，tag / release 未切） | Phase 3 清债全删 + 迁移命令；**2.0 集群 C1–C5**（受控 DAG 与共享黑板、独立复核、同角色分身与模型分档、并发编码 worktree 隔离、集群全景面板，PR #46–#50）+ pre-GA 复审修复（`docs/TASK-RUN-PROTOCOL.md` 已同步）+ 真机追加修复（熔断按模型隔离与 404 一次熔断、128k 小窗口长度截断止血、App 同帧贴底/头像坐标/行内代码选区、助手产物本机路径与安装包版本校验） | `check-legacy` 白名单清零；`server/tests/all.mjs` 211/211、flutter 1089 通过 / 3 跳过；**从合完复审修复后的 main 切**（改版本号那次提交不含 C1–C5，不能拿它切） |
+| ✅ **2.0.0-rc.1 / rc.2**（已发布） | Phase 3 清债全删 + 迁移命令；**2.0 集群 C1–C5**（受控 DAG 与共享黑板、独立复核、同角色分身与模型分档、并发编码 worktree 隔离、集群全景面板，PR #46–#50）+ pre-GA 复审修复（`docs/TASK-RUN-PROTOCOL.md` 已同步）+ 真机追加修复（熔断按模型隔离与 404 一次熔断、128k 小窗口长度截断止血、App 同帧贴底/头像坐标/行内代码选区、助手产物本机路径与安装包版本校验） | `check-legacy` 白名单清零；`server/tests/all.mjs` 212/212、flutter 1091 通过 / 3 跳过；**从合完复审修复后的 main 切**（改版本号那次提交不含 C1–C5，不能拿它切） |
+| **2.0.0-rc.3**（版本号已改，tag 待切） | rc.2 之后的一批体验修复（PR #53）：中断回执人机文案分离（内部提示词不再弹进聊天窗）+ 派活失败次数改成实际次数 + 空回复被兜底补齐后不再往正文拼「已自动重试」；blob_avatar 在 build/layout 阶段延后视线计算（根治 sliver `childMainAxisPosition` 崩溃）；启动回收结算孤儿房间文件里的残留 streaming | 同 rc.2：`server/tests/all.mjs` 212/212、flutter 1091 通过 / 3 跳过 |
 | **2.0.0** | GA + 破坏性变更公告 + 配对问答表 | **1.7.1+** 客户端 ↔ 2.0 服务端真机配对通过（C6） |
 
 ---
