@@ -232,6 +232,7 @@ const TESTS = [
   'desktop-helper-win',
   // 流式期间不重写 state.json（SPEC-PERF-V1 §8 / P2-4）
   'store-state-dirty',
+  'write-json-atomic',
 ];
 
 let failed = 0;

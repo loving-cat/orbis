@@ -5,11 +5,58 @@ import path from 'node:path';
 export const newId = (prefix = '') => prefix + crypto.randomBytes(8).toString('hex');
 export const now = () => Date.now();
 
+/** 目标文件被短暂占用时 `rename` 会吐的错误码（Windows 上尤其常见）。 */
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+/**
+ * 同步睡一会儿（Node 主线程没有同步 sleep，`Atomics.wait` 是标准做法）。
+ *
+ * @param {number} ms
+ */
+function sleepSync(ms) {
+  if (!(ms > 0)) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `rename` 带重试：落盘唯一的原子动作，却最容易在 Windows 上被打断。
+ *
+ * ★ 为什么需要（真机与单测都撞到过）：rename 的那一瞬间目标文件被别的进程占着 ——
+ *   杀软实时扫描、Everything / 索引器开着句柄、另一个进程刚关掉文件但内核还没释放 ——
+ *   `fs.renameSync` 就抛 `EPERM` / `EACCES` / `EBUSY`。这类占用几毫秒就消失，
+ *   不重试的话用户看到的是「写盘失败：EPERM: operation not permitted」，
+ *   整个任务直接失败（`tests/long-task-guardrails.mjs` 的 4b 就偶发红在这里）。
+ *
+ * 只重试「很快就会消失」的那几个码；ENOENT / EXDEV / ENOSPC 重试也没用（配置错 /
+ * 跨设备 / 磁盘满），立刻抛给调用方，不把失败时间拖长。
+ *
+ * @param {string} from 临时文件
+ * @param {string} to 目标文件
+ * @param {{attempts?:number, baseDelayMs?:number}} [opts] 退避 10 / 20 / 40 / 80 ms
+ */
+export function renameWithRetry(from, to, { attempts = 5, baseDelayMs = 10 } = {}) {
+  const tries = Math.max(1, attempts);
+  let lastError = null;
+  for (let i = 0; i < tries; i += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!RENAME_RETRY_CODES.has(String(err?.code ?? ''))) throw err;
+      if (i === tries - 1) break;
+      sleepSync(baseDelayMs * 2 ** i);
+    }
+  }
+  throw lastError;
+}
+
 export function writeJsonAtomic(file, obj) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
-  fs.renameSync(tmp, file);
+  // ★ 失败时不删 tmp：数据还在里面，留着比丢掉好排查；但别静默吞掉错误
+  renameWithRetry(tmp, file);
 }
 
 export function readJson(file, fallback = null) {
