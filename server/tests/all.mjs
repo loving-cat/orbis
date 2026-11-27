@@ -176,6 +176,7 @@ const TESTS = [
   'config-no-dirs',
   'turn-step-settle',
   'group-round-dispatch',
+  'compaction-wait',
   'diagnostics-log',
   'group-stream-order',
   'talk-failure-diagnostics',
