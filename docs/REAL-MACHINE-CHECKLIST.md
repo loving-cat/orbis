@@ -222,7 +222,7 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/confirmation
 （慢约 15 倍），`server.log` 只该出现一次"回退 PowerShell"的提示；再删掉
 `server/resources/orbis-desktop-win.exe` 重启 → 同样自动回退且只记一次。
 
-## 4e. 集群泳道：Talk 旁路 / 独立复核 / 模型分档（rc.3 必验 · 真机 · 约 10 分钟）
+## 4e. 集群泳道：Talk 旁路 / 独立复核 / 模型分档（rc.3 / 2.0.0 必验 · 真机 · 约 10 分钟）
 
 rc.1 的两类问题都**只在真 SDK + 真 PiRunner 下出现**，单测全绿也抓不到：
 `appendSystemPrompt` 被拼成字符串（真机暴露：Talk / Critic 在 reload 阶段抛 `appendSources.map`），
