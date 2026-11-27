@@ -58,9 +58,32 @@ try {
   New-Item -ItemType Directory -Path (Join-Path $fullBundle "server\src") -Force | Out-Null
   Set-Content -LiteralPath (Join-Path $fullBundle "orbis.exe") -Value "stub" -Encoding Ascii
   Set-Content -LiteralPath (Join-Path $fullBundle "server\src\index.js") -Value "// stub" -Encoding Ascii
+  # The installer takes its version from the bundle now, so the fixture must
+  # carry a server/package.json like a real pack output does.
+  $repoVersion = (& node -e "process.stdout.write(require(process.argv[1]).version)" (Join-Path $repo "server\package.json")).Trim()
+  $fixturePkg = @{ name = 'orbis-agent'; version = $repoVersion } | ConvertTo-Json -Compress
+  Set-Content -LiteralPath (Join-Path $fullBundle "server\package.json") -Value $fixturePkg -Encoding Ascii
   $result = Invoke-Pack @("-Bundle", $fullBundle, "-Iscc", (Join-Path $testRoot "no-such-iscc.exe"))
   Assert-True ($result.Code -ne 0) "bad -Iscc should exit non-zero"
   Assert-True ($result.Text -match "ISCC.exe not found") "bad -Iscc should say ISCC is missing"
+
+  # 3b) Bundle whose server/package.json disagrees with the app inside it: the
+  # installer is named after the bundle version, so a stale folder here would
+  # ship an installer that lies about what it contains. Must refuse.
+  $staleBundle = Join-Path $testRoot "stale-bundle"
+  New-Item -ItemType Directory -Path (Join-Path $staleBundle "server\src") -Force | Out-Null
+  $builtExe = Join-Path $repo "app\build\windows\x64\runner\Release\orbis.exe"
+  if (Test-Path -LiteralPath $builtExe) {
+    Copy-Item -LiteralPath $builtExe -Destination (Join-Path $staleBundle "orbis.exe") -Force
+    Set-Content -LiteralPath (Join-Path $staleBundle "server\src\index.js") -Value "// stub" -Encoding Ascii
+    $stalePkg = @{ name = 'orbis-agent'; version = '9.9.9' } | ConvertTo-Json -Compress
+    Set-Content -LiteralPath (Join-Path $staleBundle "server\package.json") -Value $stalePkg -Encoding Ascii
+    $result = Invoke-Pack @("-Bundle", $staleBundle)
+    Assert-True ($result.Code -ne 0) "version mismatch between bundle json and orbis.exe should exit non-zero"
+    Assert-True ($result.Text -match "bundle version mismatch") "mismatch message should say which versions disagree"
+  } else {
+    Write-Output "SKIP mismatch branch (no Release orbis.exe to borrow a version resource from)"
+  }
   Write-Output "OK error branches"
 
   # 4) Real compile with a fixture bundle. Skipped when Inno Setup is absent so
@@ -71,7 +94,7 @@ try {
   } else {
     $result = Invoke-Pack @("-Bundle", $fullBundle, "-Iscc", $iscc)
     Assert-True ($result.Code -eq 0) "fixture compile should succeed: $($result.Text)"
-    $version = (& node -e "process.stdout.write(require(process.argv[1]).version)" (Join-Path $repo "server\package.json")).Trim()
+    $version = $repoVersion
     $expected = Join-Path $result.OutDir ("orbis-windows-v$version-setup.exe")
     Assert-True (Test-Path -LiteralPath $expected) "expected $expected"
     Assert-True ($result.Text -match "sha256: [0-9a-f]{64}") "should print a sha256 for the installer"
