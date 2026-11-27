@@ -14,6 +14,7 @@ import { config as defaultConfig } from './config.js';
 import { log } from './util.js';
 import { requestWithProviderLease } from './model-request-lease.js';
 import { providerLeaseScope } from './provider-updates.js';
+import { THINKING_LEVELS } from './model-thinking.js';
 
 const TTL_MS = 24 * 3600 * 1000;
 
@@ -56,9 +57,31 @@ export class ModelHealth {
     this.load();
   }
 
+  /**
+   * 读缓存，并**在装载时丢掉沉积条目**。
+   *
+   * 为什么要在 load 里 prune 而不是只在 save 时省：`results` 的键是「组id/模型[@档位]」，
+   * 用户每换一次 key / 改一次 baseUrl / 删一个模型组，旧 slug 就再也不会被访问到 ——
+   * 它们**永远不会过期重探**，只是一直躺在 model-health.json 里涨（现场文件已经 185KB，
+   * 里面大把是早就不存在的 slug）。`get()` 只在被查询时才判过期，够不着这些死条目。
+   *
+   * 留 `ttlMs * 2` 的余量：刚过期那批仍可能被后台重探救回来，超过两倍 TTL 的才是真沉积。
+   */
   load() {
     try {
-      this.results = JSON.parse(fs.readFileSync(this.file, 'utf8')) ?? {};
+      const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')) ?? {};
+      const at = Date.now();
+      const keep = {};
+      let dropped = 0;
+      for (const [slug, r] of Object.entries(raw)) {
+        if (!r || !Number.isFinite(r.at) || at - r.at > this.ttlMs * 2) {
+          dropped++;
+          continue;
+        }
+        keep[slug] = r;
+      }
+      this.results = keep;
+      if (dropped) log(`模型探活：装载时丢掉 ${dropped} 条沉积结果（超过 ${this.ttlMs * 2 / 3600000} 小时）`);
     } catch {
       this.results = {};
     }
@@ -246,7 +269,7 @@ export class ModelHealth {
   }
 
   /** 只给白名单模型跑档位矩阵（便宜，几秒到几十秒） */
-  async runLevelMatrix(slugs, levels = ['off', 'low', 'medium', 'high'], { force = false } = {}) {
+  async runLevelMatrix(slugs, levels = THINKING_LEVELS, { force = false } = {}) {
     const queue = [];
     for (const slug of slugs) {
       for (const level of levels) {

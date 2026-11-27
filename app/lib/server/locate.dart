@@ -288,10 +288,16 @@ Future<String?> nodeVersion(String nodePath) async {
   }
 }
 
-bool versionAtLeast(String version, int major) {
+/// node 版本是否足够新。
+///
+/// ★ 必须能比 **minor**：SDK（`@earendil-works/pi-coding-agent`）的 `engines` 写的是
+///   `>=22.19.0`，只看大版本会把 22.0–22.18 放进去，然后在启动阶段抛一脸 ESM/API 错。
+bool versionAtLeast(String version, int major, [int minor = 0]) {
   final parts = version.split('.');
   final first = int.tryParse(parts.isNotEmpty ? parts.first : '') ?? 0;
-  return first >= major;
+  if (first != major) return first > major;
+  final second = int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+  return second >= minor;
 }
 
 /// 检查端口是否可建立 TCP 连接（用于区分"服务未启动"与"端口被占用"）。

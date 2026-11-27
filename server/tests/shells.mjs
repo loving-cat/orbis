@@ -8,8 +8,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ShellRegistry, trimChunks } from '../src/shells.js';
-import { findProcesses, waitGone, describeRemaining } from './helpers/proc-scan.mjs';
+
+// ★ 必须先设环境变量、再**动态** import：`shells.js` 的实例目录挂在
+//   `config.dataDir` 下（`shells.js:163`），而 `config` 是 import 时就求值的。
+//   以前这条用例没设 `ORBIS_HOME`，于是每跑一次全量就往**真实**数据目录写
+//   `instances/<room>-<bot>/` —— 现场 `%LOCALAPPDATA%\orbis\data\instances` 里的
+//   `r1-b1` / `r_clear-b1` / `r_leak-b1` / `r_leak2-b1` 就是这么来的。
+const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'Orbis-shells-home-'));
+Object.assign(process.env, {
+  HOME: homeRoot,
+  ORBIS_HOME: path.join(homeRoot, 'data'),
+  ORBIS_WORKSPACE: path.join(homeRoot, 'workspace'),
+  ORBIS_PROBE: '0',
+});
+fs.mkdirSync(process.env.ORBIS_WORKSPACE, { recursive: true });
+
+const { ShellRegistry, trimChunks } = await import('../src/shells.js');
+const { findProcesses, waitGone, describeRemaining } = await import('./helpers/proc-scan.mjs');
 
 // 用临时脚本文件跑，避免不同平台 shell 对引号/括号的解析差异。
 // 目录名带 `Orbis-shells-` 前缀 + 每条用例自己的 tag：进程表扫描按 tag 精确找，
@@ -296,4 +311,6 @@ for (const r of results) {
   console.log(`${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : `\n     ${r.err}`}`);
 }
 console.log(`\n${passed}/${results.length} 通过`);
+// 临时 HOME / 数据目录收尾（别把实例目录留在系统临时区）
+try { fs.rmSync(homeRoot, { recursive: true, force: true }); } catch { /* 已被锁定就交给系统回收 */ }
 process.exit(passed === results.length ? 0 : 1);

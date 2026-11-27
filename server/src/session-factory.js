@@ -351,12 +351,27 @@ export function createSessionBuilder({
       modelLines: !isolatedLane && isChief ? modelCatalogSection(menuEntries(modelGroups ?? undefined), health) : '',
     });
 
+    /**
+     * ★ 一律保持 **数组**：`DefaultResourceLoader.reload()` 里第一件事就是
+     *   `appendSources.map(...)`，传字符串会在 reload 阶段直接抛
+     *   `appendSources.map is not a function`（真机：Talk / Critic 两条通道 100% 崩，
+     *   负责人 35ms 里就报「模型请求失败」）。
+     *
+     *   `buildAppendSystemPrompt` 返回的是 `string[]`，所以这里绝不能再拿模板字符串
+     *   去拼它 —— 那会把它悄悄变成「逗号拼接的单个字符串」，类型提示全绿、运行时才炸。
+     *   追加规则也走数组（SDK 用 `\n\n` 把元素连起来，渲染结果与以前一字不差）。
+     */
+    const baseAppendList = Array.isArray(baseAppendPrompt)
+      ? baseAppendPrompt
+      : (baseAppendPrompt ? [String(baseAppendPrompt)] : []);
+
     const talkAppendPrompt = isTalkLane
-      ? `${baseAppendPrompt}\n\n## 全双工快速旁路通道规则\n` +
+      ? [...baseAppendList,
+        '## 全双工快速旁路通道规则\n' +
         '当前处于「边干活边回话」的旁路只读通道：后台工作会话仍在继续执行，' +
         '请直接结合实时工作台快照与上下文，用 1～4 句自然口吻快速回答用户问题或确认已记下补充要求；' +
-        '禁止在当前旁路里声称执行了写文件、跑命令或改任务状态，也不要生硬复述快照格式。'
-      : baseAppendPrompt;
+        '禁止在当前旁路里声称执行了写文件、跑命令或改任务状态，也不要生硬复述快照格式。']
+      : baseAppendList;
 
     /**
      * 独立评审（Critic）的附加规则。
@@ -366,12 +381,13 @@ export function createSessionBuilder({
      *   同时告知它只有只读工具 —— 它就不会把力气花在“想写个脚本验证”上。
      */
     const criticAppendPrompt = isCriticLane
-      ? `${baseAppendPrompt}\n\n## 独立评审（Critic）通道规则\n` +
+      ? [...baseAppendList,
+        '## 独立评审（Critic）通道规则\n' +
         '你是一个**只读**的独立评审员，不参与执行，也不能修改任何东西。' +
         '你只有 read / ls / find / grep 四个工具：要看结论就亲自打开产物，' +
         '不要根据路径名、执行者的自述或自己的想象猜测内容。' +
         '评审只看两件事：任务目标与验收条件是否真的达到，以及全组黑板上约束/决定有没有被违反。' +
-        '结论必须按要求的 JSON 对象输出，不得附加解释文字。'
+        '结论必须按要求的 JSON 对象输出，不得附加解释文字。']
       : talkAppendPrompt;
 
     /**

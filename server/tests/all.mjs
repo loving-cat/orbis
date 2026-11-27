@@ -159,6 +159,8 @@ const TESTS = [
   'duplex-router',
   'live-work-snapshot',
   'full-duplex',
+  'session-append-array',
+  'real-sdk-lanes',
   'jarvis-mode',
   'sdk-runtime',
   'sdk-errors',
@@ -230,6 +232,7 @@ const TESTS = [
   'desktop-helper-win',
   // 流式期间不重写 state.json（SPEC-PERF-V1 §8 / P2-4）
   'store-state-dirty',
+  'write-json-atomic',
 ];
 
 let failed = 0;

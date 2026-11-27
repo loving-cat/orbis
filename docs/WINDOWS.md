@@ -7,7 +7,7 @@
 
 ## 构建与打包
 
-环境：Flutter 3.47+（桌面端已启用）、Visual Studio 2022（含 C++ 桌面负载）、Node 22+、npm，
+环境：Flutter 3.47+（桌面端已启用）、Visual Studio 2022（含 C++ 桌面负载）、Node 22.19+、npm，
 以及在 PATH 上的 `nuget.exe`（NuGet CLI，见下文）。
 脚本必须在 Windows 上跑；`pack-windows.ps1` 保持纯 ASCII，供 Windows PowerShell 5.1 解析。
 不需要 Git，解压后的源码目录也可以打包。
@@ -105,7 +105,7 @@ orbis-windows/
 
 目标机器：
 
-- 默认需要 **Node 22+ 在 PATH 上**（App 会自己找，找不到会在启动失败页让你指定路径）；
+- 默认需要 **Node 22.19+ 在 PATH 上**（SDK 的 `engines` 就是 `>=22.19.0`；App 会自己找，找不到会在启动失败页让你指定路径）；
 - 只有 `-SkipDeps` 才需要目标机器有 npm（首启动会执行 `npm install`）；
 - 没有代码签名，首次运行会弹 SmartScreen 提示，属预期。
 

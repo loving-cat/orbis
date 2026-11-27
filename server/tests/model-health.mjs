@@ -137,6 +137,38 @@ await test('★ ORBIS_PROBE=0（autoProbe:false）：结果过期也不自己发
   h.stop();
 });
 
+await test('★ 档位矩阵默认跑满 THINKING_LEVELS 全部七级', async () => {
+  // 以前写死 ['off','low','medium','high']，minimal/xhigh/max 从没被测过 ——
+  // 而现场就有 bot 落在 max 档，等于这一档的可用性完全没证据。
+  const { THINKING_LEVELS } = await import('../src/model-thinking.js');
+  const h = new ModelHealth(fakeRunner(), { ttlMs: 10_000, autoProbe: false });
+  const seen = new Set();
+  h.probeLevel = async (_slug, level) => {
+    seen.add(level);
+  };
+  await h.runLevelMatrix(['a/one'], undefined, { force: true });
+  const missing = THINKING_LEVELS.filter((l) => !seen.has(l));
+  assert.deepEqual(missing, [], `档位矩阵漏了：${missing.join(',')}`);
+  assert.equal(seen.size, THINKING_LEVELS.length);
+  h.stop();
+});
+
+await test('★ load() 丢掉超过 ttl*2 的沉积条目（换 key/删组后会一直躺在文件里）', () => {
+  const now = Date.now();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(
+    path.join(HOME, 'model-health.json'),
+    JSON.stringify({
+      'dead/old': { ok: false, ms: 1, error: '404', at: now - 30_000 }, // > 2*10s
+      'live/new': { ok: true, ms: 1, error: null, at: now - 1_000 }, // < ttl
+    }),
+  );
+  const h = new ModelHealth(fakeRunner(), { ttlMs: 10_000, autoProbe: false });
+  assert.equal(h.results['dead/old'], undefined, '超过 ttl*2 的条目应该在 load 时被丢掉');
+  assert.ok(h.results['live/new'], '新鲜条目不能被误删');
+  h.stop();
+});
+
 const passed = results.filter((r) => r.ok).length;
 console.log('\n================ 探活缓存测试 ================');
 for (const r of results) {

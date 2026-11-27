@@ -20,7 +20,7 @@
 
 ```bash
 cd D:/Orbis/server
-node tests/all.mjs | tail -2        # 期望 208/208
+node tests/all.mjs | tail -2        # 期望 211/211（含 real-sdk-lanes 真 SDK 零 mock 泳道、write-json-atomic 落盘重试）
 ```
 
 - 关闭或至少知道：本机装了远程控制软件（`GameViewer` / UU 远程那一类）时，
@@ -221,6 +221,29 @@ curl -s -H "authorization: Bearer $TOKEN" http://127.0.0.1:8787/api/confirmation
 **回退演练**：`set ORBIS_DESKTOP_WIN_IMPL=powershell` 重启服务端 → 桌面输入仍然可用
 （慢约 15 倍），`server.log` 只该出现一次"回退 PowerShell"的提示；再删掉
 `server/resources/orbis-desktop-win.exe` 重启 → 同样自动回退且只记一次。
+
+## 4e. 集群泳道：Talk 旁路 / 独立复核 / 模型分档（rc.2 必验 · 真机 · 约 10 分钟）
+
+rc.1 的两类问题都**只在真 SDK + 真 PiRunner 下出现**，单测全绿也抓不到：
+`appendSystemPrompt` 被拼成字符串（真机暴露：Talk / Critic 在 reload 阶段抛 `appendSources.map`），
+以及 `runner.resolveModel` 被摘下来裸调（复审时用真 SDK 端到端复现：Critic 与 fast/strong 分档抛
+`Cannot read properties of undefined (reading 'modelRuntime')`）。
+自动部分是 `node server/tests/real-sdk-lanes.mjs`（假模型端点，期望 6/6）；下面三项要对真模型跑一遍。
+
+为了让结果确定、不靠模型自己决定要不要复核/分档，验收这一节时临时设两个开关
+（验完删掉，恢复默认 `auto` / `explicit`）：`ORBIS_CRITIC_REVIEW=all`、`ORBIS_MODEL_TIER=auto`。
+
+1. **群里 Talk 旁路**：部门群里成员正在干活时，用户在群里再发一句（比如「现在做到哪了？」）。
+   期望几秒内出现一条旁路回话气泡；**不是**几十毫秒就报「模型请求失败，接口详情已隐藏」。
+   `model-errors.jsonl` 里不该出现 `appendSources`。
+2. **独立复核真的跑完**：派一份小活并让它交付（`ORBIS_CRITIC_REVIEW=all` 下机械验收一过就会复核）。
+   期望 `server.log` 出现 `独立评审 <任务id> passed|failed round … model …`，任务的
+   `criticState.lastVerdict` 有值；**不能**是连错 3 次后停在 `critic_unavailable`。
+3. **fast/strong 分档真的派出去**：`ORBIS_MODEL_TIER=auto` 下让负责人拆一份含机械小活的任务。
+   期望子任务正常执行完，`lastDispatchMeta.tier` 为 `fast` 或 `strong`；
+   **不能**出现 `unknown_outcome` + `modelRuntime` 的 TypeError。
+
+失败时把 `server.log` 里对应那几行与 `model-errors.jsonl` 末尾整段留下。
 
 ---
 

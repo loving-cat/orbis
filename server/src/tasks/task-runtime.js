@@ -526,7 +526,9 @@ export function createTaskRuntime({
     const picked = selectTierModel({
       tier,
       baseModel,
-      candidates: criticCandidatesOf(runner.modelGroups, { resolveModel: runner.resolveModel }),
+      candidates: criticCandidatesOf(runner.modelGroups, {
+        resolveModel: typeof runner.resolveModel === 'function' ? (slug) => runner.resolveModel(slug) : null,
+      }),
       userLocked: bot?.lockModel === true,
       // ★ 与自动兜底同一条隐私/费用边界（same-provider 不出这一家，off 不自动换）
       policyMode: fallbackModeFrom(process.env),

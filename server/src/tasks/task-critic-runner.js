@@ -102,7 +102,9 @@ export function criticCandidatesOf(modelGroups, { resolveModel = null } = {}) {
  */
 export function executorModelOf({ runner, store, botId }) {
   const bot = store?.getBot?.(botId) ?? null;
-  const resolveModel = typeof runner?.resolveModel === 'function' ? runner.resolveModel : null;
+  // ★ 必须绑定 this：PiRunner.resolveModel 是原型方法（读 this.modelRuntime），
+  //   直接摘下来调用会 TypeError —— 评审与分档在生产装配下 100% 抛。
+  const resolveModel = typeof runner?.resolveModel === 'function' ? (slug) => runner.resolveModel(slug) : null;
   const labelOf = () => {
     try {
       return String(runner?.modelLabel?.() ?? '').trim();
@@ -171,7 +173,7 @@ export function createCriticReviewer({
     }
 
     const executorModel = executorModelOf({ runner, store, botId });
-    const resolveModel = typeof runner.resolveModel === 'function' ? runner.resolveModel : null;
+    const resolveModel = typeof runner.resolveModel === 'function' ? (slug) => runner.resolveModel(slug) : null;
     const explicitModel = criticModelFromEnv();
     // 显式模型的「是不是本地」必须用与候选同一套口径解析，否则就漏掉
     // 「ORBIS_CRITIC_MODEL 指向云端，而执行者是 ollama」这种外泄路径。
