@@ -8,11 +8,13 @@
  * 如果交给负责人每轮用模型重想一遍，既慢又不一致，还会出现同一个
  * 依赖在两轮里得到两种结论。
  *
- * 所以这里只回答四个问题：
+ * 所以这里只回答五个问题：
  *   · `normalizeDependsOn`：模型给的依赖洗成「同父、真实存在」的 id 列表；
  *   · `detectDependencyCycle`：落盘前 fail-closed 拒绝自环与任意长度的环；
  *   · `dependencyStatus`：某子任务此刻只能是 ready / waiting / checkpoint / upstream_failed；
- *   · `collectUpstreamContext`：把已完成前置的交付压成短块，下游直接开干。
+ *   · `collectUpstreamContext`：把已完成前置的交付压成短块，下游直接开干；
+ *   · `planStepBindings` / `matchPlanStep` / `planLinksOf`：`task_plan` 里写的依赖与把关位
+ *     落到真实子任务上 —— 计划只写在纸上、派活时不生效，下游就会照样抢跑。
  *
  * ## 边界
  *
@@ -349,4 +351,207 @@ export function collectUpstreamContext(kid, siblings, {
   if (!lines.length) return '';
   const header = '前置子任务已经交付（直接用它们的产物，不要重做）：';
   return clamp(`${header}\n${lines.join('\n')}`, maxChars);
+}
+
+// ---------------------------------------------------------------- 计划条目 ↔ 子任务
+
+/**
+ * 计划条目的身份：正文（去首尾空白）。
+ *
+ * 不拿序号当身份：负责人修订计划（`task_plan` 覆盖）时序号会挪，正文才是「这一条活」。
+ */
+export function planStepText(step) {
+  return String(step?.task ?? '').trim();
+}
+
+/** 计划条目上的依赖/把关说明（负责人与用户都靠这半句判断「它为什么还没开始」）。 */
+export function planStepNote(step, index) {
+  const self = Number(index) + 1;
+  const deps = (Array.isArray(step?.dependsOn) ? step.dependsOn : [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isInteger(n) && n > 0 && n !== self);
+  return [
+    deps.length ? '等第 ' + deps.join('、') + ' 条完成' : '',
+    step?.checkpoint === true ? '前置完成后先叫你把关' : '',
+  ].filter(Boolean).join('；');
+}
+
+/** 被取消 / 永久受阻的子任务不再占着它那条计划（那一条要重新派，下游也不该等一个死掉的活）。 */
+function holdsPlanStep(kid) {
+  return Boolean(kid?.id) && !isPermanentlyFailed(kid);
+}
+
+/** 子任务上记的计划绑定（派活时认定的那一条）。 */
+function boundStepOf(kid) {
+  const raw = kid?.planStep;
+  if (!raw || typeof raw !== 'object') return null;
+  const task = String(raw.task ?? '').trim();
+  if (!task) return null;
+  const index = Number(raw.index);
+  return { index: Number.isInteger(index) ? index : null, task };
+}
+
+const newestFirst = (a, b) => Number(b?.createdAt ?? 0) - Number(a?.createdAt ?? 0);
+const oldestFirst = (a, b) => Number(a?.createdAt ?? 0) - Number(b?.createdAt ?? 0);
+
+/**
+ * 计划步骤号（1 基）→ 此刻占着这一条的子任务。
+ *
+ * 认领顺序（每个子任务只认一条，每条只认一个子任务）：
+ *   1) 派活时记下的绑定：同序号 + 同正文；
+ *   2) 绑定正文相同（计划被修订、序号挪了）；
+ *   3) 子任务目标正文 == 步骤正文（负责人原样照抄 / 旧数据）；
+ *   4) 还没绑定的子任务，按派出先后对上**同一成员**还空着的条目 ——
+ *      @ 派活的正文是摘录、对不上原文；「先派活、后补计划」也靠这一条认回来。
+ *
+ * ★ 被取消 / 永久受阻的子任务不占条目：那一条得重新派；
+ *   要是还让它占着，下游会去等一个永远不会交付的活。
+ *
+ * @param {Array<object>} steps 计划条目（`plan.steps`）
+ * @param {Array<object>} kids 同父同版本的子任务
+ * @returns {Map<number, object>} 步骤号 → 子任务
+ */
+export function planStepBindings(steps, kids) {
+  const list = Array.isArray(steps) ? steps : [];
+  const live = (Array.isArray(kids) ? kids : []).filter(holdsPlanStep);
+  const out = new Map();
+  const used = new Set();
+  const claim = (index, candidates) => {
+    if (out.has(index)) return;
+    const hit = candidates.find((kid) => !used.has(kid.id));
+    if (!hit) return;
+    out.set(index, hit);
+    used.add(hit.id);
+  };
+  const newest = [...live].sort(newestFirst);
+  const eachStep = (fn) => list.forEach((step, i) => {
+    const text = planStepText(step);
+    if (text) fn(step, i + 1, text);
+  });
+  eachStep((_step, index, text) => claim(index, newest.filter((kid) => {
+    const bound = boundStepOf(kid);
+    return bound?.task === text && bound.index === index;
+  })));
+  eachStep((_step, index, text) => claim(index, newest.filter((kid) => boundStepOf(kid)?.task === text)));
+  eachStep((_step, index, text) => claim(index, newest.filter(
+    (kid) => String(kid?.goal?.requirement ?? '').trim() === text,
+  )));
+  const unbound = [...live].sort(oldestFirst).filter((kid) => !boundStepOf(kid));
+  eachStep((step, index) => {
+    const member = String(step?.memberBotId ?? '').trim();
+    if (!member) return;
+    claim(index, unbound.filter((kid) => String(kid?.owner?.leadBotId ?? '') === member));
+  });
+  return out;
+}
+
+/**
+ * 一次派活对应计划里的哪一条（对不上返回 null）。
+ *
+ *   1) 负责人显式写了步骤号 → 就是那一条（序号不存在 → `{error}`，不能猜）；
+ *   2) 这份活本来就占着某一条（同一份派工重试）→ 还是那一条；
+ *   3) 派活正文 == 某条步骤正文 → 那一条（优先还空着的）；
+ *   4) 这个成员在计划里**还空着**的最早一条（@ 派活的正文是摘录，对不上原文）。
+ *
+ * @returns {null | {index:number, step:object} | {error:string}}
+ */
+export function matchPlanStep({
+  steps, bindings = null, memberBotId = null, requirement = '', explicitStep = null, selfId = null,
+} = {}) {
+  const list = Array.isArray(steps) ? steps : [];
+  if (!list.length) return null;
+  const taken = bindings instanceof Map ? bindings : new Map();
+  const wanted = explicitStep === null || explicitStep === undefined ? '' : String(explicitStep).trim();
+  if (wanted) {
+    const n = Number(wanted);
+    if (!Number.isInteger(n) || n < 1 || n > list.length || !planStepText(list[n - 1])) {
+      return { error: `计划里没有第 ${wanted} 条（共 ${list.length} 条）` };
+    }
+    return { index: n, step: list[n - 1] };
+  }
+  if (selfId) {
+    for (const [index, kid] of taken) {
+      if (kid?.id === selfId) return { index, step: list[index - 1] };
+    }
+  }
+  const member = String(memberBotId ?? '').trim();
+  const text = String(requirement ?? '').trim();
+  if (text) {
+    const same = list.map((step, i) => ({ step, index: i + 1 }))
+      .filter(({ step }) => planStepText(step) === text);
+    if (same.length) {
+      // 只认空位，不回退 same[0]（否则第二次同正文派活会把两个活子任务绑到同一条）；
+      // 同成员优先，避免甲乙同正文条目互串。全被占满时直接返回 null。
+      const untaken = same.filter(({ index }) => !taken.has(index));
+      const pick = (member ? untaken.find(({ step }) => String(step?.memberBotId ?? '').trim() === member) : null)
+        ?? untaken[0]
+        ?? null;
+      return pick;
+    }
+  }
+  if (member) {
+    const i = list.findIndex((step, idx) => String(step?.memberBotId ?? '') === member
+      && planStepText(step) && !taken.has(idx + 1));
+    if (i >= 0) return { index: i + 1, step: list[i] };
+  }
+  return null;
+}
+
+/**
+ * 一条计划条目 → 这份活该带上的依赖与把关位。
+ *
+ * @returns {{dependsOn:string[], waitSteps:Array<{index:number, task:string}>, checkpoint:boolean}}
+ *   `dependsOn`：已派出的前置条目对应的子任务 id；
+ *   `waitSteps`：前置条目**还没派出去** —— 调用方必须把这份活挂起，不能当成没有依赖
+ *   （那正是「计划里写了依赖、下游照样抢跑」的老问题）。
+ */
+export function planLinksOf({ steps, bindings = null, index, selfId = null } = {}) {
+  const list = Array.isArray(steps) ? steps : [];
+  const self = Number(index);
+  const step = list[self - 1];
+  const taken = bindings instanceof Map ? bindings : new Map();
+  const dependsOn = [];
+  const waitSteps = [];
+  if (!step) return { dependsOn, waitSteps, checkpoint: false };
+  for (const raw of Array.isArray(step.dependsOn) ? step.dependsOn : []) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1 || n > list.length || n === self) continue;
+    const kid = taken.get(n);
+    if (kid?.id && kid.id !== selfId) {
+      if (!dependsOn.includes(kid.id)) dependsOn.push(kid.id);
+    } else if (!waitSteps.some((w) => w.index === n)) {
+      waitSteps.push({ index: n, task: planStepText(list[n - 1]) });
+    }
+  }
+  return { dependsOn, waitSteps, checkpoint: step.checkpoint === true };
+}
+
+/**
+ * 挂起的计划前置里，哪些现在已经派出去了（新派一份活 / 计划修订之后回填用）。
+ *
+ * 按正文认（序号可能被修订挪动）。正文已经不在计划里的前置**留着**：
+ * 那是负责人改了计划，得由他放行或改派，不能自作主张当成已满足。
+ *
+ * @returns {{resolved:Array<{wait:object, kidId:string}>, still:Array<object>}}
+ */
+export function resolvePlanWaits(waitSteps, steps, bindings) {
+  const list = Array.isArray(steps) ? steps : [];
+  const taken = bindings instanceof Map ? bindings : new Map();
+  const resolved = [];
+  const still = [];
+  for (const wait of Array.isArray(waitSteps) ? waitSteps : []) {
+    const text = String(wait?.task ?? '').trim();
+    const at = text ? list.findIndex((step, i) => planStepText(step) === text && taken.has(i + 1)) : -1;
+    const kid = at >= 0 ? taken.get(at + 1) : null;
+    if (kid?.id) resolved.push({ wait, kidId: kid.id });
+    else still.push(wait);
+  }
+  return { resolved, still };
+}
+
+/** 被计划挂起、还在等哪几条派出去（没挂起 / 已放行 / 已结束都返回空数组）。 */
+export function planWaitingSteps(kid) {
+  if (isTerminal(kid?.state) || kid?.checkpointApprovedAt) return [];
+  const waits = kid?.planHold?.waitSteps;
+  return Array.isArray(waits) ? waits.filter((w) => w && String(w.task ?? '').trim()) : [];
 }

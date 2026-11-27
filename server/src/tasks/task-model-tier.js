@@ -17,7 +17,9 @@
  *    `ORBIS_TIER_MODEL_FAST/STRONG`）**绝不能跳到公有云**；
  * 4. 熔断打开的组跳过；
  * 5. 档位打分（`fast` 偏好 flash/mini/haiku…，`strong` 偏好 opus/pro/reason…）；
- * 6. 挑出来和基线是同一个模型 → 返回不覆盖（没必要为同名模型多开一层会话）。
+ * 6. 挑出来和基线是同一个模型 → 返回不覆盖（没必要为同名模型多开一层会话）；
+ * 7. **遵守 `ORBIS_MODEL_FALLBACK`**（与自动兜底同一条隐私/费用边界）：`same-provider`
+ *    只在执行者同一家里挑（显式档位模型跨家也拒绝）；`off` 不自动挑（显式档位模型照用）。
  *
  * ## 边界
  *
@@ -179,6 +181,7 @@ function scoreForTier(tier, candidate) {
  * @param {boolean} [p.userLocked] `bot.lockModel === true`
  * @param {{fast?:string|null, strong?:string|null}} [p.explicitTierModels]
  * @param {Function} [p.isBreakerOpen]
+ * @param {string} [p.policyMode] `ORBIS_MODEL_FALLBACK` 的值（调用方读环境变量传入；默认 `cloud`）
  * @returns {{overrideModel:string|null, tier:string, why:string, candidate?:object|null}}
  */
 export function selectTierModel({
@@ -188,6 +191,7 @@ export function selectTierModel({
   userLocked = false,
   explicitTierModels = null,
   isBreakerOpen = null,
+  policyMode = 'cloud',
 } = {}) {
   const wanted = normalizeTier(tier);
   const baseSlug = String(baseModel?.slug ?? '').trim();
@@ -214,6 +218,13 @@ export function selectTierModel({
     if (!baseLocal) return true;
     return isLocalCandidate(candidate);
   };
+  // 边界 7：ORBIS_MODEL_FALLBACK（same-provider 不出这一家；认不出执行者的服务商时一个也不认）
+  const mode = String(policyMode ?? 'cloud').trim().toLowerCase();
+  const providerKey = (model) => (String(model?.provider ?? '').trim() || providerOfSlug(String(model?.slug ?? '')))
+    .toLowerCase();
+  const baseProvider = providerKey(baseProbe);
+  const inProviderBoundary = (candidate) => mode !== 'same-provider'
+    || (Boolean(baseProvider) && providerKey(candidate) === baseProvider);
 
   // ---------------------------------------------------------------- 显式档位
   //
@@ -247,6 +258,16 @@ export function selectTierModel({
         candidate: null,
       };
     }
+    // 只对池子里真有的显式模型判服务商（不在池子里的走下面的「不可用」，原因要说准）
+    if (hit && !inProviderBoundary(hit)) {
+      return {
+        overrideModel: null,
+        tier: wanted,
+        why: '显式档位模型与执行者不是同一家服务商（ORBIS_MODEL_FALLBACK=same-provider）：沿用成员默认模型',
+        rejected: 'explicit_cross_provider',
+        candidate: null,
+      };
+    }
     if (hit) {
       return {
         overrideModel: hit.slug,
@@ -269,7 +290,12 @@ export function selectTierModel({
   // ★ 必须**比基线更好**才换：旧实现只在「同分」时才不换，于是
   //   `opus + strong` 会被挑成 mini（因为 mini 在别的维度分更高）、
   //   `flash + fast` 会被升成 opus —— 反向降级/升级比不换更贵。
-  const others = pool.filter((c) => c.slug !== baseSlug && isLocalNow(c));
+  if (mode === 'off') {
+    return {
+      overrideModel: null, tier: wanted, why: 'ORBIS_MODEL_FALLBACK=off：不自动换模型，沿用成员默认模型', candidate: null,
+    };
+  }
+  const others = pool.filter((c) => c.slug !== baseSlug && isLocalNow(c) && inProviderBoundary(c));
   if (!others.length) {
     return { overrideModel: null, tier: wanted, why: '没有其它可用模型，沿用成员默认模型', candidate: null };
   }

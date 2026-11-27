@@ -263,21 +263,64 @@ export function splitWords(text) {
   return [...out];
 }
 
+/** 小上下文窗口的门槛（与 context-budget 的 SMALL_CONTEXT_WINDOW 同口径）。 */
+export const SMALL_SKILL_CONTEXT = 128_000;
+
+/**
+ * 按上下文窗口给「技能注入」的预算（纯函数）。
+ *
+ * ★ 为什么小窗口要单独收紧（真机复现）：`nemotron-3.5-super-vl`（128k）上一轮压缩后，
+ *   老会话里残留着 **5 篇技能全文**（工具定义与摘要也在同一份请求里），历史已 ~117k。
+ *   轮内连调 3 次工具后第 4 次请求就到 124,339 / 128,000，模型只吐 1 个 token 就被截断
+ *   （`stopReason: 'length'`）。技能是**参考**，不是这轮的必需输入 —— 小窗口里少给两条、
+ *   把单条截短，比「整轮被截断、用户只看到半句话」划算得多。
+ *
+ * @param {number} contextWindow 模型窗口（0 / 未知 → 按大窗口处理，不额外收紧）
+ * @returns {{max:number, maxChars:number, small:boolean}}
+ */
+export function skillBudgetForContext(contextWindow) {
+  const cw = Number(contextWindow);
+  if (Number.isFinite(cw) && cw > 0 && cw <= SMALL_SKILL_CONTEXT) {
+    return { max: 2, maxChars: 6_000, small: true };
+  }
+  // 大窗口 / 未知：维持原来的 5 条、不额外截断
+  return { max: 5, maxChars: 0, small: false };
+}
+
 /**
  * 生成给提示词的技能段落（没有命中就返回空数组，调用方直接展开）。
  *
  * @param {Array} picked selectSkillsFor 的结果
  * @returns {string[]}
  */
-export function skillsPromptLines(picked = []) {
+export function skillsPromptLines(picked = [], { maxChars = 0 } = {}) {
   if (!Array.isArray(picked) || !picked.length) return [];
-  return [
-    '【可用的做法（技能库）】下面这些是用户整理过的标准做法，遇到同类事情照做，不要重新摸索：',
-    ...picked.map((s, i) => {
-      const head = s.summary ? `${s.title}（${s.summary}）` : s.title;
-      return `${i + 1}. ${head}\n${String(s.howto ?? '').trim()}`;
-    }),
-  ];
+  const header = '【可用的做法（技能库）】下面这些是用户整理过的标准做法，遇到同类事情照做，不要重新摸索：';
+  const budget = Math.max(0, Number(maxChars) || 0);
+  const rows = [];
+  let used = header.length;
+  let omitted = 0;
+  for (const [i, s] of picked.entries()) {
+    const head = s.summary ? `${s.title}（${s.summary}）` : s.title;
+    let body = `${i + 1}. ${head}
+${String(s.howto ?? '').trim()}`;
+    if (!budget) {
+      rows.push(body);
+      continue;
+    }
+    const room = budget - used;
+    // 至少留出「一行头 + 一点正文」的空间，否则整条直接省略
+    if (room < 80) { omitted += 1; continue; }
+    if (body.length > room) {
+      body = `${body.slice(0, Math.max(0, room - 20))}…（本条已按上下文预算截断）`;
+    }
+    rows.push(body);
+    used += body.length + 1; // +1 = join 的分隔符
+  }
+  if (!rows.length) return [];
+  const out = [header, ...rows];
+  if (omitted) out.push(`（另有 ${omitted} 条技能因当前模型上下文较小未加载）`);
+  return out;
 }
 
 /**

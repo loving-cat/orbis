@@ -16,6 +16,7 @@ import {
   selectSkillsFor,
   splitWords,
   skillsPromptLines,
+  skillBudgetForContext,
   SKILL_LIMITS,
 } from '../src/skills.js';
 
@@ -223,6 +224,56 @@ test('提示词：包含标题、摘要和做法', () => {
   assert.match(text, /查日志/);
   assert.match(text, /线上排查/);
   assert.match(text, /server\.log/);
+});
+
+
+// ---------------------------------------------------------------------------
+// 小上下文模型（≤128k）的技能注入限流
+//
+// 真机：`nemotron-3.5-super-vl`（128k）上一轮压缩后，老会话里还残留着 5 篇技能全文，
+// 加上工具定义与摘要已 ~117k；轮内连调 3 次工具后第 4 次请求到 124,339 / 128,000，
+// 模型只吐 1 个 token 就被截断（stopReason: 'length'）。技能是参考，不是必需输入。
+// ---------------------------------------------------------------------------
+
+test('★ skillBudgetForContext：128k 及以下收紧成 2 条 / 6,000 字', () => {
+  const small = skillBudgetForContext(128_000);
+  assert.equal(small.small, true);
+  assert.equal(small.max, 2, '小窗口只给两条');
+  assert.equal(small.maxChars, 6_000, '并且有硬字数上限');
+  assert.equal(skillBudgetForContext(96_000).small, true);
+  assert.equal(skillBudgetForContext(64_000).max, 2);
+});
+
+test('skillBudgetForContext：大窗口 / 未知 / 非法值保持原样（5 条、不截断）', () => {
+  for (const cw of [1_000_000, 200_000, 0, -1, null, undefined, 'abc']) {
+    const budget = skillBudgetForContext(cw);
+    assert.equal(budget.small, false, 'cw=' + cw + ' 不该被收紧');
+    assert.equal(budget.max, 5);
+    assert.equal(budget.maxChars, 0, 'maxChars=0 表示不额外截断');
+  }
+});
+
+test('★ skillsPromptLines({maxChars})：超长单条截断并标注，装不下的直接省略', () => {
+  const picked = [
+    { title: '技能一', summary: '说明', howto: 'a'.repeat(4_000) },
+    { title: '技能二', summary: '', howto: 'b'.repeat(4_000) },
+    { title: '技能三', summary: '', howto: 'c'.repeat(4_000) },
+  ];
+  const lines = skillsPromptLines(picked, { maxChars: 6_000 });
+  const text = lines.join('\n');
+  assert.ok(text.length <= 6_400, '总长要有界，实际 ' + text.length);
+  assert.match(text, /本条已按上下文预算截断/, '被截断的单条要标出来');
+  assert.match(text, /另有 \d+ 条技能因当前模型上下文较小未加载/, '装不下的要有省略说明');
+  assert.equal(text.includes('技能三'), false, '第三条不该出现');
+});
+
+test('skillsPromptLines 不传预算时行为不变（大上下文模型）', () => {
+  const picked = Array.from({ length: 5 }, (_, i) => ({
+    title: '技能' + i, summary: '', howto: '做法' + i,
+  }));
+  const lines = skillsPromptLines(picked);
+  assert.equal(lines.length, 6, '标题行 + 5 条');
+  assert.equal(lines.join('\n').includes('未加载'), false, '不该有省略说明');
 });
 
 console.log(`\n技能库测试：${pass}/${pass + fail} 通过`);

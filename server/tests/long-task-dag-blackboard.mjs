@@ -48,16 +48,20 @@ globalThis.fetch = () => {
 const src = (f) => pathToFileURL(path.join(import.meta.dirname, '..', 'src', f));
 const { store } = await import(src('store.js'));
 const { createTaskRun } = await import(src('tasks/task-run-factory.js'));
-const { createChildTask } = await import(src('tasks/task-subtasks.js'));
+const { createChildTask, applyPlanToChildren } = await import(src('tasks/task-subtasks.js'));
 const { createTaskSupervisor } = await import(src('tasks/task-supervisor.js'));
 const { reduceTaskRun } = await import(src('tasks/task-reduce.js'));
 const { EVENT, STATE } = await import(src('tasks/task-contract.js'));
 const DAG = await import(src('tasks/task-dag.js'));
 const BOARD = await import(src('tasks/task-blackboard.js'));
-const { normalizePlan, renderPlan } = await import(src('tasks/task-plan-tool.js'));
-const { planStepIds, buildCheckpointApproveTool } = await import(src('tasks/task-member-tool.js'));
+const { normalizePlan, renderPlan, buildPlanTool } = await import(src('tasks/task-plan-tool.js'));
+const { planStepIds, buildCheckpointApproveTool, buildMemberTaskTool } = await import(src('tasks/task-member-tool.js'));
 const { buildBlackboardTool } = await import(src('tasks/task-blackboard-tool.js'));
 const { buildLeadPrompt, buildMemberPrompt } = await import(src('tasks/task-prompts.js'));
+const { approveCheckpoint } = await import(src('tasks/task-checkpoint.js'));
+const { createTaskRuntime } = await import(src('tasks/task-runtime.js'));
+const LANES = await import(src('runner/session-lanes.js'));
+const BRIDGE = await import(src('runner/task-bridge.js'));
 
 const results = [];
 async function test(name, fn) {
@@ -726,6 +730,346 @@ await test('21. ★ 直接 runTask(kid.id) 不绕过依赖/checkpoint 闸门', a
   assert.equal(out2.status, 'wait', `直接推进 checkpoint 子任务应返回 wait，实际 ${out2.status}`);
   assert.equal(rec.starts.size, before, 'checkpoint 子任务被直接推进时不得触发执行器');
   sup.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// 计划条目落到子任务上（task_plan 的 dependsOn / checkpoint 派活时生效）
+// ---------------------------------------------------------------------------
+
+/** 直接把一份计划写到根任务上（等价于负责人调了 task_plan）。 */
+async function setPlan(rootId, steps) {
+  const normalized = normalizePlan(steps, members.map((m) => ({ id: m.id, name: m.name })));
+  assert.equal(normalized.ok, true, normalized.text ?? '');
+  await taskRuns.mutate(rootId, {
+    mutate: (cur) => ({ ...cur, plan: { steps: normalized.steps, at: Date.now(), revision: cur.revision } }),
+  });
+  return normalized.steps;
+}
+
+/** 派一份活：不带任何默认值（`checkpointBeforeRun` 不传 = 跟计划走）。 */
+async function dispatch(parentId, { botId, requirement, ...rest } = {}) {
+  const out = await createChildTask({
+    taskRuns,
+    parentTaskRun: taskRuns.read(parentId).taskRun,
+    botId,
+    goal: { requirement, verification: [{ id: 'v1', kind: 'expert', description: '负责人确认' }] },
+    ...rest,
+  });
+  assert.equal(out.ok, true, '派活应成功：' + (out.text ?? out.code ?? ''));
+  return out;
+}
+
+const fresh = (id) => taskRuns.read(id).taskRun;
+
+await test('22. ★ 负责人跑在 #fb 泳道（分档 / 兜底换模型）：计划、派活工具按泳道读受管上下文', async () => {
+  const rootId = await makeRoot({ requirement: '负责人这一轮换了模型' });
+  const seen = {};
+  const sup = makeSupervisor({
+    execute: async (args) => {
+      if (args?.taskRun?.id !== rootId || seen.ran) return { ok: true, stop: 'returned' };
+      seen.ran = true;
+      // 受管上下文挂在 #fb 泳道的会话上（turn-executor 就是这么挂的）
+      const fb = LANES.sessionLaneKey({ roomId: room.id, botId: chief.id, modelOverride: 'cloud/strong' });
+      const runner = {
+        sessions: new Map([[fb, {
+          managedContext: { taskRunId: rootId, revision: args.revision, attemptId: args.attemptId, botId: chief.id },
+        }]]),
+        currentTaskContext(roomId, botId, laneKey = null) {
+          return BRIDGE.currentTaskContext(this, roomId, botId, laneKey);
+        },
+      };
+      const steps = [
+        { member: members[0].id, task: '取数' },
+        { member: members[1].id, task: '建模', dependsOn: [1] },
+      ];
+      const verification = [{ kind: 'expert', description: '负责人确认' }];
+      // 旧接线（不带泳道键）：按主泳道查 → 当成「没有受管任务」，计划/派活全被拒
+      seen.legacy = await buildPlanTool({ runner, store, roomId: room.id, botId: chief.id })
+        .execute('c0', { steps });
+      seen.plan = await buildPlanTool({ runner, store, roomId: room.id, botId: chief.id, laneKey: fb })
+        .execute('c1', { steps });
+      const assign = buildMemberTaskTool({ runner, store, roomId: room.id, botId: chief.id, laneKey: fb });
+      // 负责人照计划派活，没有把依赖再抄一遍
+      seen.a = await assign.execute('c2', { memberBotId: members[0].id, requirement: '取数', verification });
+      seen.b = await assign.execute('c3', { memberBotId: members[1].id, requirement: '建模', verification });
+      return { ok: true, stop: 'returned' };
+    },
+    executeMember: async (args) => {
+      await sleep(20);
+      return memberOk(args.taskRun.id)();
+    },
+  });
+  sup.notify(rootId);
+  await waitFor(sup, [rootId], () => seen.b !== undefined, { timeoutMs: 10_000 });
+  sup.dispose();
+  assert.equal(seen.legacy?.isError, true, '不带泳道键时应读不到上下文');
+  assert.match(seen.legacy.content[0].text, /当前没有受管任务/);
+  assert.notEqual(seen.plan?.isError, true, '计划应写进去：' + seen.plan?.content?.[0]?.text);
+  assert.notEqual(seen.a?.isError, true, 'A 应派出去：' + seen.a?.content?.[0]?.text);
+  assert.notEqual(seen.b?.isError, true, 'B 应派出去：' + seen.b?.content?.[0]?.text);
+  const kidB = fresh(seen.b.details.childTaskRunId);
+  assert.deepEqual(kidB.dependsOn, [seen.a.details.childTaskRunId], '计划里写的依赖要自动带上');
+  assert.equal(seen.b.details.planStep, 2);
+  assert.match(seen.b.content[0].text, /对应计划第 2 条/);
+});
+
+await test('23. 计划条目 ↔ 子任务：认领顺序 / 被取消的不占条目 / 序号挪了按正文认 / 显式序号越界拒绝', () => {
+  const steps = [
+    { task: '取数', memberBotId: 'b_1' },
+    { task: '建模', memberBotId: 'b_2', dependsOn: [1] },
+    { task: '复核', memberBotId: 'b_1', dependsOn: [2], checkpoint: true },
+  ];
+  const excerpt = '完成负责人在群里交代给你的部分：@甲 先把数据取出来';
+  const kids = [
+    { id: 'k_old', createdAt: 1, state: 'cancelled', owner: { leadBotId: 'b_1' }, goal: { requirement: excerpt } },
+    { id: 'k_a', createdAt: 2, state: 'queued', owner: { leadBotId: 'b_1' }, goal: { requirement: excerpt } },
+    { id: 'k_b', createdAt: 3, state: 'queued', owner: { leadBotId: 'b_2' }, goal: { requirement: '建模' } },
+  ];
+  const bound = DAG.planStepBindings(steps, kids);
+  assert.equal(bound.get(1)?.id, 'k_a', '被取消的不占条目；@ 派活的摘录按同成员派出先后认领');
+  assert.equal(bound.get(2)?.id, 'k_b', '正文相同直接认');
+  assert.equal(bound.has(3), false, '第 3 条还没派');
+
+  // 再派一份给 b_1：认到它还空着的第 3 条，带上「等第 2 条」与把关
+  const m = DAG.matchPlanStep({ steps, bindings: bound, memberBotId: 'b_1', requirement: '核一遍' });
+  assert.equal(m.index, 3);
+  const links = DAG.planLinksOf({ steps, bindings: bound, index: 3 });
+  assert.deepEqual(links.dependsOn, ['k_b']);
+  assert.deepEqual(links.waitSteps, []);
+  assert.equal(links.checkpoint, true);
+
+  // 前置条目还没派出去 → waitSteps（调用方必须挂起，不能当没有依赖）
+  const early = DAG.planLinksOf({ steps, bindings: new Map(), index: 2 });
+  assert.deepEqual(early.dependsOn, []);
+  assert.deepEqual(early.waitSteps, [{ index: 1, task: '取数' }]);
+
+  assert.match(DAG.matchPlanStep({ steps, bindings: bound, explicitStep: 9 }).error, /没有第 9 条/);
+  assert.equal(DAG.matchPlanStep({ steps: [], bindings: bound, memberBotId: 'b_1' }), null, '没有计划就不认领');
+
+  // 计划修订、序号挪了：按派活时记下的正文认回原来那份活
+  const rebound = DAG.planStepBindings([{ task: '新加的一条', memberBotId: 'b_9' }, ...steps], [
+    { id: 'k_x', createdAt: 5, owner: { leadBotId: 'b_1' }, planStep: { index: 1, task: '取数' }, goal: { requirement: '随手写的' } },
+  ]);
+  assert.equal(rebound.get(2)?.id, 'k_x');
+
+  const resolved = DAG.resolvePlanWaits([{ index: 1, task: '取数' }, { index: 7, task: '已经删掉的条目' }], steps, bound);
+  assert.deepEqual(resolved.resolved.map((x) => x.kidId), ['k_a']);
+  assert.deepEqual(resolved.still.map((x) => x.task), ['已经删掉的条目'], '对不上计划的前置留着，不能当成已满足');
+
+  // 计划里两条正文完全相同（分别指派给 b_1 和 b_2）+ b_1 还有一条别的空步骤：
+  //   · 按 b_2 派同正文 → 先命同成员且空着的第 2 条；
+  //   · 两条同正文都占满后再按该正文派给 b_1 → 返回 null（既不回退 same[0] 撞重，也不错绑第 3 条）。
+  const dupSteps = [
+    { task: '跑单元测试', memberBotId: 'b_1' },
+    { task: '跑单元测试', memberBotId: 'b_2' },
+    { task: '写总结', memberBotId: 'b_1' },
+  ];
+  const mDupB2 = DAG.matchPlanStep({ steps: dupSteps, bindings: new Map(), memberBotId: 'b_2', requirement: '跑单元测试' });
+  assert.equal(mDupB2?.index, 2, '同正文多条时优先匹配同成员空位');
+  const dupTaken = new Map([
+    [1, { id: 'kid_dup_1' }],
+    [2, { id: 'kid_dup_2' }],
+  ]);
+  const mDupFull = DAG.matchPlanStep({ steps: dupSteps, bindings: dupTaken, memberBotId: 'b_1', requirement: '跑单元测试' });
+  assert.equal(mDupFull, null, '同正文条目全被占满时返回 null，不能回退 same[0] 或错绑别的条目');
+});
+
+await test('24. ★ 计划里写的依赖派活时自动生效：照计划 @ 派活（没抄依赖），B 也绝不先于 A 开跑', async () => {
+  const rootId = await makeRoot({ requirement: '按计划排先后' });
+  await setPlan(rootId, [
+    { member: members[0].id, task: '取数' },
+    { member: members[1].id, task: '建模', dependsOn: [1] },
+  ]);
+  // @ 派活的正文是摘录，对不上计划原文：靠「同一成员还空着的条目」认领
+  const a = await dispatch(rootId, { botId: members[0].id, requirement: '完成负责人在群里交代给你的部分：@甲 先取数' });
+  const b = await dispatch(rootId, { botId: members[1].id, requirement: '完成负责人在群里交代给你的部分：@乙 建模' });
+  const kidB = fresh(b.child.id);
+  assert.deepEqual(kidB.dependsOn, [a.child.id], '以前这里是 []：两个人同时开跑');
+  assert.equal(kidB.planStep?.index, 2);
+  assert.equal(kidB.checkpointBeforeRun, false);
+  assert.equal(fresh(a.child.id).planStep?.index, 1);
+
+  const rec = recorder();
+  const sup = makeSupervisor({
+    execute: async () => ({ ok: true, stop: 'returned' }),
+    executeMember: async (args) => {
+      await sleep(40);
+      return memberOk(args.taskRun.id)();
+    },
+    rec,
+  });
+  sup.notify(rootId);
+  const runs = await waitFor(sup, [a.child.id, b.child.id], (rs) => rs.every((r) => r.state === STATE.completed));
+  sup.dispose();
+  assert.equal(runs.every((r) => r.state === STATE.completed), true, '两份活都应交付');
+  assert.ok(rec.ends.get(a.child.id) <= rec.starts.get(b.child.id), 'B 必须在 A 交付之后才开跑');
+  assert.match(rec.prompts.get(b.child.id) ?? '', /前置子任务已经交付/, 'B 要拿到 A 的交付');
+});
+
+await test('25. ★ 前置条目还没派出去：下游先挂起不开跑；前置一派出就自动接上依赖、撤掉临时把关', async () => {
+  const rootId = await makeRoot({ requirement: '倒着派' });
+  await setPlan(rootId, [
+    { member: members[0].id, task: '取数' },
+    { member: members[1].id, task: '建模', dependsOn: [1] },
+  ]);
+  const b = await dispatch(rootId, { botId: members[1].id, requirement: '建模' });
+  let kidB = fresh(b.child.id);
+  assert.equal(kidB.checkpointBeforeRun, true, '前置没派出 → 挂起（不能当成没有依赖）');
+  assert.deepEqual(kidB.planHold?.waitSteps?.map((w) => w.index), [1]);
+  assert.deepEqual(b.plan.waitSteps.map((w) => w.index), [1]);
+  assert.equal(DAG.dependencyStatus(kidB, [kidB]), 'checkpoint', '走既有把关唤醒链路，不会死等');
+
+  // 负责人提示词：计划每条带状态；挂起的单独说清在等哪一条，不混进「前置交付了等你审」
+  const prompt = buildLeadPrompt({ phase: 'plan', taskRun: fresh(rootId), children: [kidB] });
+  assert.match(prompt, /1\. .*取数（还没派出去）/);
+  assert.match(prompt, /2\. .*建模［等第 1 条完成］（已派出，挂着等前面的条目派出）/);
+  assert.match(prompt, /第 1 条「取数」/);
+  assert.doesNotMatch(prompt, /前置已经都交付了/);
+
+  // 派出第 1 条 → B 自动接上依赖、撤掉临时把关（计划本身没要求把关）
+  const a = await dispatch(rootId, { botId: members[0].id, requirement: '取数' });
+  kidB = fresh(b.child.id);
+  assert.deepEqual(kidB.dependsOn, [a.child.id]);
+  assert.equal(kidB.planHold, null);
+  assert.equal(kidB.checkpointBeforeRun, false);
+
+  const rec = recorder();
+  const sup = makeSupervisor({
+    execute: async () => ({ ok: true, stop: 'returned' }),
+    executeMember: async (args) => {
+      await sleep(30);
+      return memberOk(args.taskRun.id)();
+    },
+    rec,
+  });
+  sup.notify(rootId);
+  await waitFor(sup, [a.child.id, b.child.id], (rs) => rs.every((r) => r.state === STATE.completed));
+  sup.dispose();
+  assert.ok(rec.starts.has(b.child.id), 'B 应该跑起来');
+  assert.ok(rec.ends.get(a.child.id) <= rec.starts.get(b.child.id), 'B 在 A 交付之后才开跑');
+  assert.equal(rec.leads.filter((l) => l.at < rec.starts.get(b.child.id)).length, 0,
+    '依赖接上之后是自动接力，不需要叫醒负责人放行');
+});
+
+await test('26. 计划里的把关位自动带上；显式 checkpointBeforeRun=false 听显式的；显式序号越界拒绝', async () => {
+  const rootId = await makeRoot({ requirement: '把关跟计划走' });
+  await setPlan(rootId, [
+    { member: members[0].id, task: '取数' },
+    { member: members[1].id, task: '建模', dependsOn: [1], checkpoint: true },
+    { member: members[2].id, task: '出图', dependsOn: [1], checkpoint: true },
+  ]);
+  const a = await dispatch(rootId, { botId: members[0].id, requirement: '取数' });
+  const b = await dispatch(rootId, { botId: members[1].id, requirement: '建模' });
+  assert.equal(fresh(b.child.id).checkpointBeforeRun, true, '计划要求把关');
+  assert.equal(fresh(b.child.id).planHold, null, '前置已派出：这是真把关，不是挂起');
+  const c = await dispatch(rootId, { botId: members[2].id, requirement: '出图', checkpointBeforeRun: false });
+  assert.equal(fresh(c.child.id).checkpointBeforeRun, false, '显式 false 说了算');
+  assert.deepEqual(fresh(c.child.id).dependsOn, [a.child.id], '依赖照样带上');
+
+  const bad = await createChildTask({
+    taskRuns, parentTaskRun: fresh(rootId), botId: members[2].id, planStep: 9,
+    goal: { requirement: '不存在的条目', verification: [{ id: 'v1', kind: 'expert', description: 'x' }] },
+  });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.code, 'bad_plan_step');
+  assert.match(bad.text, /没有第 9 条/);
+});
+
+await test('27. ★ 先派活、后写计划：还没开跑的活按计划补上依赖', async () => {
+  const rootId = await makeRoot({ requirement: '先派后计划' });
+  const a = await dispatch(rootId, { botId: members[0].id, requirement: '完成负责人在群里交代给你的部分：@甲 取数' });
+  const b = await dispatch(rootId, { botId: members[1].id, requirement: '完成负责人在群里交代给你的部分：@乙 建模' });
+  assert.deepEqual(fresh(b.child.id).dependsOn, [], '没有计划时不该凭空有依赖');
+  await setPlan(rootId, [
+    { member: members[0].id, task: '取数' },
+    { member: members[1].id, task: '建模', dependsOn: [1] },
+  ]);
+  const out = await applyPlanToChildren({ taskRuns, parentTaskRun: fresh(rootId) });
+  assert.ok(out.applied.includes(b.child.id));
+  assert.deepEqual(fresh(b.child.id).dependsOn, [a.child.id]);
+  assert.equal(fresh(b.child.id).planStep?.index, 2, '认领结果要落盘，之后不再漂');
+  assert.equal(fresh(a.child.id).planStep?.index, 1);
+});
+
+await test('28. 负责人放行挂起的活 = 不等了：挂起记录清掉，之后再派出前置也不回头补依赖', async () => {
+  const rootId = await makeRoot({ requirement: '放行挂起' });
+  await setPlan(rootId, [
+    { member: members[0].id, task: '取数' },
+    { member: members[1].id, task: '建模', dependsOn: [1] },
+  ]);
+  const b = await dispatch(rootId, { botId: members[1].id, requirement: '建模' });
+  const approved = await approveCheckpoint({ taskRuns, childTaskRunId: b.child.id, botId: chief.id, notify: () => {} });
+  assert.equal(approved.ok, true);
+  assert.equal(fresh(b.child.id).planHold, null);
+  await dispatch(rootId, { botId: members[0].id, requirement: '取数' });
+  assert.deepEqual(fresh(b.child.id).dependsOn, [], '放行过的不再回头加依赖（会让它停在半路）');
+});
+
+await test('29. ★ @ 派活读的是这一轮刚写下的计划：正文先 @ 下游也排得对，A 交付后 B 才开跑', async () => {
+  const rootId = await makeRoot({ requirement: '一轮里先写计划再 @ 人', autonomous: true });
+  const order = [];
+  let leadTurns = 0;
+  const runner = {
+    store,
+    model: { provider: 'cloud', id: 'default' },
+    isBusy: () => false,
+    abortManagedTask: () => {},
+    roomHasBot: () => true,
+    breakerFor: () => null,
+    breakers: new Map(),
+    async runRound(_roomId, opts) {
+      const ctx = opts?.managedContext ?? {};
+      if (ctx.taskRunId === rootId) {
+        leadTurns += 1;
+        if (leadTurns === 1) {
+          // 这一轮里先写计划（等价于负责人在本轮调了 task_plan）……
+          await setPlan(rootId, [
+            { member: members[0].id, task: '取数' },
+            { member: members[1].id, task: '建模', dependsOn: [1] },
+          ]);
+          // ……再在正文里 @ 人，而且下游写在前面
+          return {
+            ok: true, stop: 'returned',
+            text: `@${members[1].name} 等数据出来后建模\n@${members[0].name} 先把数据取出来`,
+          };
+        }
+        return { ok: true, stop: 'returned', appliedCompletion: true, text: '汇总' };
+      }
+      order.push({ id: ctx.taskRunId, phase: 'start', at: Date.now() });
+      await sleep(30);
+      order.push({ id: ctx.taskRunId, phase: 'end', at: Date.now() });
+      return { ok: true, stop: 'returned', appliedCompletion: true, artifacts: ['out/' + ctx.taskRunId + '.md'] };
+    },
+  };
+  const runtime = createTaskRuntime({
+    taskRuns,
+    runner,
+    routeOf: () => ({ roomId: room.id, botId: chief.id, kind: 'group' }),
+    verify: async () => ({ passed: true, reason: '测试验收通过' }),
+    access: { stat: async () => ({ ok: false }), readText: async () => ({ ok: false }), resolveRef: () => null },
+    clock: () => Date.now(),
+    log: () => {},
+    emit: () => {},
+  });
+  runtime.supervisor.notify(rootId);
+  const deadline = Date.now() + 20_000;
+  let kids = [];
+  while (Date.now() < deadline) {
+    await Promise.race([runtime.supervisor.idle(), sleep(40)]);
+    kids = taskRuns.listAll().taskRuns.filter((r) => r.parentTaskId === rootId);
+    if (kids.length === 2 && kids.every((k) => k.state === STATE.completed)) break;
+    await sleep(40);
+  }
+  runtime.supervisor.dispose();
+  const kidA = kids.find((k) => k.owner?.leadBotId === members[0].id);
+  const kidB = kids.find((k) => k.owner?.leadBotId === members[1].id);
+  assert.ok(kidA && kidB, '两份活都该建出来');
+  assert.deepEqual(kidB.dependsOn, [kidA.id], '本轮刚写的计划必须对这批 @ 派活生效');
+  assert.equal(kidB.planHold ?? null, null, '同一批里前置也派出了：挂起应当场撤掉');
+  const startB = order.find((e) => e.id === kidB.id && e.phase === 'start')?.at;
+  const endA = order.find((e) => e.id === kidA.id && e.phase === 'end')?.at;
+  assert.ok(startB && endA && endA <= startB, `B 必须在 A 交付后才开跑：${JSON.stringify(order)}`);
+  assert.equal(order[0]?.id, kidA.id, '第一个开跑的必须是上游');
 });
 
 // ---------------------------------------------------------------------------

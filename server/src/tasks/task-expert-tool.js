@@ -11,7 +11,7 @@ import { VERIFY_KIND } from './task-contract.js';
 const text = (s) => ({ content: [{ type: 'text', text: s }] });
 const error = (s) => ({ content: [{ type: 'text', text: s }], isError: true });
 
-export function buildExpertReviewTool({ runner, store, roomId, botId }) {
+export function buildExpertReviewTool({ runner, store, roomId, botId, laneKey = null }) {
   const taskRuns = store.taskRuns;
   return defineTool({
     name: 'task_expert_review',
@@ -26,7 +26,7 @@ export function buildExpertReviewTool({ runner, store, roomId, botId }) {
       expectedRevision: Type.Optional(Type.Integer({ description: '负责人看到的目标版本；不填用当前版本' })),
     }),
     execute: async (_id, params) => {
-      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId });
+      const submission = readManagedSubmission({ runner, taskRuns, roomId, botId, laneKey });
       if (submission.kind !== SUBMISSION.managed) return error(submission.kind === SUBMISSION.invalid ? submission.text : '当前不是受管验收回合。');
       const room = store.getRoom(roomId);
       if (!room || !isRoomLead(room, botId)) return error('只有本部门真实负责人可以作专业验收判断。');

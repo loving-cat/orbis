@@ -102,6 +102,21 @@ export function decideRetry({
     };
   }
 
+  // ★ 404 = 模型不存在/已下线：不是「这一刻没排上」，重试只会原地空转。
+  //   给 `kind: 'model-not-found'`，上层据此**一次就切模型**（见 model-fallback）。
+  const notFoundCode = Number(status);
+  if (
+    notFoundCode === 404 ||
+    /\b404\b|model.{0,20}not[ _-]?found|no such model|model.{0,12}(?:does not exist|deprecated|下线|不存在)/i.test(text)
+  ) {
+    return {
+      retry: false,
+      why: '模型不存在或已下线（HTTP 404），不再原地重试',
+      kind: 'model-not-found',
+      delayMs: 0,
+    };
+  }
+
   // ★ 临时故障：限流 / 上游抖动 / 网关错误。
   //
   //   这类失败的共同点是「不是任务做不成，只是这一刻没排上」。
@@ -229,6 +244,10 @@ export function isRecoverableFailure({ error = '', status = null } = {}) {
   if (code === 402 || /\b402\b/.test(text) || QUOTA_PATTERNS.test(text)) {
     return false;
   }
+  // 模型不存在/已下线：换模型才有用，重试没用
+  if (code === 404 || /\b404\b|model.{0,20}not[ _-]?found|no such model/i.test(text)) {
+    return false;
+  }
 
   // 临时故障：最值得再试的一类
   if (
@@ -275,7 +294,10 @@ export function isUpstreamTransient({ error = '', status = null, kind = '' } = {
   const text = String(error ?? '');
   const code = Number(status);
   if (code === 401 || code === 403 || code === 402) return false;
+  // 404 / 模型下线：上游是活的，只是这个模型没了 —— 等多久都不会好
+  if (code === 404) return false;
   if (kind === 'auth' || kind === 'quota' || kind === 'aborted' || kind === 'budget') return false;
+  if (kind === 'model-not-found') return false;
   if (kind === 'breaker-open') return true;
   // 模型挂住同上：这是「路不通」，不是「活做不成」→ 走分钟级退避，别烧完快速重试
   if (kind === 'model-idle') return true;
@@ -402,6 +424,13 @@ export function failureNote({
       `${botName} 没能完成：模型接口连续 ${attempt} 次不稳定（${r}）。` +
       '\n这种情况通常不是任务本身的问题，建议检查模型组的 key 是否还有额度、' +
       '接口地址是否正常，恢复后让它重跑即可。'
+    );
+  }
+  // ★ 模型没了（404）：用户要的是「换哪个」，不是「再试一次」
+  if (kind === 'model-not-found') {
+    return (
+      `${botName} 没能完成：当前模型已下线或不可用（${r}）。` +
+      '\n请到设置里改成还活着的模型（或启用一个备用模型组），系统下次会直接用它。'
     );
   }
   return `${botName} 没能完成（${r}）`;

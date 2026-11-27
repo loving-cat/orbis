@@ -312,6 +312,63 @@ await test('★ 3. 子任务卡在 401 → 父任务跳过交回（childHandBack
   assert.match(parent.flags?.blockedReason ?? '', /auth/);
 });
 
+await test('★ 3c. 负责人在自己这一轮里派出的子任务卡在 401 → 不用任何人去叫，父任务自己醒来如实阻塞', async () => {
+  // 真实链路：子任务是负责人这一轮里 assign_member_task 派出来的，之后由调度器单独跑。
+  // 父任务那一轮已经因「签名没变、有在途子任务」返回 wait —— 以前子任务永久受阻后
+  // 没有任何东西叫醒父任务，它会永远停在「准备中」（上面第 3 条靠测试手动 notify 掩盖了这一点）。
+  for (const autonomous of [false, true]) {
+    const parentId = await makeRoot({ autonomous });
+    let kidId = null;
+    let leadTurns = 0;
+    const sup = makeSupervisor({
+      execute: async () => {
+        leadTurns += 1;
+        if (!kidId) kidId = await addKid(parentId);
+        return { ok: true, stop: 'returned' };
+      },
+      executeMember: async () => ({ ok: false, stop: 'failed', error: '401 unauthorized：鉴权失败', status: 401 }),
+    });
+    sup.notify(parentId);
+    const parent = await waitUntil(sup, parentId, (r) => r.state === 'blocked', { timeoutMs: 8000 });
+    sup.dispose();
+    assert.ok(kidId, '负责人这一轮应派出子任务');
+    assert.equal(taskRuns.read(kidId).taskRun.nonRetriableBlock?.kind, 'auth');
+    assert.equal(parent.state, 'blocked', `autonomous=${autonomous}：父任务必须自己醒来并阻塞，实际 ${parent.state}`);
+    assert.match(parent.flags?.blockedReason ?? '', /auth/, '要带上子任务的真实原因');
+    assert.equal(Number(parent.childHandBacks ?? 0), 0, '不可恢复的分工不该被交回重排');
+    assert.equal(leadTurns, 1, '不该为此多跑负责人');
+  }
+});
+
+await test('★ 3d. 用户单独取消一份子任务 → 父任务被叫醒重新判定（不再空等）', async () => {
+  const parentId = await makeRoot({ autonomous: false });
+  let kidId = null;
+  let leadTurns = 0;
+  const sup = makeSupervisor({
+    execute: async () => {
+      leadTurns += 1;
+      if (!kidId) kidId = await addKid(parentId);
+      return { ok: true, stop: 'returned' };
+    },
+    // 子任务一直在干活（每段让出、排续行），父任务那一轮早已返回 wait
+    executeMember: async () => ({ ok: true, stop: 'yielded', work: { files: 1 } }),
+  });
+  sup.notify(parentId);
+  await waitUntil(sup, parentId, () => Boolean(kidId) && (taskRuns.read(kidId).taskRun.attempts ?? []).length >= 1);
+  await sup.idle();
+  const before = leadTurns;
+  const out = await sup.cancelTask(kidId, { reason: '这份不要了' });
+  assert.equal(out?.ok, true, '取消应成功：' + (out?.text ?? out?.code ?? ''));
+  const deadline = Date.now() + 8000;
+  while (leadTurns === before && Date.now() < deadline) {
+    await Promise.race([sup.idle(), sleep(80)]);
+    await sleep(80);
+  }
+  sup.dispose();
+  assert.equal(taskRuns.read(kidId).taskRun.state, 'cancelled');
+  assert.ok(leadTurns > before, `取消子任务后父任务必须被叫醒、由负责人接着推进（负责人轮次 ${before} → ${leadTurns}）`);
+});
+
 await test('★ 3b. 对照：普通受阻子任务仍走既有「交回负责人」路径', async () => {
   const parentId = await makeRoot({ autonomous: true });
   const kidId = await addKid(parentId);

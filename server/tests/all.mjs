@@ -209,6 +209,12 @@ const TESTS = [
   'long-task-worktree',
   // 集群全景投影 + 候选经验通知（2.0 集群 C5）
   'long-task-waterfall-lessons',
+  // 长度上限截断止血 + 高水位压缩补盲 + 小窗口技能预算（真机 3b）
+  'turn-length-truncation',
+  // 技能注入真的接线（复审 P0：skillBudget 未声明导致静默 ReferenceError）
+  'skill-injection-live',
+  // 熔断按模型隔离：404 一次即熔断 / 同组不连坐 / C2-C3 选模（GA 接入层）
+  'model-breaker-scope',
   // 接单假设折叠 / ask_user 默认不阻塞 / 群聊续段
   'task-intake-assumptions',
   'ask-user-default',

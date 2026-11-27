@@ -516,6 +516,66 @@ await test('18. ★ approveCheckpoint 的语义拒绝都带 code（调用方据�
   assert.equal(noGate.code, 'not_checkpoint');
 });
 
+await test('19. ★ 甘特条从第一次派出执行算起（不是建档时刻）；排队段单独给；没开跑的不画执行条', () => {
+  // 建档 1100，排队到 5000 才第一次派出，干到 6000
+  const waited = makeKid('k_wait', { createdAt: 1100, attempts: [settled(5000, 6000, 10, 5)], delivery: { at: 6000 } });
+  // 还在执行：从 2000 开跑，此刻 now = 9000
+  const running = makeKid('k_run', { state: 'running', createdAt: 1500, attempts: [{ state: 'registered', startedAt: 2000 }], delivery: null });
+  // 从没开跑：还在等前置
+  const pending = makeKid('k_pend', { state: 'queued', createdAt: 1800, attempts: [], delivery: null });
+  const out = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [waited, running, pending], now: 9000 });
+  const byId = Object.fromEntries(out.items.map((i) => [i.id, i]));
+
+  assert.equal(byId.k_wait.startedAt, 5000, '以前是 createdAt=1100：排队 3.9 秒被画成了执行');
+  assert.equal(byId.k_wait.durationMs, 1000, '执行时长只算真正在干活的那段');
+  assert.equal(byId.k_wait.queuedAt, 1100);
+  assert.equal(byId.k_wait.queuedOffsetMs, 1100 - out.originAt);
+  assert.equal(byId.k_wait.offsetMs, 5000 - out.originAt);
+
+  assert.equal(byId.k_run.endedAt, null, '没结束就没有结束时间');
+  assert.equal(byId.k_run.durationMs, 9000 - 2000, '执行中的条画到此刻');
+
+  assert.equal(byId.k_pend.startedAt, null, '没开跑过就没有开始时间');
+  assert.equal(byId.k_pend.offsetMs, null);
+  assert.equal(byId.k_pend.durationMs, null);
+  assert.equal(byId.k_pend.queuedAt, 1800);
+
+  // 排序：开跑早的在前；没开跑的按建档时间
+  assert.deepEqual(out.items.map((i) => i.id), ['k_pend', 'k_run', 'k_wait']);
+});
+
+await test('20. ★ 复核返工轮数：返工两轮后通过的活仍记 2 轮（通过时 reworkCount 已清零）', () => {
+  // 与 writeCriticPassed 落盘的形状一致：rounds = 通过前打回的轮数，reworkCount 归零
+  const passedAfterRework = makeKid('k_pass', {
+    criticState: { lastVerdict: 'passed', reworkCount: 0, rounds: 2, maxRounds: 3 },
+  });
+  const failing = makeKid('k_fail', {
+    state: 'running',
+    criticState: { lastVerdict: 'failed', reworkCount: 1, rounds: 2 },
+    criticFeedback: { defects: ['还差一张表'], round: 1 },
+  });
+  const clean = makeKid('k_clean', { criticState: { lastVerdict: 'passed', reworkCount: 0, rounds: 0 } });
+  assert.equal(WF.criticOf(passedAfterRework).rounds, 2, '以前读 reworkCount → 0');
+  assert.equal(WF.criticOf(failing).rounds, 1, '没通过时看当前这一轮的打回次数');
+  assert.equal(WF.criticOf(clean).rounds, 0);
+  const out = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [passedAfterRework, failing, clean], now: 9000 });
+  assert.equal(out.telemetry.counts.criticReworks, 3);
+  assert.equal(WF.telemetrySummaryOf(makeRoot(), [passedAfterRework, failing, clean]).criticReworks, 3);
+});
+
+await test('21. ★ 被计划挂起的活：瀑布流标出在等计划第几条，而不是只说「等把关」', () => {
+  const held = makeKid('k_held', {
+    state: 'queued', attempts: [], delivery: null,
+    checkpointBeforeRun: true,
+    planHold: { waitSteps: [{ index: 1, task: '取数' }], addedGate: true },
+  });
+  const item = WF.buildTaskWaterfall({ rootRun: makeRoot(), children: [held], now: 9000 }).items[0];
+  assert.deepEqual(item.waitingPlanSteps, [1]);
+  assert.equal(item.waitingCheckpoint, true, '仍然是一道可以放行的关（负责人可以决定不等）');
+  const approved = makeKid('k_ok', { ...held, id: 'k_ok', checkpointApprovedAt: 5 });
+  assert.deepEqual(WF.dependenciesOf(approved, [approved]).waitingPlanSteps, [], '放行过的不再显示在等');
+});
+
 // ---------------------------------------------------------------------------
 
 const passed = results.filter((r) => r.ok).length;

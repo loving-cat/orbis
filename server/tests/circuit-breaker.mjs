@@ -6,8 +6,10 @@ import {
   COOLDOWN_AUTH_MS,
   COOLDOWN_TRANSIENT_MS,
   OPEN_AFTER_FAILS,
+  breakerKeyOf,
   breakerNote,
   canRequest,
+  clearBreakersForGroup,
   cooldownFor,
   createBreaker,
   isCircuitFailure,
@@ -171,4 +173,75 @@ test('没有组名时也能给出通顺的句子', () => {
   }
   const note = breakerNote(b, { now: 1000 });
   assert.match(note, /当前模型/);
+});
+
+// ---------------------------------------------------------------------------
+// 404 = 模型不存在/已下线：一次就熔断，给长冷却
+//
+// 真机：配置里留着一个已经下线的模型 ID。每次派活都白撞两次（decideRetry 默认
+// 给 1 次重试）再报错，用户看到的是「每轮都失败，但换模型就好了」。
+// 下线不会在 60 秒后自愈，所以冷却按 auth 档（10 分钟）。
+// ---------------------------------------------------------------------------
+
+test('★ 404 计入熔断，且第一次就打开（不攒 3 次）', () => {
+  assert.equal(isCircuitFailure({ status: 404 }), true);
+  assert.equal(isCircuitFailure({ kind: 'model-not-found' }), true);
+  let b = createBreaker();
+  b = recordFailure(b, { kind: 'model-not-found', status: 404, now: 1000 });
+  assert.equal(b.state, BREAKER_STATE.open, '第一次 404 就该熔断');
+  assert.equal(b.cooldownMs, COOLDOWN_AUTH_MS, '下线模型不会 60 秒复活，给长冷却');
+  assert.equal(canRequest(b, 1000 + 1).allow, false);
+  assert.equal(canRequest(b, 1000 + COOLDOWN_AUTH_MS + 1).allow, true, '冷却结束后放探路请求');
+});
+
+test('★ 404 的冷却比临时故障长得多（不是同一个档）', () => {
+  assert.equal(cooldownFor({ status: 404 }), COOLDOWN_AUTH_MS);
+  assert.equal(cooldownFor({ kind: 'model-not-found' }), COOLDOWN_AUTH_MS);
+  assert.ok(COOLDOWN_AUTH_MS >= COOLDOWN_TRANSIENT_MS * 5);
+});
+
+test('★ 400/422 仍然不算熔断（是我们的 bug，重试和熔断都救不了）', () => {
+  assert.equal(isCircuitFailure({ status: 400 }), false);
+  assert.equal(isCircuitFailure({ status: 422 }), false);
+  let b = createBreaker();
+  for (let i = 0; i < 5; i++) b = recordFailure(b, { status: 422, now: 1000 });
+  assert.equal(b.state, BREAKER_STATE.closed);
+});
+
+// ---------------------------------------------------------------------------
+// 按模型隔离：key = groupId/modelId，清空按组前缀
+// ---------------------------------------------------------------------------
+
+test('breakerKeyOf：合法 slug 拆出 key 与 groupId', () => {
+  assert.deepEqual(breakerKeyOf('g1/model-a'), { key: 'g1/model-a', groupId: 'g1' });
+  // 模型 id 里带斜杠也只认第一个
+  assert.deepEqual(breakerKeyOf('g1/vendor/model-b'), { key: 'g1/vendor/model-b', groupId: 'g1' });
+  assert.deepEqual(breakerKeyOf('  g2/m  '), { key: 'g2/m', groupId: 'g2' });
+});
+
+test('breakerKeyOf：没组没模型的 slug 一律无效（别造出空 key 的熔断器）', () => {
+  for (const bad of ['', '   ', 'onlygroup', '/model', 'g1/', null, undefined, 42]) {
+    assert.deepEqual(breakerKeyOf(bad), { key: '', groupId: '' }, `slug=${bad}`);
+  }
+});
+
+test('★ clearBreakersForGroup：只清这一组的所有模型，别的组不受影响', () => {
+  const map = new Map([
+    ['g1/dead-model', { state: 'open' }],
+    ['g1/healthy-model', { state: 'closed' }],
+    ['g1/vendor/x', { state: 'open' }],
+    ['g10/other', { state: 'open' }],
+    ['g2/model', { state: 'open' }],
+  ]);
+  const cleared = clearBreakersForGroup(map, 'g1');
+  assert.equal(cleared, 3);
+  assert.deepEqual([...map.keys()].sort(), ['g10/other', 'g2/model']);
+  // 前缀清理不能把 g10 当成 g1 的子串误删
+  assert.equal(map.has('g10/other'), true);
+});
+
+test('clearBreakersForGroup：空组名/坏 map 安全返回 0', () => {
+  assert.equal(clearBreakersForGroup(new Map([['g1/m', {}]]), ''), 0);
+  assert.equal(clearBreakersForGroup(null, 'g1'), 0);
+  assert.equal(clearBreakersForGroup({}, 'g1'), 0);
 });

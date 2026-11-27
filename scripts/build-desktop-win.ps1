@@ -81,7 +81,19 @@ if (-not $hasLinker) {
 
 Push-Location $crate
 try {
-  Write-Host "== cargo test --release =="
+  # Absolute build paths are compiled into the binary as plain strings (cargo
+  # registry sources such as ~/.cargo/registry/src/.../crc32fast-1.5.6). strip
+  # does not remove them, and scripts/prepare-windows-bundle.mjs refuses to
+  # rewrite anything under server/ (the sha256 next to the helper would break),
+  # so a helper built without this remap makes pack-windows.ps1 fail the release
+  # scan with "发行包仍有 N 个文件包含本机路径".
+  $previousRustFlags = $env:RUSTFLAGS
+  $remap = @(
+    "--remap-path-prefix=$env:USERPROFILE=~",
+    "--remap-path-prefix=$root=."
+  ) -join ' '
+  $env:RUSTFLAGS = if ($previousRustFlags) { "$previousRustFlags $remap" } else { $remap }
+  Write-Host "== cargo test --release (RUSTFLAGS=$env:RUSTFLAGS) =="
   & cargo test --release
   if ($LASTEXITCODE -ne 0) { throw "cargo test failed ($LASTEXITCODE)" }
   Write-Host "== cargo build --release =="
@@ -94,7 +106,18 @@ try {
   # from DESKTOP_HELPER_VERSION (and falls back to PowerShell when it does).
   & node (Join-Path $root "server\tools\check-desktop-helper-version.mjs") (Join-Path $crate "target\release\orbis-desktop-win.exe")
   if ($LASTEXITCODE -ne 0) { throw "helper version does not match server/src/desktop-helper-win.js" }
+  # Fail here instead of at pack time, with the file and the offending path named.
+  $builtExe = Join-Path $crate "target\release\orbis-desktop-win.exe"
+  $bytes = [System.IO.File]::ReadAllBytes($builtExe)
+  $latin = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+  foreach ($needle in @($env:USERPROFILE, ($env:USERPROFILE -replace '\\', '/'), $root)) {
+    if ($needle -and $latin.Contains($needle)) {
+      throw "built helper still contains a local path ($needle); check RUSTFLAGS remap"
+    }
+  }
+  Write-Host "no local paths in built helper"
 } finally {
+  $env:RUSTFLAGS = $previousRustFlags
   Pop-Location
 }
 

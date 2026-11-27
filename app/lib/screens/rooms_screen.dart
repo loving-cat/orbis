@@ -1120,7 +1120,13 @@ class _RoomRowState extends State<_RoomRow> {
   /// 这一行在屏幕上的中心点 —— 长按弹菜单时的锚点
   Offset _rowAnchor() {
     final box = context.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return Offset.zero;
+    // ★ 与 blob_avatar 同一条判据：只判 hasSize 不够。
+    //   - !attached：这一行刚被摘出渲染树（滚出视口/列表重建），size 还是缓存值；
+    //   - owner?.rootNode == null：整个 View 被 detach（窗口重建/DPI 切换）时，
+    //     子节点 attached 仍为 true，但 getTransformTo 里的 `owner!.rootNode!` 会空指针。
+    if (box == null || !box.attached || !box.hasSize || box.owner?.rootNode == null) {
+      return Offset.zero;
+    }
     return box.localToGlobal(box.size.center(Offset.zero));
   }
 

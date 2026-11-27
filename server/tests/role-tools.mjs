@@ -219,6 +219,39 @@ try {
     assert.equal(current.session.options.tools.includes('bash'), true);
     assert.equal(current.configurationCurrent(), true);
   });
+  await test('★ 负责人这一轮跑在 #fb 泳道（分档 / 兜底换模型）：计划/派活/放行/验收工具按泳道查受管上下文', async () => {
+    // 以前这四个工具只按 `roomId:botId` 查：受管上下文挂在 `…#fb` 那条泳道上，
+    // 主泳道是空的 → 一律回「当前没有受管任务」，负责人这一轮什么都派不出去。
+    const f = fixture(), { lead, room } = department();
+    const o = (await f.builder(room.id, lead.id, {
+      reportTool: true, modelOverride: 'fixture/strong', persist: false,
+    })).session.options;
+    const lane = `${room.id}:${lead.id}#fb`;
+    // 主泳道没有上下文；#fb 泳道挂着一份（存储里并不存在的）受管上下文
+    f.runner.sessions.set(lane, {
+      managedContext: { taskRunId: 'tr_fixture_lane', revision: 1, attemptId: 'a_fixture_lane', botId: lead.id },
+    });
+    try {
+      const inputs = {
+        task_plan: { steps: [{ member: lead.id, task: 'fixture step' }] },
+        assign_member_task: {
+          memberBotId: 'b_fixture', requirement: 'fixture', verification: [{ kind: 'expert', description: 'x' }],
+        },
+        approve_subtask_checkpoint: {},
+        task_expert_review: { conditionId: 'c1', verdict: 'passed', note: 'fixture' },
+      };
+      for (const [name, input] of Object.entries(inputs)) {
+        const tool = o.customTools.find((t) => t.name === name);
+        assert.ok(tool, `${name} 应该注册给负责人`);
+        const text = (await tool.execute('fixture-call', input)).content[0].text;
+        // 读到了 #fb 泳道上的上下文 → 按受管上下文核对（任务不存在 → 失效），而不是「没有受管任务」
+        assert.doesNotMatch(text, /当前没有受管任务|不是受管验收回合/, `${name} 读错了泳道：${text}`);
+        assert.match(text, /tr_fixture_lane/, `${name} 应按 #fb 泳道上的那份上下文核对：${text}`);
+      }
+    } finally {
+      f.runner.sessions.delete(lane);
+    }
+  });
   await test('★ 成员增减不再改变执行能力（只改变提示词里的调度规矩）', async () => {
     // 老规则是“有同事就不能自己干”，于是同样一句话在单人部门和多人部门
     // 行为完全不同。现在两种房型都有手，差别只在提示词。

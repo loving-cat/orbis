@@ -253,7 +253,42 @@ class _BlobAvatarState extends State<BlobAvatar> with TickerProviderStateMixin {
     final p = AvatarLife.pointer.value;
     if (!mounted || !BlobAvatar.animationsEnabled || p == null) return;
     final box = context.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return;
+    // ★ 四个条件缺一不可 —— 任何一个不满足时「这一帧算不出全局坐标」。
+    //
+    //   · box == null       还没建出 render object
+    //   · !hasSize          还没 layout（size 是 null）
+    //   · !attached         已经从 render tree 上摘下
+    //   · owner.rootNode==null  整个 View 已被 deactivate（见下文）
+    //
+    // ★★ 为什么必须判 attached：
+    //
+    //   `RenderBox.localToGlobal` 直接转给 `RenderObject.getTransformTo`，
+    //   而那个方法是这么开头的（flutter 3.x，object.dart:3686-3699）：
+    //
+    //       Matrix4 getTransformTo(RenderObject? target) {
+    //         assert(attached);                       // ← 3687
+    //         ...
+    //         RenderObject to = target ?? owner!.rootNode!;   // ← 3699
+    //
+    //   **debug 下先撞 3687 的 assert；release/profile 下 assert 被剥掉，
+    //   于是继续跑到 3699 的 `owner!` → 抛
+    //   `Null check operator used on a null value`。**
+    //
+    //   这正是 app.log 里的栈（object.dart:3699 → box.dart:3114 → 本函数）。
+    //   也就是说：日志里那些崩溃，就是「在已经从树上摘下的 box 上算局部坐标」，
+    //   而 `hasSize` 拦不住它 —— 它读的是缓存的 `_size`，detach 之后仍然是 true。
+    //   实测（app/test/blob_avatar_root_detach_test.dart）确认：把本判断退回
+    //   `!hasSize` 时，该测试在 detached 的 box 上必抛；加上 `!attached` 后不再抛。
+    //
+    // ★ 两个条件不是重复的：
+    //   · `!attached`          → box 自己被摘（滚出视口、路由切换），debug 先撞 3687
+    //   · `owner.rootNode == null` → **整个 View 被 deactivate**（窗口重建、缩放、
+    //     DPI/显示器切换）。那一步只把 RenderView 自己 detach，后代 _owner 还在，
+    //     所以 `attached` 仍为 true —— 3687 的 assert 根本不报，直接撞 3699 的
+    //     `owner!.rootNode!`。只判 attached 盖不住这条路径，两个都得留。
+    if (box == null || !box.attached || !box.hasSize || box.owner?.rootNode == null) {
+      return;
+    }
     _aimGaze(
       eyeOffsetToward(
         avatarCenter: box.localToGlobal(box.size.center(Offset.zero)),

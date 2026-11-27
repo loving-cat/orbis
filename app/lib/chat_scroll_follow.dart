@@ -1,5 +1,5 @@
 import 'package:flutter/rendering.dart' show ScrollDirection;
-import 'package:flutter/scheduler.dart' show SchedulerPhase;
+import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:flutter/widgets.dart';
 
 /// 聊天列表的追底调度；用户离开底部时取消旧任务，布局变化按帧收敛。
@@ -11,6 +11,19 @@ class ChatScrollFollow {
     this.maxFrames = 10,
   }) {
     controller.addListener(_onOffsetChanged);
+    // ★ 同帧贴底时 `correctPixels` **不会** notifyListeners（它是布局期的事），
+    //   于是 `_lastPixels` 会停在旧值。等用户随后轻轻上滚时，
+    //   `delta = pixels - _lastPixels` 会被算成正数 → 追底被延迟撤销（像被拽住一样）。
+    //   所以纠偏发生时同步一次基准值。
+    if (controller is StickyBottomScrollController) {
+      (controller as StickyBottomScrollController).onPixelsCorrected = _syncPixels;
+    }
+  }
+
+  /// 把「上次像素」对齐到当前真实偏移（纠偏/布局后调用）。
+  void _syncPixels(ScrollPosition position) {
+    _lastPosition = position;
+    _lastPixels = position.pixels;
   }
 
   final ScrollController controller;
@@ -25,6 +38,14 @@ class ChatScrollFollow {
   static const double _bottomSlack = 24;
 
   bool get following => _following;
+
+  /// 现在允许「同帧贴底」纠偏吗。
+  ///
+  /// 与 `handleNotification` 的追底判据同源，但要更严：正在拖滚动条、
+  /// 有 `animateTo` 在跑、拖拽松手后待恢复 —— 这三种情况下 layout 期纠偏
+  /// 会和用户的滚动/动画抢位置。
+  bool get stickToBottom =>
+      _following && !_externalDragging && _animatedGeneration == null && !_resumeAfterDrag;
 
   bool _following = true;
   bool _disposed = false;
@@ -100,6 +121,8 @@ class ChatScrollFollow {
       //
       //   而且用户正在往上翻的时候，这个跳转还在跟他的滚动手势较劲：
       //   一滑就被拽回底部。加 following 判定后两件事一起解决。
+      // 同帧贴底已经改过 pixels：先把基准同步过来，再决定要不要兜底 request()
+      if (controller.hasClients) _syncPixels(controller.position);
       if (_following) request();
     } else if (notification is ScrollNotification && notification.depth == 0) {
       if (notification is ScrollStartNotification &&
@@ -229,5 +252,133 @@ class ChatScrollFollow {
     _disposed = true;
     _generation++;
     controller.removeListener(_onOffsetChanged);
+    // ★ 控制器可能在 ChatScrollFollow 之后才销毁（房间切换时列表先走）：
+    //   撤掉回调，别让它在布局期把像素同步到一个已经 dispose 的对象上。
+    if (controller is StickyBottomScrollController) {
+      (controller as StickyBottomScrollController).onPixelsCorrected = null;
+    }
+  }
+}
+
+/// 追底用的滚动控制器：**在布局期**就把偏移贴到新的 `maxScrollExtent`。
+///
+/// ## 为什么需要它（真机：并发多 Bot 流式时整块聊天区上下抽搐）
+///
+/// `ListView` 是正向顶部锚定的（`reverse: false`）。气泡换行长高时：
+///
+///   第 N 帧   —— 新内容把下方气泡向下顶一截（`maxScrollExtent` 变大，`pixels` 没变）
+///   第 N+1 帧 —— `ChatScrollFollow.request()` 的 post-frame `jumpTo` 才把整屏拽回底部
+///
+/// 一帧的「先下顶、再上拽」单独看几乎察觉不到；但两路 Bot 同时流式、交替换行时，
+/// 这个锯齿会以每秒十几次的频率出现 —— 用户看到的是整块聊天区在抖。
+///
+/// ## 怎么消除
+///
+/// `RenderViewport` 每次布局结束都会调 `applyContentDimensions(min, max)`，
+/// 返回值是「这个偏移对新尺寸还成立吗」。返回 `false` 时视口会用纠正后的
+/// 偏移**在同一帧内**再排一次（`RenderViewportBase.performLayout` 的 do/while）。
+/// 所以在这里 `correctPixels(max)` 再 `return false`，就等于「本帧绘制前已经贴底」，
+/// 根本不会出现先下顶的那一帧。
+///
+/// ## 四条不变量（缺一条就会变成"抢用户的滚动"）
+///
+///   1. 只在**追底状态**下纠偏（`shouldStickToBottom`，由 `ChatScrollFollow` 注入：
+///      用户上翻 / 正在拖滚动条 / 有动画在进行 / 拖拽后待恢复 → 一律不纠偏）；
+///   2. 用户手势进行中（`DragScrollActivity` / `BallisticScrollActivity`）绝不纠偏；
+///   3. 只有**上一帧本来就在底部附近**才纠偏 —— 懒列表首次加载长历史时
+///      `maxScrollExtent` 会突然跳很大，不能借机把用户拽到底；
+///   4. 单次布局 pass 最多纠偏 `maxCorrectionsPerLayout` 次（默认 2），
+///      防止「懒加载高度波动 → 纠偏 → 又变高」在帧内死循环。
+class StickyBottomScrollController extends ScrollController {
+  StickyBottomScrollController({
+    this.shouldStickToBottom,
+    this.bottomSlack = 24,
+    this.maxCorrectionsPerLayout = 2,
+  });
+
+  /// 现在该不该贴底（由 `ChatScrollFollow` 提供，读的是它自己的状态机）。
+  final bool Function()? shouldStickToBottom;
+
+  /// 「上一帧算在底部」的容差（像素）。
+  final double bottomSlack;
+
+  /// 单次布局 pass 内最多纠偏几次（防懒加载高度波动引起死循环）。
+  final int maxCorrectionsPerLayout;
+
+  /// 纠偏发生时的回调（用来同步 `ChatScrollFollow._lastPixels`）。
+  void Function(ScrollPosition position)? onPixelsCorrected;
+
+  /// 同帧纠偏累计次数（测试用它区分「真的在布局期贴底」与「靠下一帧 jumpTo 补」）。
+  int corrections = 0;
+
+  bool get _stick => shouldStickToBottom?.call() ?? false;
+
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) {
+    return _StickyBottomScrollPosition(
+      physics: physics,
+      context: context,
+      oldPosition: oldPosition,
+      controller: this,
+    );
+  }
+}
+
+class _StickyBottomScrollPosition extends ScrollPositionWithSingleContext {
+  _StickyBottomScrollPosition({
+    required super.physics,
+    required super.context,
+    super.oldPosition,
+    required this.controller,
+  });
+
+  final StickyBottomScrollController controller;
+
+  double? _prevMaxScrollExtent;
+  int _corrections = 0;
+  bool _resetScheduled = false;
+
+  @override
+  bool applyContentDimensions(double minScrollExtent, double maxScrollExtent) {
+    final previous = _prevMaxScrollExtent;
+    _prevMaxScrollExtent = maxScrollExtent;
+    // 框架自己还要再排一次（比如纠正后越界）：先让它补，别在这里叠加纠偏
+    if (!super.applyContentDimensions(minScrollExtent, maxScrollExtent)) return false;
+    if (!hasPixels || !controller._stick) return true;
+    if (_corrections >= controller.maxCorrectionsPerLayout) return true;
+    // 已经贴底（或内容比视口还短）→ 无事可做
+    if (maxScrollExtent <= pixels + 0.5) return true;
+    // 用户手势进行中：绝不抢
+    final activity = this.activity;
+    if (activity is DragScrollActivity || activity is BallisticScrollActivity) return true;
+    // 上一帧不在底部附近（首次加载 / 用户上翻过）：不纠偏
+    if (previous != null && (previous - pixels).abs() > controller.bottomSlack) return true;
+
+    _corrections += 1;
+    // 计数在**帧后**归零：同一帧内的多次布局算一次 pass
+    if (!_resetScheduled) {
+      _resetScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _resetScheduled = false;
+        _corrections = 0;
+      });
+    }
+    correctPixels(maxScrollExtent);
+    controller.corrections += 1;
+    controller.onPixelsCorrected?.call(this);
+    // ★ 关键：false = 「我这个偏移不对，请用新偏移再排一次」。
+    //   RenderViewport 会在**本帧绘制前**重排，于是不会出现「先下顶一帧」。
+    return false;
+  }
+
+  @override
+  bool applyViewportDimension(double viewportDimension) {
+    // 视口尺寸变了 = 新的一次布局，帧内计数清零
+    _corrections = 0;
+    return super.applyViewportDimension(viewportDimension);
   }
 }

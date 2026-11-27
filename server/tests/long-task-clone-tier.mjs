@@ -227,6 +227,41 @@ await test('7. selectTierModel：六条硬边界（standard/lockModel/本地/熔
   assert.equal(explicit.overrideModel, 'cloud/opus');
 });
 
+await test('7b. ★ selectTierModel 遵守 ORBIS_MODEL_FALLBACK（same-provider 不出这一家 / off 不自动换）', () => {
+  const base = { slug: 'azure/gpt-flash', provider: 'azure', baseUrl: 'https://corp.openai.azure.com' };
+  // 别家的强模型排在前面：默认口径下它会赢（同分时按顺序）
+  const candidates = [
+    { slug: 'other/opus', label: 'claude opus', groupId: 'other', provider: 'other', baseUrl: 'https://api.other.example' },
+    { slug: 'azure/gpt-pro', label: 'gpt pro', groupId: 'azure2', provider: 'azure', baseUrl: 'https://corp2.openai.azure.com' },
+  ];
+  // 默认 cloud：原行为不变（会挑分最高的强模型，不管哪一家）
+  assert.equal(TIER.selectTierModel({ tier: 'strong', candidates, baseModel: base }).overrideModel, 'other/opus');
+  // same-provider：只在同一家里挑
+  const same = TIER.selectTierModel({ tier: 'strong', candidates, baseModel: base, policyMode: 'same-provider' });
+  assert.equal(same.overrideModel, 'azure/gpt-pro', `same-provider 不能换到别家：${same.overrideModel}`);
+  assert.equal(
+    TIER.selectTierModel({ tier: 'strong', candidates: [candidates[0]], baseModel: base, policyMode: 'same-provider' }).overrideModel,
+    null,
+    '同一家里没有更强的 → 沿用成员模型',
+  );
+  // same-provider 下显式档位模型跨家：拒绝并说明
+  const explicitCross = TIER.selectTierModel({
+    tier: 'strong', candidates, baseModel: base, policyMode: 'same-provider', explicitTierModels: { strong: 'other/opus' },
+  });
+  assert.equal(explicitCross.overrideModel, null);
+  assert.equal(explicitCross.rejected, 'explicit_cross_provider');
+  // off：不自动挑；显式档位模型照用（用户的明确选择）
+  const off = TIER.selectTierModel({ tier: 'strong', candidates, baseModel: base, policyMode: 'off' });
+  assert.equal(off.overrideModel, null);
+  assert.match(off.why, /ORBIS_MODEL_FALLBACK=off/);
+  assert.equal(
+    TIER.selectTierModel({
+      tier: 'strong', candidates, baseModel: base, policyMode: 'off', explicitTierModels: { strong: 'other/opus' },
+    }).overrideModel,
+    'other/opus',
+  );
+});
+
 await test('8. resolveTaskTier：off 关闭、显式优先、auto 才推断', () => {
   const run = { id: 't', goal: { requirement: '把表整理成清单', verification: [{ id: 'v', kind: 'artifact', description: 'x' }] }, flags: {} };
   assert.deepEqual(TIER.resolveTaskTier({ taskRun: run, mode: 'off' }), { tier: 'standard', source: 'off' });

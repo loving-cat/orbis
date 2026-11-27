@@ -31,6 +31,13 @@ export const NON_RETRIABLE = Object.freeze({
   config: 'config',
   impossible: 'impossible',
   approvalRejected: 'approval_rejected',
+  /**
+   * 独立评审员连续几次都跑不起来（超时 / 429 / 输出解析不了）。
+   *
+   * 由推进器在评审故障达上限时直接写入（不经 `classifyNonRetriableFailure`）：
+   * 活已经做完、只是没人能审，换人重做只会把做好的东西扔掉、再撞一次同一个评审员。
+   */
+  criticUnavailable: 'critic_unavailable',
 });
 
 /**
@@ -44,6 +51,7 @@ export const NO_HANDBACK_KINDS = Object.freeze(new Set([
   NON_RETRIABLE.aborted,
   NON_RETRIABLE.approvalRejected,
   NON_RETRIABLE.impossible,
+  NON_RETRIABLE.criticUnavailable,
 ]));
 
 /**

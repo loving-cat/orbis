@@ -61,6 +61,9 @@ export async function approveCheckpoint({
         checkpointApprovedAt: clock(),
         checkpointApprovedBy: botId ?? null,
         checkpointApproveNote: String(reason ?? '').slice(0, 120),
+        // ★ 被计划挂起（前置条目还没派出去）的活：放行 = 负责人决定不等了。
+        //   挂起记录一并清掉，之后再派出那条前置也不会回头给它补依赖。
+        planHold: null,
         updatedAt: clock(),
       } : null),
     });

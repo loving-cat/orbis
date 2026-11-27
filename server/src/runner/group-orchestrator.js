@@ -749,6 +749,56 @@ export async function executeGroupRound(
               status: lastStatus,
             });
             if (!decision.retry) {
+              // ★ 404 = 模型已下线：`decideRetry` 说「别原地重试」是对的，但**不等于
+              //   这轮就该失败** —— 有健康替代模型就**当轮**切过去跑一次（0 等待）。
+              //   旧代码在这里直接 break，于是每轮都白空转两次才报错。
+              if (decision.kind === 'model-not-found' && !switchedOnce) {
+                const afterNotFound = runner.breakerFor(bot.id, overrideModel);
+                const alt = altFor('model-not-found', attempt, {
+                  breakerOpen: afterNotFound?.breaker?.state === BREAKER_STATE.open,
+                });
+                if (alt) {
+                  overrideModel = alt.slug;
+                  switchedOnce = true;
+                  attempt++;
+                  retries.push(`${attempt}. ${decision.why}`);
+                  runner.bus.emit('event', {
+                    t: 'bot.retrying', roomId, botId: bot.id, attempt,
+                    delayMs: 0, kind: 'model-not-found', switchedTo: alt.label,
+                  });
+                  log(`【${room.name}】${bot.name} 模型不存在/已下线（404）→ 当轮切到 ${alt.label}`);
+                  settleRetryMessage(runner.store, roomId, res, { willRetry: true });
+                  res = await runner.run(roomId, bot.id, prompt, {
+                    groupTurn: true,
+                    retryManaged: true,
+                    taskRunId, attemptIndex: attempt,
+                    attachments,
+                    managedContext: itemManaged,
+                    ...(overrideModel ? { modelOverride: overrideModel } : {}),
+                  });
+                  if (res.ok) {
+                    runner.markGroupHealthy(bot.id, overrideModel);
+                  } else {
+                    // ★ 记的是**新模型这次**的失败类型，不能拿上一个模型的 404 去记
+                    //   （否则备用模型只是抖一下，也被当成“已下线”一次熔断）
+                    const nextDecision = decideRetry({
+                      error: String(res.error ?? ''),
+                      attempt,
+                      aborting: runner.aborting.has(roomId),
+                      status: res.status ?? null,
+                    });
+                    runner.markGroupFailed(bot.id, {
+                      kind: nextDecision.kind,
+                      status: res.status ?? null,
+                      model: overrideModel,
+                    });
+                    lastError = String(res.error ?? '未知原因');
+                    lastStatus = res.status ?? null;
+                    overrideModel = null;
+                  }
+                  continue;
+                }
+              }
               log(`【${room.name}】${bot.name} 不再重试：${decision.why}`);
               lastKind = decision.kind;
               break;
@@ -822,8 +872,15 @@ export async function executeGroupRound(
             if (res.ok) {
               runner.markGroupHealthy(bot.id, overrideModel);
             } else {
+              // ★ 同样按**这次失败的类型**归属（别把上一条错误的 kind 记到新模型头上）
+              const nextDecision = decideRetry({
+                error: String(res.error ?? ''),
+                attempt,
+                aborting: runner.aborting.has(roomId),
+                status: res.status ?? null,
+              });
               runner.markGroupFailed(bot.id, {
-                kind: decision.kind,
+                kind: nextDecision.kind,
                 status: res.status ?? null,
                 model: overrideModel,
               });

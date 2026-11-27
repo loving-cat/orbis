@@ -465,7 +465,8 @@ class _MdTextState extends State<MdText> {
           spans.add(
             TextSpan(
               text: token.text,
-              style: code.copyWith(backgroundColor: PB.bgActive),
+              // ★ 半透明：不透明底会盖掉选区高亮（见 PB.bgInlineCode 的注释）
+              style: code.copyWith(backgroundColor: PB.bgInlineCode),
               recognizer: RegExp(r'^https?://').hasMatch(token.text)
                   ? _copyUrlRecognizer(token.text).value
                   : null,

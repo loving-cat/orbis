@@ -270,21 +270,26 @@ alpha.1 的教训（这次照做）：
 
 ```bash
 # 0. 合栈（顺序不能变：栈底 → 栈顶，每个 PR 都是 Draft，逐个 Ready + merge）
-#    #39 long-task-autonomy → #40 perf-v1 → #41 cluster-parallel → #42 perf-failfast
-#    → #43 task-guardrails → #44 desktop-win-stage-b → 本分支 pre-rc1-polish
-gh pr ready 39 && gh pr merge 39 --merge && ...（逐个）
+#    ✅ #39 long-task-autonomy → #40 perf-v1 → #41 cluster-parallel → #42 perf-failfast
+#       → #43 task-guardrails → #44 desktop-win-stage-b → pre-rc1-polish（都已进 main）
+#    ✅ 集群 C1–C5：#46–#50（都已进 main）
+#    □ pre-GA 复审修复：fix/pre-ga-cluster-review → main（子任务停住叫醒父任务、worktree
+#      合入可靠性、计划依赖落地、泳道上下文、模型边界、面板口径；见 docs/TASK-RUN-PROTOCOL.md）
+gh pr ready <N> && gh pr merge <N> --merge
 
-# 1. 版本号（唯一真源，两处必须一致）
+# 1. 版本号（唯一真源，两处必须一致）—— 已在 C1–C5 合入前改好：
 #    server/package.json → 2.0.0-rc.1
 #    app/pubspec.yaml    → 2.0.0-rc.1+NN
+#    ★ 但 tag 一直没切：rc.1 必须从**合完上面所有分支之后的 main HEAD** 切，
+#      不能拿改版本号那次提交切（那份代码不含 C1–C5 与复审修复，也就不是要验收的代码）。
 node scripts/check-consistency.mjs
 
 # 2. 全量门禁（rc.1 与 GA 各跑一次，结果贴进 release notes）
-cd server && node tests/all.mjs            # 期望 200/200
+cd server && node tests/all.mjs            # 期望 208/208
 cargo test --release --manifest-path ../native/orbis-desktop-win/Cargo.toml   # 期望 29/29
 cd .. && node scripts/check-style.mjs && node scripts/check-legacy.mjs --strict   && node scripts/check-spec-progress.mjs && node scripts/check-secrets.mjs   && node scripts/check-licenses.mjs --check
 cd server && node scripts/check-consistency.mjs && node scripts/check-capability-drift.mjs
-cd ../app && flutter analyze && flutter test        # 期望 1059 通过 / 3 跳过
+cd ../app && flutter analyze && flutter test        # 期望 1088 通过 / 3 跳过
 
 # 3. 原生助手产物（阶段 B：常驻 serve + 原生截图）
 powershell -File scripts/build-desktop-win.ps1          # → resources/orbis-desktop-win.exe + .sha256

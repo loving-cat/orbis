@@ -39,6 +39,9 @@ import {
 import { emitContext, summarizeArgs, textOf, throttle } from './runner-utils.js';
 import { settleRunningSteps, applyPendingReseat } from './stream-bubbles.js';
 import { wireModelWait, resolveIdleFailure, onSdkRetryStart } from './model-idle.js';
+import { LENGTH_NOTICE, readContext } from '../context-budget.js';
+import { recoverFromLengthTruncation } from './turn-length-recovery.js';
+import { skillBudgetForContext } from '../skills.js';
 import { releaseTurnLane, sessionLaneKey } from './session-lanes.js';
 
 /** 执行一次 bot 会话回合（带 provider 配置更新租约与受管报告通道作用域） */
@@ -455,6 +458,10 @@ async function runWithLease(
   let askedUser = false;
   /** 最后一条回复的正文（续跑守卫看它判断是不是「半路停下来问」） */
   let lastAssistantText = '';
+  // ★ 长度截断止血用的三个事实（见 context-budget.lengthTruncationOf 的注释）
+  let lastStopReason = null;
+  let lastAssistantHadText = false;
+  let lastPromptTokens = null;
 
   /**
    * 软截止：请模型把手上这一步收尾、写进度（steer 在当前工具跑完、下次调模型前送达）。
@@ -583,6 +590,17 @@ async function runWithLease(
           responseFailure = null;
           const finalText = textOf(event.message) || buffer;
           lastAssistantText = finalText.trim();
+          // ★ 记录结束原因/是否有正文/本次提示 token：上下文撑满时模型会以
+          //   `stopReason: 'length'` 只吐 1 个 thinking token 结束，而 committed 里
+          //   还留着工具前那句过渡话 —— 只看"有没有正文"会把半句话标成 done。
+          lastStopReason = event.message?.stopReason ?? null;
+          lastAssistantHadText = Boolean(finalText.trim());
+          {
+            const u = event.message?.usage ?? null;
+            const input = Number(u?.input ?? u?.inputTokens ?? 0) || 0;
+            const cacheRead = Number(u?.cacheRead ?? 0) || 0;
+            if (input + cacheRead > 0) lastPromptTokens = input + cacheRead;
+          }
           if (finalText.trim()) claimOrder();
           if (finalText.trim()) committed.push(finalText.trim());
           buffer = '';
@@ -700,7 +718,9 @@ async function runWithLease(
         const library = runner.store.skillLibrary();
         if (!library.length) return text;
         const task = text + '\n' + String(meta?.text ?? '');
-        const picked = selectSkillsFor(library, task, { max: 5 });
+        // 小窗口模型（≤128k）收紧成 2 条 / 6,000 字：技能是参考，不是必需输入
+        const skillBudget = skillBudgetForContext(entry?.session?.model?.contextWindow);
+        const picked = selectSkillsFor(library, task, { max: skillBudget.max });
         const already = entry.skillsInjected ?? null;
         const { skills: fresh } = skillsToInject(picked, {
           alreadyGiven: already,
@@ -708,7 +728,7 @@ async function runWithLease(
         });
         entry.compactedSinceInjection = false;
         if (!fresh.length) return text;
-        const lines = skillsPromptLines(fresh);
+        const lines = skillsPromptLines(fresh, { maxChars: skillBudget.maxChars });
         if (!lines.length) return text;
         if (!entry.skillsInjected) entry.skillsInjected = new Set();
         for (const s of fresh) {
@@ -854,10 +874,44 @@ async function runWithLease(
     }
     checkCancelled();
 
+    // ★ 上游已有明确错误时不先强压续答（那是别的问题，压完照样错）
+    if (responseFailure) throw new Error(responseFailure.error);
+    // ★ 上下文撑满的静默中断（真机复现）：工具后模型只剩 3% 窗口，吐 1 个 thinking
+    //   token 就被截断，而 committed 里留着工具前那句过渡话，旧代码把它标成 done。
+    const { notice: lengthNotice } = await recoverFromLengthTruncation({
+      runner,
+      entry,
+      bot,
+      roomId,
+      signal: turnController.signal,
+      deadline,
+      log,
+      facts: () => ({
+        stopReason: lastStopReason,
+        hadText: lastAssistantHadText,
+        promptTokens: lastPromptTokens,
+        contextWindow: Number(entry?.session?.model?.contextWindow ?? 0),
+        percent: readContext(entry?.session)?.percent ?? null,
+        cancelled: cancelled(),
+        stepCapHit,
+        timedOut,
+      }),
+    });
+
     let finalText = render().trim();
     let emptyRecovered = false;
-    if (responseFailure) throw new Error(responseFailure.error);
     if (!finalText && !stepCapHit) {
+      // ★ 已经撑爆过 / 逼近上限：先在会内压一次再 nudge，别贴着 125k 满会话再撞一次
+      const beforeNudge = readContext(entry?.session)?.percent ?? null;
+      if (lengthNotice || (typeof beforeNudge === 'number' && beforeNudge >= 85)) {
+        try {
+          await runner.compactIfNeeded(entry, bot, roomId, {
+            signal: turnController.signal, deadline, force: true,
+          });
+        } catch (err) {
+          log(`${bot.name} 空回复前压缩失败：`, err?.message || err);
+        }
+      }
       const stepDigest = steps.length
         ? `\n\n你刚才实际执行了这些操作：\n${steps.map((s) => `- ${s.tool} ${s.detail ?? ''}`.slice(0, 160)).join('\n')}`
         : '';
@@ -871,7 +925,11 @@ async function runWithLease(
           : '请直接用文字回答刚才的问题，不要调用工具。'),
         readText: () => render(),
         readFailure: () => responseFailure,
-        models: fallbackModels(entry.session.model, fallbackModel),
+        // ★ 只有真被长度上限截断过才优先挑更大窗口的模型，普通空回复保持原顺序
+        models: lengthNotice
+          ? fallbackModels(entry.session.model, fallbackModel).slice()
+            .sort((a, b) => (Number(b?.contextWindow ?? 0)) - (Number(a?.contextWindow ?? 0)))
+          : fallbackModels(entry.session.model, fallbackModel),
         complete: async (model, signal) => {
           try {
             const reply = await runner.modelRuntime.completeSimple(
@@ -899,6 +957,9 @@ async function runWithLease(
       finalText = recovery.text;
       emptyRecovered = recovery.recovered;
     }
+    // ★ 抢救没成功时也要让用户看见"这不是完整结论"，而不是静默当成正常收尾
+    // ★ 但兜底已经补齐完整结论时不要再挂这条（否则用户以为结论不完整）
+    if (lengthNotice && !emptyRecovered) finalText = `${finalText}${LENGTH_NOTICE}`.trim();
     checkCancelled();
 
     // ★ 这一轮已经用 send_image 手动发过的文件不再自动带（Mac 实机 UX-2）

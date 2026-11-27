@@ -16,6 +16,8 @@ import {
   retryHint,
   giveUpNote,
   failureNote,
+  isRecoverableFailure,
+  isUpstreamTransient,
 } from '../src/retry-policy.js';
 
 let pass = 0;
@@ -156,5 +158,47 @@ test('留痕文案截断长错误', () => {
   assert.ok(note.length < 250, `实际 ${note.length}`);
 });
 
+
+// ---------------------------------------------------------------------------
+// 404 = 模型不存在/已下线：不原地重试，直接换模型
+//
+// 真机：模型组里留着一个已下线的 ID。旧行为是「每轮白撞两次再报错」，
+// 用户看到的是「这个 bot 每轮都失败，但换个模型就好了」。
+// ---------------------------------------------------------------------------
+
+test('★ 404 归为 model-not-found，且明确不重试', () => {
+  const d = decideRetry({ error: '模型不存在或已下线（HTTP 404），请检查模型 ID 或切换其它模型。', attempt: 1, status: 404 });
+  assert.equal(d.kind, 'model-not-found');
+  assert.equal(d.retry, false, '原地重试一万次也还是 404');
+  assert.equal(d.delayMs, 0, '别让用户白等一轮退避');
+  assert.match(d.why, /404|下线|不存在/);
+});
+
+test('★ 只有错误文案、没有 status 时也能认出 404', () => {
+  const d = decideRetry({ error: 'Model gpt-x not found', attempt: 1 });
+  assert.equal(d.kind, 'model-not-found');
+  assert.equal(d.retry, false);
+});
+
+test('★ 404 不可恢复、也不是上游临时故障（等它自愈没意义）', () => {
+  assert.equal(isRecoverableFailure({ error: '404 model not found', status: 404 }), false);
+  assert.equal(isUpstreamTransient({ error: 'model not found', status: 404, kind: 'model-not-found' }), false);
+  assert.equal(isUpstreamTransient({ status: 404 }), false);
+});
+
+test('★ 模型下线有独立的人话文案（要告诉用户去换模型，而不是再试一次）', () => {
+  const note = failureNote({ botName: '阿蓝', reason: '模型不存在或已下线（HTTP 404）', willRetry: false, kind: 'model-not-found' });
+  assert.match(note, /已下线|不可用|不存在/);
+  assert.match(note, /换|切换|改/, '要给出可执行的下一步');
+  assert.doesNotMatch(note, /自动重试/, '别承诺会自动重试');
+  assert.ok(note.length < 260, '别写成小作文：' + note.length);
+});
+
+test('404 不会被 5xx 分支抢走（400/422 仍按原来的路子走）', () => {
+  assert.notEqual(decideRetry({ error: 'bad request', attempt: 1, status: 400 }).kind, 'model-not-found');
+  const d = decideRetry({ error: 'upstream 503', attempt: 1, status: 503 });
+  assert.equal(d.kind, 'transient');
+  assert.equal(d.retry, true);
+});
 console.log(`\n重试策略测试：${pass}/${pass + fail} 通过`);
 if (fail > 0) process.exit(1);

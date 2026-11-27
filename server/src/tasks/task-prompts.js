@@ -13,7 +13,9 @@
  * 两份注入都走纯函数（`collectUpstreamContext` / `renderBlackboard`），
  * 且只在该出现的时候出现（没有前置 / 黑板空就一个字都不加）。
  */
-import { collectUpstreamContext, pendingCheckpointKids } from './task-dag.js';
+import {
+  collectUpstreamContext, pendingCheckpointKids, planStepBindings, planStepNote, planWaitingSteps,
+} from './task-dag.js';
 import { renderBlackboard } from './task-blackboard.js';
 import { renderCriticFeedback } from './task-critic.js';
 import { worktreePromptNote } from './task-worktree-policy.js';
@@ -40,6 +42,35 @@ export function criticFeedbackBlock(taskRun, { maxChars = 1200 } = {}) {
   return renderCriticFeedback(feedback, { maxChars });
 }
 
+/** 计划条目在这一刻的状态（按派活时的认领规则，与调度同一份 `planStepBindings`）。 */
+function planStepStatus(kid) {
+  if (!kid) return '还没派出去';
+  if (kid.state === 'completed') return '已完成';
+  if (planWaitingSteps(kid).length) return '已派出，挂着等前面的条目派出';
+  return '已派出';
+}
+
+/**
+ * 负责人每轮读到的那份计划：条目 + 依赖/把关说明 + 派出状态。
+ *
+ * 没有计划返回空串（调用方据此不加这一段）。
+ *
+ * @param {Array<object>|undefined} steps
+ * @param {Array<object>} children 同父同版本的子任务
+ * @returns {string}
+ */
+export function planBlock(steps, children = []) {
+  if (!Array.isArray(steps) || !steps.length) return '';
+  const bound = planStepBindings(steps, children);
+  return '已经定下的分工（按这个执行，缺哪条补哪条）：\n'
+    + steps.map((s, i) => {
+      const note = planStepNote(s, i);
+      return (i + 1) + '. ' + (s.memberName ?? '') + '：' + (s.task ?? '')
+        + (note ? '［' + note + '］' : '')
+        + '（' + planStepStatus(bound.get(i + 1)) + '）';
+    }).join('\n');
+}
+
 /**
  * 负责人阶段提示词。
  *
@@ -64,12 +95,9 @@ export function buildLeadPrompt({
     (goal.deliverables ?? []).length ? `交付物：${goal.deliverables.join('、')}` : '',
     (taskRun?.inputs ?? []).length ? '用户补充：' + taskRun.inputs.slice(-3).map((x) => String(x.text ?? '')).filter(Boolean).join('；') : '',
     // 已有计划：每轮都读一遍，按它对齐全场，而不是每轮重新想。
-    (taskRun?.plan?.steps ?? []).length
-      ? '已经定下的分工（按这个执行，缺哪条补哪条）：\n'
-        + taskRun.plan.steps
-          .map((s, i) => (i + 1) + '. ' + (s.memberName ?? '') + '：' + (s.task ?? ''))
-          .join('\n')
-      : '',
+    // ★ 每条带上依赖/把关说明与派出状态：负责人靠它知道「哪条还没派」「谁在等谁」，
+    //   否则计划里的依赖只在写计划那一轮看得见，之后就只剩一句「缺哪条补哪条」。
+    planBlock(taskRun?.plan?.steps, children),
     (taskRun?.progress?.unmet ?? []).length
       ? `还缺：${[].concat(taskRun.progress.unmet).slice(0, 6).join('；')}`
       : '',
@@ -100,8 +128,12 @@ export function buildLeadPrompt({
   // ★ 待放行的 checkpoint：它们停着等这一声「可以开始了」。
   //   不主动列出来的话，负责人只看到「还缺」或「推进中」，不会想到是自己没放行。
   const checkpoints = pendingCheckpointKids(children);
-  if (checkpoints.length) {
-    const detail = checkpoints.map((k) => {
+  // ★ 被计划挂起的（前置条目还没派出去）和真正「前置交付了等你审」的分开说：
+  //   混在一起的话，负责人会去审一份根本还没有前置产物的活，然后直接放行 —— 下游抢跑。
+  const held = checkpoints.filter((k) => planWaitingSteps(k).length);
+  const reviewable = checkpoints.filter((k) => !planWaitingSteps(k).length);
+  if (reviewable.length) {
+    const detail = reviewable.map((k) => {
       const title = String(k?.goal?.requirement ?? '').slice(0, 80);
       const upstream = collectUpstreamContext(k, children, { maxChars: 400, nameOf });
       return `- ${title}（子任务 ${k.id}，设了「完成后先由你放行」，正在等你）`
@@ -112,6 +144,21 @@ export function buildLeadPrompt({
         + detail
         + '\n审一下前置产物够不够：够就调用 approve_subtask_checkpoint 放行（放行后它会立刻自动开跑）；'
         + '不够就改派或取消这份分工。不要放着不管。',
+    );
+  }
+  if (held.length) {
+    const detail = held.map((k) => {
+      const title = String(k?.goal?.requirement ?? '').slice(0, 80);
+      const waits = planWaitingSteps(k)
+        .map((w) => '第 ' + w.index + ' 条「' + String(w.task ?? '').slice(0, 40) + '」')
+        .join('、');
+      return `- ${title}（子任务 ${k.id}）：计划里它要等 ${waits}，但那几条还没派出去`;
+    }).join('\n');
+    lines.push(
+      '这些分工按计划要等前面的条目，可那些条目还没派出去，所以它们先挂着没开跑：\n'
+        + detail
+        + '\n把缺的那几条派出去（派出后会自动接上依赖，前置交付了它们就自己开跑）；'
+        + '确定不用等了，就用 approve_subtask_checkpoint 直接放行。',
     );
   }
 

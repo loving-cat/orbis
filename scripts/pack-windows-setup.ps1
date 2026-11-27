@@ -96,9 +96,32 @@ foreach ($required in @($scriptPath, $languagePath, $iconPath)) {
   if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { Fail "missing $required" }
 }
 
-$version = (& node -e "const p=require(process.argv[1]);process.stdout.write(String(p.version||''))" (Join-Path $root "server\package.json")).Trim()
-if (-not $version) { Fail "could not read server version" }
+# The installer wraps the BUNDLE, so its version must come from the bundle -
+# not from the source checkout. Reading the checkout made it possible to build
+# an installer named v2.0.0-rc.1 that actually ships a v2.0.0-beta.1 bundle
+# whenever the checkout was bumped but the folder was not re-packed.
+$bundlePkg = Join-Path $bundleDir "server\package.json"
+if (-not (Test-Path -LiteralPath $bundlePkg -PathType Leaf)) {
+  Fail "packed build has no server/package.json: $bundlePkg"
+}
+$version = (& node -e "const p=require(process.argv[1]);process.stdout.write(String(p.version||''))" $bundlePkg).Trim()
+if (-not $version) { Fail "could not read server version from the bundle" }
 if ($LASTEXITCODE -ne 0) { Fail "reading server version failed ($LASTEXITCODE)" }
+
+# The name on the box has to match the app inside it. orbis.exe carries its own
+# Flutter version resource; when that disagrees with the bundle's server version
+# the bundle is stale (or the two were built at different times) - refuse.
+# A bundle whose orbis.exe has no version resource at all (fixture stub, or a
+# hand-assembled folder) cannot lie about its version this way, so warn and go on.
+$exeVersion = ""
+try { $exeVersion = (Get-Item -LiteralPath (Join-Path $bundleDir "orbis.exe")).VersionInfo.ProductVersion } catch { $exeVersion = "" }
+if (-not $exeVersion) {
+  Write-Host "WARNING: $bundleDir\orbis.exe has no ProductVersion; skipping the bundle/exe version cross-check" -ForegroundColor Yellow
+} elseif ($exeVersion -notmatch ('^' + [regex]::Escape($version) + '([+]|$)')) {
+  Fail "bundle version mismatch: server/package.json says $version, orbis.exe says $exeVersion (re-pack with scripts/pack-windows.ps1)"
+} else {
+  Write-Host "bundle version: $version (orbis.exe $exeVersion)"
+}
 
 $setupName = "orbis-windows-v$version-setup.exe"
 $setupPath = Join-Path $outRoot $setupName

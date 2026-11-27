@@ -49,6 +49,8 @@ export function shouldSwitchEarly({
 } = {}) {
   if (userLocked || alreadySwitched || !hasAlternate) return false;
   if (breakerOpen) return true;
+  // ★ 404 = 模型没了：等它自愈毫无意义，**第一次就切**（同 model-idle 档）
+  if (kind === 'model-not-found') return fails >= 1;
   // 一个字都不吐：等它自愈不如换条通路（第 1 次就切）
   if (kind === 'model-idle') return fails >= 1;
   // 其它临时故障：连续第 2 次才切（一次抖动不值得换，换过去还有会话成本）
