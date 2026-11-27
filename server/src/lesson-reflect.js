@@ -203,6 +203,9 @@ export function createLessonReflector({ runner, logFn = log, config: scopedConfi
         noContextFiles: true,
         systemPrompt,
       });
+      // ★ 传入的 loader 不会被 createAgentSession 代为 reload：不 reload 的话
+      //   getSystemPrompt() 恒为 undefined，复盘/评分提示词被静默丢掉，模型拿到的是 SDK 默认提示词。
+      await resourceLoader.reload();
 
       ({ session } = await createAgentSession({
         cwd: config.workspace,

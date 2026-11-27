@@ -160,6 +160,7 @@ const TESTS = [
   'live-work-snapshot',
   'full-duplex',
   'session-append-array',
+  'real-sdk-lanes',
   'jarvis-mode',
   'sdk-runtime',
   'sdk-errors',
