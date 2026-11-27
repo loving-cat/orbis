@@ -1690,9 +1690,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                                         columnWidth: colW,
                                                         showAuthor: newAuthor,
                                                         showAvatar: endOfRun,
-                                                        bot: state.botById(
-                                                          msg.authorId,
-                                                        ),
+                                                        // ★ 只有真 Bot 发言才挂 Bot（系统回执不能冒充本人）
+                                                        bot: authorBot,
                                                         isGroup: room.isGroup,
                                                         mentions:
                                                             effectiveMentions,
@@ -1711,8 +1710,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                                         },
                                                         isLead:
                                                             room.isGroup &&
-                                                            msg.authorId !=
-                                                                null &&
+                                                            authorBot != null &&
                                                             msg.authorId ==
                                                                 room.leadBotId,
                                                         highlighted:
@@ -2846,6 +2844,85 @@ Widget _longPressWrapper(VoidCallback? onLongPress, Widget child) {
   );
 }
 
+/// 系统消息条：`authorType == 'system'` 的那几条（叫停 / 调度 / 中断 / 等待压缩 / 失败回执）。
+///
+/// ★ 为什么必须单独画：这些消息只带 `authorId`（历史包袱）而没有「本人发言」的语义，
+///   一旦套进 Bot 气泡就会：拿 authorId 去查 Bot → 画它的 BlobAvatar、贴「负责人」徽章、
+///   用气泡样式排正文。rc.3 真机上的现场就是「评测负责人：已让评测负责人停下」。
+///
+/// 形态：居中的细胶囊（info 图标 + 来源标签 + 正文），正文可选中复制；
+/// 不画头像、不贴头衔、不参与「同一作者连续消息」的合并。
+class SystemNotice extends StatelessWidget {
+  const SystemNotice({super.key, required this.msg});
+
+  final Msg msg;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = msg.authorName.trim();
+    final hasLabel = label.isNotEmpty && label != msg.text.trim();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Align(
+        alignment: Alignment.center,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 620),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: PB.bgElevated,
+            borderRadius: BorderRadius.circular(PB.rXl),
+            border: Border.all(color: PB.borderSecondary),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(
+                  Icons.info_outline_rounded,
+                  size: 14,
+                  color: PB.textTertiary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (hasLabel)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: PB.textTertiary,
+                          ),
+                        ),
+                      ),
+                    // 可选中复制：系统回执里有任务名、原因，用户经常要往外贴
+                    SelectableText(
+                      msg.text,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.45,
+                        color: PB.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MessageRow extends StatelessWidget {
   const _MessageRow({
     required this.msg,
@@ -2978,6 +3055,11 @@ class _MessageRow extends StatelessWidget {
     //   不画"已按你的要求终止"的灰气泡 —— 看起来像程序出错了，
     //   而那是用户自己的操作，不需要被告知。
     if (msg.isAborted) return const SizedBox.shrink();
+
+    // ★ 系统消息（叫停回执 / 调度提示 / 中断回执 / 等待压缩提示 / 失败回执）单独画。
+    //   `authorType == 'system'` 的消息**不是任何 Bot 说的** —— 套上 Bot 气泡就会拿
+    //   `authorId` 去查头像和头衔，出现「评测负责人：已让评测负责人停下」这种精分画面。
+    if (msg.authorType == 'system') return SystemNotice(msg: msg);
 
     final isUser = msg.isUser;
     // ★ 重试中也是「还在进行」：要转圈、要显示占位文案。
